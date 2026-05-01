@@ -606,6 +606,7 @@ const settingsSteps = [
 ];
 
 async function renderSettings() {
+  // Fetch fresh settings from the API (initial load or SSE refresh).
   let settings = null;
   let unavailable = false;
   try {
@@ -616,6 +617,7 @@ async function renderSettings() {
   }
 
   if (unavailable || !settings) {
+    window._currentSettings = null;
     content.innerHTML = `
       <div class="page-header">
         <div><h1>Settings</h1><div class="subtitle">Operator configuration</div></div>
@@ -628,6 +630,12 @@ async function renderSettings() {
     return;
   }
 
+  window._currentSettings = settings;
+  settingsStep = 0;
+  renderSettingsPage(settings);
+}
+
+function renderSettingsPage(settings) {
   content.innerHTML = `
     <div class="page-header">
       <div><h1>Settings</h1><div class="subtitle">Operator configuration wizard</div></div>
@@ -661,9 +669,6 @@ async function renderSettings() {
         </div>
       </form>
     </div>`;
-
-  // Store current settings for form navigation
-  window._currentSettings = settings;
 }
 
 function renderSettingsStepContent(step, s) {
@@ -776,7 +781,7 @@ function renderSettingsStepContent(step, s) {
 }
 
 window.goToStep = function(n) {
-  // Collect form values before navigating
+  // Collect current form values into _currentSettings before navigating.
   const form = $('#settingsForm');
   if (form && window._currentSettings) {
     const fd = new FormData(form);
@@ -785,7 +790,8 @@ window.goToStep = function(n) {
     }
   }
   settingsStep = Math.max(0, Math.min(n, settingsSteps.length - 1));
-  renderSettings();
+  // Re-render from cached settings without refetching from the API.
+  renderSettingsPage(window._currentSettings);
 };
 
 window.submitSettings = async function(e) {

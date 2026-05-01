@@ -411,6 +411,9 @@ The operator and the worker have separate (overlapping) config schemas. All valu
 | `WORKER_CPU_REQUEST` | no | `250m` | CPU request for worker pods |
 | `WORKER_MEMORY_REQUEST` | no | `256Mi` | Memory request for worker pods |
 | `METRICS_REFRESH_INTERVAL_SECONDS` | no | `30` | Tick interval of the `MetricsRefresher`. Floor: 5. Trade off frequency against destination read load. |
+| `UI_ENABLED` | no | `false` | Enable the built-in web dashboard and management API on `UI_ADDR`. |
+| `UI_ADDR` | no | `:8081` | Listen address for the UI HTTP server. |
+| `SETTINGS_CONFIGMAP` | no | — | Name of the ConfigMap for runtime-configurable settings via the UI wizard. Set automatically by Helm when `ui.enabled=true`. |
 
 ### Worker (`cmd/worker/main.go`)
 

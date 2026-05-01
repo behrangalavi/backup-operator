@@ -75,7 +75,8 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 
 	var req settingsPayload
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, settingsResponse{Message: "invalid JSON: " + err.Error()})
+		s.cfg.Logger.Error(err, "decode settings JSON")
+		writeJSON(w, http.StatusBadRequest, settingsResponse{Message: "invalid JSON"})
 		return
 	}
 

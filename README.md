@@ -11,12 +11,15 @@ A Kubernetes-native backup operator in Go for **PostgreSQL**, **MySQL**, and **M
 - [Why this exists](#why-this-exists)
 - [How it works](#how-it-works)
 - [Quick Start](#quick-start)
+- [Helm Installation & Distribution](#helm-installation--distribution)
 - [Defining a Backup Target (Source)](#defining-a-backup-target-source)
 - [Defining a Destination](#defining-a-destination)
 - [The Dashboard UI](#the-dashboard-ui)
+- [Settings Wizard](#settings-wizard)
 - [Restore](#restore)
 - [Alerting & Monitoring](#alerting--monitoring)
 - [Encryption Model](#encryption-model)
+- [CI/CD](#cicd)
 - [Local Development](#local-development)
 - [Troubleshooting](#troubleshooting)
 - [More Documentation](#more-documentation)
@@ -86,9 +89,15 @@ age-keygen -o ~/age.key
 # decrypt your backups.
 
 # 2. Install the operator with the public key as a Helm value.
-helm install backup-operator ./charts/backup-operator \
+#    From OCI registry (recommended):
+helm install backup-operator oci://ghcr.io/behrangalavi/charts/backup-operator \
   -n backup --create-namespace \
   --set agePublicKeys="age1qx...your-recipient-here"
+
+#    Or from local chart (development):
+# helm install backup-operator ./charts/backup-operator \
+#   -n backup --create-namespace \
+#   --set agePublicKeys="age1qx...your-recipient-here"
 
 # 3. Label a database Secret as a backup source.
 kubectl -n backup apply -f - <<'EOF'
@@ -143,6 +152,53 @@ kubectl -n backup create job --from=cronjob/backup-prod-users-db manual-$(date +
 backup-restore --storage-secret prod-s3 -n backup --target prod-users \
   --age-key ~/age.key --decompress | psql -h localhost prod_clone
 ```
+
+---
+
+## Helm Installation & Distribution
+
+The chart is published as an OCI artifact to GitHub Container Registry on every tagged release.
+
+### Install from OCI registry
+
+```bash
+helm install backup-operator oci://ghcr.io/behrangalavi/charts/backup-operator \
+  -n backup --create-namespace \
+  --set agePublicKeys="age1qx...your-recipient"
+```
+
+### Upgrade
+
+```bash
+helm upgrade backup-operator oci://ghcr.io/behrangalavi/charts/backup-operator \
+  -n backup --reuse-values
+```
+
+### Install from source
+
+```bash
+git clone https://github.com/behrangalavi/backup-operator.git
+helm install backup-operator ./backup-operator/charts/backup-operator \
+  -n backup --create-namespace \
+  --set agePublicKeys="age1qx...your-recipient"
+```
+
+### Key Helm values
+
+| Value | Default | Description |
+|---|---|---|
+| `agePublicKeys` | (required) | Newline-separated age public keys for encryption |
+| `config.defaultSchedule` | `0 2 * * *` | Default cron schedule for new sources |
+| `config.runTimeoutSeconds` | `3600` | Max seconds per backup run |
+| `config.defaultRetentionDays` | `30` | Days to keep backups (0 = forever) |
+| `config.defaultMinKeep` | `3` | Minimum backups to keep regardless of age |
+| `ui.enabled` | `false` | Enable the management UI on port 8081 |
+| `workerResources.limits.cpu` | `2000m` | CPU limit for worker pods |
+| `workerResources.limits.memory` | `2Gi` | Memory limit for worker pods |
+| `networkPolicy.enabled` | `false` | Restrict operator egress to known ports |
+| `image.digest` | (empty) | Pin image by SHA256 digest for supply-chain security |
+
+See `charts/backup-operator/values.yaml` for the full list.
 
 ---
 
@@ -358,13 +414,13 @@ stringData:
 
 ## The Dashboard UI
 
-The operator pod can serve a read-only HTML/JSON dashboard listing targets, run history, and offering downloads of encrypted dumps and analyzer metadata.
+The operator ships a full management UI — a single-page application (SPA) with CRUD operations, live updates, and a settings wizard. No build step, no external dependencies.
 
 ### Enable it
 
 ```bash
-helm upgrade backup-operator ./charts/backup-operator -n backup \
-  --reuse-values --set ui.enabled=true
+helm upgrade backup-operator oci://ghcr.io/behrangalavi/charts/backup-operator \
+  -n backup --reuse-values --set ui.enabled=true
 ```
 
 This adds a second container port (default `8081`) and a Service port. The chart never creates an Ingress — bring your own.
@@ -378,20 +434,81 @@ kubectl -n backup port-forward svc/backup-operator 8081:8081
 
 ### What you get
 
-- **Index (`/`):** one row per source Secret, with last run timestamp, encrypted size, schema status (stable/changed), anomaly count, destinations.
-- **Target detail (`/target/<name>`):** full run history table — every `meta.json` parsed and presented chronologically with Δ size, schema fingerprint diff, table-by-table row deltas, and download buttons per run.
-- **Downloads:**
-  - `.age` — encrypted dump, streamed pass-through. Decrypt locally with your `age.key` (the operator never holds the private key).
-  - `.json` — unencrypted analyzer metadata sidecar.
-- **JSON API:**
-  - `GET /api/targets` — overview as JSON
-  - `GET /api/targets/{name}/runs` — full run history for one target
+- **Dashboard (`#/`):** overview with stats cards (source count, healthy/failed, running jobs), target table with status badges, manual trigger button per target.
+- **Sources (`#/sources`):** card grid of all backup sources. Create, edit, and delete database backup sources via forms. Supports PostgreSQL, MySQL, and MongoDB with all configuration options.
+- **Destinations (`#/destinations`):** manage storage destinations (SFTP, S3). Create, edit, and delete with full field support. Sensitive fields (passwords, SSH keys) are masked in API responses.
+- **Jobs (`#/jobs`):** running and recent backup jobs with status and timing.
+- **Target detail (`#/target/<name>`):** full run history table — timestamps, sizes, SHA256 checksums, schema status, anomaly counts, and download buttons per run.
+- **Settings (`#/settings`):** configuration wizard (see [Settings Wizard](#settings-wizard) below).
+- **Live updates:** Server-Sent Events (SSE) push changes to all connected browsers in real time — no polling, no page refresh.
+- **Downloads:** `.age` (encrypted dump, pass-through) and `.json` (analyzer metadata).
+
+### REST API
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/targets` | List all backup sources with latest run status |
+| `GET` | `/api/targets/{name}/runs` | Run history for one target |
+| `GET` | `/api/sources/{name}` | Get source configuration |
+| `POST` | `/api/sources` | Create a new source Secret |
+| `PUT` | `/api/sources/{name}` | Update source configuration |
+| `DELETE` | `/api/sources/{name}` | Delete source (verifies role label) |
+| `GET` | `/api/destinations` | List all destinations |
+| `POST` | `/api/destinations` | Create a new destination Secret |
+| `GET` | `/api/destinations/{name}` | Get destination configuration |
+| `PUT` | `/api/destinations/{name}` | Update destination |
+| `DELETE` | `/api/destinations/{name}` | Delete destination (verifies role label) |
+| `POST` | `/api/trigger/{target}` | Trigger a manual backup run |
+| `GET` | `/api/jobs` | List running/recent jobs |
+| `GET` | `/api/settings` | Get current operator settings |
+| `PUT` | `/api/settings` | Update operator settings |
+| `GET` | `/api/settings/export` | Download settings as `values.yaml` |
+| `GET` | `/api/events` | SSE stream for live updates |
 
 ### Security model
 
-- **Read-only.** No buttons trigger runs, suspend CronJobs, edit secrets, or restore. The operator's RBAC is unchanged.
-- **No built-in auth.** Cluster-internal use is the assumed default. To expose externally, put `oauth2-proxy`, an Ingress with basic-auth annotation, or your platform's SSO in front of the Service.
+- **Role-verified CRUD.** All Secret operations (GET, UPDATE, DELETE) verify the target Secret carries the expected `backup.mogenius.io/role` label before proceeding. Non-backup Secrets cannot be accessed or deleted through the API.
+- **No built-in auth.** Cluster-internal use is the assumed default. To expose externally, put `oauth2-proxy`, an Ingress with basic-auth annotation, or your platform's SSO in front of the Service (see CLAUDE.md §3.1 for examples).
+- **Sensitive data masked.** Passwords, SSH keys, and access keys are returned as `***` in API responses. They are only written, never read back.
 - **Pass-through downloads.** The operator streams encrypted bytes from the destination to the client without decrypting. The age private key never enters the cluster.
+
+---
+
+## Settings Wizard
+
+The Settings Wizard (`#/settings`) provides a guided 4-step form to configure the operator at runtime — no `helm upgrade` needed.
+
+### Steps
+
+| Step | What you configure |
+|---|---|
+| 1. Schedule & Timeout | Default cron schedule, run timeout |
+| 2. Retention Policy | Retention days, minimum keep, temp directory, temp dir size |
+| 3. Worker Resources | CPU/Memory limits and requests for backup worker pods |
+| 4. Review & Apply | Summary of all settings, save button |
+
+### How it works
+
+Settings are stored in a Kubernetes ConfigMap (`{release}-settings`), created automatically when `ui.enabled=true`. The wizard reads and writes this ConfigMap via the API.
+
+```
+Helm values.yaml → ConfigMap (install-time defaults)
+                         ↕
+                    UI Settings Wizard (runtime overrides)
+                         ↓
+                    Export values.yaml → Git → helm upgrade (GitOps)
+```
+
+### Export for GitOps
+
+Click **"Export values.yaml"** to download the current settings as a Helm-compatible values file. Commit it to your repo and apply with:
+
+```bash
+helm upgrade backup-operator oci://ghcr.io/behrangalavi/charts/backup-operator \
+  -n backup -f values.yaml
+```
+
+This gives you the best of both worlds: interactive UI for quick tuning and declarative GitOps for controlled rollouts.
 
 ---
 
@@ -598,6 +715,47 @@ Restore (offline):
 - **Back up the private key separately.** Paper, hardware token, password manager, anything but the cluster. Losing it means losing every backup it can decrypt.
 - **Rotate by adding, then retiring.** Add a new recipient to `agePublicKeys`, run a few backups (so they're encrypted to both keys), then remove the old recipient. New recipients can decrypt going forward; old recipients still work for older artifacts.
 - **For multi-region recovery, distribute multiple public keys to the cluster** and keep each region's private key in that region's safe.
+
+---
+
+## CI/CD
+
+Two GitHub Actions workflows automate testing and releasing. See `.github/workflows/` for the full YAML.
+
+### CI (`ci.yaml`)
+
+Runs on every push and pull request to `main`:
+
+| Job | Steps |
+|---|---|
+| `test` | `go build ./...` → `go test ./...` → `go vet ./...` |
+| `helm-lint` | `helm lint charts/backup-operator --set agePublicKeys="age1test"` |
+
+### Release (`release.yaml`)
+
+Triggered by pushing a semver tag (`v*`):
+
+1. Run `go test` to gate the release.
+2. Build a multi-arch Docker image (`linux/amd64` + `linux/arm64`).
+3. Push the image to `ghcr.io/behrangalavi/backup-operator:<version>` and `:latest`.
+4. Package the Helm chart with the matching version.
+5. Push the chart to `oci://ghcr.io/behrangalavi/charts/backup-operator`.
+
+### Creating a release
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+# GitHub Actions builds + publishes automatically
+```
+
+After the workflow completes, users can install with:
+
+```bash
+helm install backup-operator oci://ghcr.io/behrangalavi/charts/backup-operator \
+  -n backup --create-namespace \
+  --set agePublicKeys="age1qx...your-recipient"
+```
 
 ---
 

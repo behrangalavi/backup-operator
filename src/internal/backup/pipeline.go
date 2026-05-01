@@ -48,13 +48,14 @@ func (NoopEventEmitter) Emit(string, string, string) {}
 //   5. Compare with previous meta to populate analyzer metrics.
 //   6. Apply retention policy per destination (best-effort, never fails the run).
 type Pipeline struct {
-	encryptor    crypto.Encryptor
-	analyzer     analyzer.Analyzer
-	tempDir      string
-	logger       logr.Logger
-	destProvider DestinationProvider
-	defaults     RetentionPolicy
-	events       EventEmitter
+	encryptor      crypto.Encryptor
+	analyzer       analyzer.Analyzer
+	tempDir        string
+	logger         logr.Logger
+	destProvider   DestinationProvider
+	defaults       RetentionPolicy
+	events         EventEmitter
+	maxConcurrency int
 }
 
 // DestinationProvider returns the current set of destinations at run time.
@@ -72,13 +73,14 @@ func NewPipeline(
 	logger logr.Logger,
 ) *Pipeline {
 	return &Pipeline{
-		encryptor:    enc,
-		analyzer:     an,
-		tempDir:      tempDir,
-		logger:       logger,
-		destProvider: dp,
-		defaults:     defaults,
-		events:       NoopEventEmitter{},
+		encryptor:      enc,
+		analyzer:       an,
+		tempDir:        tempDir,
+		logger:         logger,
+		destProvider:   dp,
+		defaults:       defaults,
+		events:         NoopEventEmitter{},
+		maxConcurrency: defaultMaxConcurrency,
 	}
 }
 
@@ -94,13 +96,14 @@ func NewPipelineWithEvents(
 	events EventEmitter,
 ) *Pipeline {
 	return &Pipeline{
-		encryptor:    enc,
-		analyzer:     an,
-		tempDir:      tempDir,
-		logger:       logger,
-		destProvider: dp,
-		defaults:     defaults,
-		events:       events,
+		encryptor:      enc,
+		analyzer:       an,
+		tempDir:        tempDir,
+		logger:         logger,
+		destProvider:   dp,
+		defaults:       defaults,
+		events:         events,
+		maxConcurrency: defaultMaxConcurrency,
 	}
 }
 
@@ -302,8 +305,9 @@ func (p *Pipeline) dumpToFile(ctx context.Context, d dumper.Dumper, dumpFile str
 }
 
 const (
-	uploadMaxRetries = 3
-	uploadBaseDelay  = 2 * time.Second
+	uploadMaxRetries      = 3
+	uploadBaseDelay       = 2 * time.Second
+	defaultMaxConcurrency = 4
 )
 
 func (p *Pipeline) fanOut(
@@ -318,10 +322,13 @@ func (p *Pipeline) fanOut(
 		mu      sync.Mutex
 		success int
 	)
+	sem := make(chan struct{}, p.maxConcurrency)
 	for _, dest := range dests {
 		wg.Add(1)
 		go func(d *secrets.Destination) {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			err := p.uploadWithRetry(ctx, d, target, dumpFile, objectPath, metaPath, meta, log)
 			if err != nil {
 				log.Error(err, "destination upload failed", "destination", d.Name)

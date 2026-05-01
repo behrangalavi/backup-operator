@@ -84,6 +84,47 @@ func TestParseSource_DestinationAllow(t *testing.T) {
 	}
 }
 
+func TestParseSource_ThresholdDefaults(t *testing.T) {
+	src, err := ParseSource(newSourceSecret(nil), "0 2 * * *")
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if src.RowDropThreshold != -1 {
+		t.Errorf("RowDropThreshold default should be -1, got %v", src.RowDropThreshold)
+	}
+	if src.SizeDropThreshold != -1 {
+		t.Errorf("SizeDropThreshold default should be -1, got %v", src.SizeDropThreshold)
+	}
+}
+
+func TestParseSource_ThresholdExplicit(t *testing.T) {
+	src, err := ParseSource(newSourceSecret(map[string]string{
+		labels.AnnotationRowDropThreshold:  "0.3",
+		labels.AnnotationSizeDropThreshold: "0.7",
+	}), "0 2 * * *")
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if src.RowDropThreshold != 0.3 {
+		t.Errorf("RowDropThreshold = %v, want 0.3", src.RowDropThreshold)
+	}
+	if src.SizeDropThreshold != 0.7 {
+		t.Errorf("SizeDropThreshold = %v, want 0.7", src.SizeDropThreshold)
+	}
+}
+
+func TestParseSource_ThresholdTypoFallsBack(t *testing.T) {
+	src, err := ParseSource(newSourceSecret(map[string]string{
+		labels.AnnotationRowDropThreshold: "not-a-number",
+	}), "0 2 * * *")
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if src.RowDropThreshold != -1 {
+		t.Errorf("RowDropThreshold should fall back to -1 on typo, got %v", src.RowDropThreshold)
+	}
+}
+
 func TestSource_AllowsDestination(t *testing.T) {
 	cases := []struct {
 		allow []string

@@ -13,6 +13,7 @@ import (
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
@@ -94,6 +95,7 @@ func main() {
 		LeaderElectionID:              leaderElectionID,
 		LeaderElectionNamespace:       config.GetValue("POD_NAMESPACE"),
 		LeaderElectionReleaseOnCancel: true,
+		HealthProbeBindAddress:        ":8082",
 	}
 	if watchNs != "" {
 		mgrOpts.Cache = cache.Options{DefaultNamespaces: map[string]cache.Config{watchNs: {}}}
@@ -101,6 +103,9 @@ func main() {
 
 	mgr, err := ctrl.NewManager(cfg, mgrOpts)
 	assert.NoError(err, "failed to create controller manager")
+
+	assert.NoError(mgr.AddHealthzCheck("healthz", healthz.Ping), "failed to add healthz check")
+	assert.NoError(mgr.AddReadyzCheck("readyz", healthz.Ping), "failed to add readyz check")
 
 	runTimeoutSec, _ := strconv.Atoi(config.GetValue("RUN_TIMEOUT_SECONDS"))
 

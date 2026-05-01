@@ -65,11 +65,26 @@ spec:
             - name: metrics
               containerPort: 8080
               protocol: TCP
+            - name: health
+              containerPort: 8082
+              protocol: TCP
             {{- if .Values.ui.enabled }}
             - name: ui
               containerPort: {{ .Values.ui.port }}
               protocol: TCP
             {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

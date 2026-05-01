@@ -20,6 +20,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+const defaultRefreshConcurrency = 4
+
 // MetricsRefresher periodically rebuilds the operator's Prometheus gauges from
 // the latest meta.json sidecar found at each destination. Worker pods are
 // short-lived so Prometheus cannot scrape them in time; this aggregator is the
@@ -130,36 +132,49 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 	//                even if it represents a failed run
 	//   - success:   dictates dump_size, table_count, last_success_timestamp —
 	//                fields that only make sense when a real artifact exists
-	var newest, success *meta.MetaFile
-	var newestTS, successTS time.Time
+	var (
+		newest, success        *meta.MetaFile
+		newestTS, successTS    time.Time
+		resultMu               sync.Mutex
+		wg                     sync.WaitGroup
+	)
+	sem := make(chan struct{}, defaultRefreshConcurrency)
 	for _, d := range allowed {
-		st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, r.Logger)
-		if err != nil {
-			r.Logger.V(1).Info("storage init failed; treating destination as failing",
-				"target", src.TargetName, "destination", d.Name, "err", err.Error())
-			metrics.SetDestinationFailed(src.TargetName, d.Name, true)
-			continue
-		}
-		m, ts, found := loadLatestMeta(ctx, st, src.TargetName)
-		if !found {
-			// Could not list / no meta yet. Don't claim a failure — a brand-new
-			// source will land here. We simply leave per-destination state alone.
-			continue
-		}
-		// Storage is reachable since we just read a meta from it.
-		metrics.SetDestinationFailed(src.TargetName, d.Name, false)
-		if !m.IsFailure() {
-			metrics.SetLastSuccess(src.TargetName, d.Name, ts)
-		}
-		if newest == nil || ts.After(newestTS) {
-			newest = m
-			newestTS = ts
-		}
-		if !m.IsFailure() && (success == nil || ts.After(successTS)) {
-			success = m
-			successTS = ts
-		}
+		wg.Add(1)
+		go func(d *secrets.Destination) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, r.Logger)
+			if err != nil {
+				r.Logger.V(1).Info("storage init failed; treating destination as failing",
+					"target", src.TargetName, "destination", d.Name, "err", err.Error())
+				metrics.SetDestinationFailed(src.TargetName, d.Name, true)
+				return
+			}
+			m, ts, found := loadLatestMeta(ctx, st, src.TargetName)
+			if !found {
+				return
+			}
+			metrics.SetDestinationFailed(src.TargetName, d.Name, false)
+			if !m.IsFailure() {
+				metrics.SetLastSuccess(src.TargetName, d.Name, ts)
+			}
+
+			resultMu.Lock()
+			if newest == nil || ts.After(newestTS) {
+				newest = m
+				newestTS = ts
+			}
+			if !m.IsFailure() && (success == nil || ts.After(successTS)) {
+				success = m
+				successTS = ts
+			}
+			resultMu.Unlock()
+		}(d)
 	}
+	wg.Wait()
 
 	if newest == nil {
 		// No data anywhere yet — leave gauges absent. lastRunStatus only

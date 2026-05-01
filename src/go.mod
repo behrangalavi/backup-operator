@@ -12,7 +12,6 @@ require (
 	github.com/go-logr/logr v1.4.3
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/jackc/pgx/v5 v5.7.2
-	github.com/netresearch/go-cron v0.14.0
 	github.com/pkg/sftp v1.13.7
 	github.com/prometheus/client_golang v1.23.2
 	go.mongodb.org/mongo-driver/v2 v2.0.0

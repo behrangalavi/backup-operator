@@ -129,7 +129,7 @@ func (d *k8sData) target(ctx context.Context, name string) (*targetDetail, error
 	if err != nil {
 		return nil, err
 	}
-	dests := filterDestinations(src, allDests)
+	dests := secrets.FilterDestinations(src, allDests)
 	if len(dests) == 0 {
 		return &targetDetail{Source: src, Destinations: nil, Runs: nil}, nil
 	}
@@ -224,13 +224,5 @@ func destinationsAllowedFor(src *secrets.Source, all []*secrets.Destination) []s
 	return out
 }
 
-func filterDestinations(src *secrets.Source, all []*secrets.Destination) []*secrets.Destination {
-	out := make([]*secrets.Destination, 0, len(all))
-	for _, d := range all {
-		if src.AllowsDestination(d.Name) {
-			out = append(out, d)
-		}
-	}
-	return out
-}
+
 

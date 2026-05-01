@@ -1,10 +1,9 @@
-package metricStore
+package metrics
 
 import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 // All metrics are scoped to backup target (db) and where useful, destination.
@@ -123,7 +122,7 @@ var (
 	)
 )
 
-func Register(registry ctrlmetrics.RegistererGatherer) {
+func Register(registry prometheus.Registerer) {
 	registry.MustRegister(
 		dumpDurationSeconds,
 		uploadDurationSeconds,

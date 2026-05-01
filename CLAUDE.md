@@ -174,8 +174,9 @@ src/
 ├── internal/
 │   ├── backup/          # Pipeline (worker only): stats → dump → encrypt → fan-out → retention
 │   ├── labels/          # Constants for backup.mogenius.io/* labels & annotations
-│   └── secrets/         # Parses Secrets into Source/Destination configs
-├── metricStore/         # Prometheus metrics — semantic signals for Alertmanager
+│   ├── meta/            # MetaFile type — deserialized sidecar JSON (shared across pipeline, refresher, UI)
+│   └── secrets/         # Parses Secrets into Source/Destination configs; FilterDestinations helper
+├── metrics/             # Prometheus metrics — semantic signals for Alertmanager
 └── storage/             # Upload destination abstraction
     ├── factory/         # Creates the right Storage from storage-type label
     ├── sftp/            # Hetzner Storage Box and generic SFTP
@@ -789,6 +790,10 @@ The notable ones, with the reasoning that future readers should preserve.
 - **Three binaries, one image.** Two-binary distribution per service is awkward. A single image with two `cmd/` entrypoints means one CI build, one registry tag, one version to track. The 30 MB difference between the operator binary and the worker binary is irrelevant.
 
 - **Restore is a separate binary.** It runs on the operator's machine, never in cluster — that's the only place the private key should ever be. Bundling it into the operator image would tempt people to mount the private key in the cluster "for convenience," which would defeat the entire encryption design.
+
+- **Canonical `MetaFile` in `internal/meta`, not per-consumer copies.** The pipeline, metrics refresher, and UI all deserialise the same `*.meta.json` sidecar. Three private structs drifted independently (different field subsets, no shared methods). Consolidating into `internal/meta.MetaFile` gives them `IsFailure()` and `ParsedTimestamp()` for free and eliminates a class of serialisation-mismatch bugs.
+
+- **`metrics` package, not `metricStore`.** Go convention is lowercase single-word package names. The rename also narrows `Register()` from `ctrlmetrics.RegistererGatherer` to `prometheus.Registerer`, decoupling the metrics layer from controller-runtime so it can be reused in non-operator contexts (e.g. a future standalone worker metrics endpoint).
 
 - **Operator-side metric aggregation, not Pushgateway.** Backup metrics are produced by short-lived worker pods that Prometheus cannot scrape in time. Three options were considered: (a) Pushgateway, (b) operator aggregates from `meta.json`, (c) drop semantic alerts and rely on kube-state-metrics for Job status. We picked (b): the operator's `MetricsRefresher` controller polls each destination's latest meta.json and writes the result into the operator's local registry. Pushgateway adds a stateful component with known counter-staleness footguns; (c) sacrifices the project's core differentiator (semantic alerts on dump *content*). Aggregating from storage reuses the artifacts we already produce and keeps the system stateless apart from the operator pod itself. Counter-style metrics (`runs_total`, `anomalies_total`) are converted to Gauges (`last_run_status`, `last_run_anomalies`) because monotonic counters require a continuously running producer; reconstructing them from storage would require summing across the retention window and break whenever retention prunes a run.
 

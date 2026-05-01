@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"backup-operator/internal/secrets"
-	"backup-operator/metricStore"
+	"backup-operator/metrics"
 	"backup-operator/storage"
 	storageFactory "backup-operator/storage/factory"
 
@@ -47,13 +47,13 @@ func (p *Pipeline) applyRetention(
 		st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, log)
 		if err != nil {
 			log.Error(err, "retention: init storage", "destination", dest.Name)
-			metricStore.IncRetentionFailure(target, dest.Name)
+			metrics.IncRetentionFailure(target, dest.Name)
 			continue
 		}
 		objs, err := st.List(ctx, target+"/")
 		if err != nil {
 			log.Error(err, "retention: list", "destination", dest.Name)
-			metricStore.IncRetentionFailure(target, dest.Name)
+			metrics.IncRetentionFailure(target, dest.Name)
 			continue
 		}
 
@@ -72,10 +72,10 @@ func (p *Pipeline) applyRetention(
 		for _, v := range victims {
 			if err := st.Delete(ctx, v); err != nil {
 				log.Error(err, "retention: delete", "destination", dest.Name, "path", v)
-				metricStore.IncRetentionFailure(target, dest.Name)
+				metrics.IncRetentionFailure(target, dest.Name)
 				continue
 			}
-			metricStore.IncRetentionDeleted(target, dest.Name, classifyKind(v))
+			metrics.IncRetentionDeleted(target, dest.Name, classifyKind(v))
 		}
 	}
 }

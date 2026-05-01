@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -17,8 +18,9 @@ import (
 	"backup-operator/crypto"
 	"backup-operator/dumper"
 	dumperFactory "backup-operator/dumper/factory"
+	"backup-operator/internal/meta"
 	"backup-operator/internal/secrets"
-	"backup-operator/metricStore"
+	"backup-operator/metrics"
 	"backup-operator/storage"
 	storageFactory "backup-operator/storage/factory"
 
@@ -93,11 +95,11 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 
 	// Resolve destinations up-front so we can persist a failure-meta even
 	// when the dump itself fails.
-	dests := filterDestinations(p.destProvider.Destinations(), src)
+	dests := secrets.FilterDestinations(src, p.destProvider.Destinations())
 
 	d, err := dumperFactory.NewDumper(src.DBType, src.Config, log)
 	if err != nil {
-		metricStore.SetLastRunStatus(src.TargetName, false)
+		metrics.SetLastRunStatus(src.TargetName, false)
 		p.recordFailure(ctx, dests, src, timestamp, "dumper-init", err, log)
 		return fmt.Errorf("dumper: %w", err)
 	}
@@ -119,20 +121,20 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	dumpStart := time.Now()
 	encryptedSize, err := p.dumpToFile(ctx, d, dumpFile)
 	dumpDuration := time.Since(dumpStart)
-	metricStore.ObserveDumpDuration(src.TargetName, src.DBType, dumpDuration)
+	metrics.ObserveDumpDuration(src.TargetName, src.DBType, dumpDuration)
 
 	if err != nil {
-		metricStore.SetLastRunStatus(src.TargetName, false)
+		metrics.SetLastRunStatus(src.TargetName, false)
 		_ = os.Remove(dumpFile)
 		p.recordFailure(ctx, dests, src, timestamp, "dump", err, log)
 		return fmt.Errorf("dump: %w", err)
 	}
 	defer os.Remove(dumpFile)
 
-	metricStore.SetDumpSize(src.TargetName, encryptedSize)
+	metrics.SetDumpSize(src.TargetName, encryptedSize)
 
 	if len(dests) == 0 {
-		metricStore.SetLastRunStatus(src.TargetName, false)
+		metrics.SetLastRunStatus(src.TargetName, false)
 		// No destinations to write a failure-meta to; only logs/metrics
 		// will record this.
 		return errors.New("no destinations configured")
@@ -152,11 +154,11 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 
 	successCount := p.fanOut(ctx, dests, src.TargetName, dumpFile, objectPath, metaPath, meta, log)
 	if successCount == 0 {
-		metricStore.SetLastRunStatus(src.TargetName, false)
+		metrics.SetLastRunStatus(src.TargetName, false)
 		p.recordFailure(ctx, dests, src, timestamp, "upload", errors.New("all destination uploads failed"), log)
 		return errors.New("all destination uploads failed")
 	}
-	metricStore.SetLastRunStatus(src.TargetName, true)
+	metrics.SetLastRunStatus(src.TargetName, true)
 	log.Info("backup completed", "destinations_succeeded", successCount, "destinations_total", len(dests))
 
 	// Retention runs after a successful upload so old artifacts are pruned
@@ -193,7 +195,7 @@ func (p *Pipeline) recordFailure(
 				log.V(1).Info("failure-meta: init storage failed", "destination", d.Name, "err", err.Error())
 				return
 			}
-			if err := st.Upload(ctx, metaPath, bytesReader(body)); err != nil {
+			if err := st.Upload(ctx, metaPath, bytes.NewReader(body)); err != nil {
 				log.V(1).Info("failure-meta: upload failed", "destination", d.Name, "err", err.Error())
 				return
 			}
@@ -255,11 +257,11 @@ func (p *Pipeline) fanOut(
 			err := p.uploadOne(ctx, d, target, dumpFile, objectPath, metaPath, meta)
 			if err != nil {
 				log.Error(err, "destination upload failed", "destination", d.Name)
-				metricStore.SetDestinationFailed(target, d.Name, true)
+				metrics.SetDestinationFailed(target, d.Name, true)
 				return
 			}
-			metricStore.SetDestinationFailed(target, d.Name, false)
-			metricStore.SetLastSuccess(target, d.Name, time.Now())
+			metrics.SetDestinationFailed(target, d.Name, false)
+			metrics.SetLastSuccess(target, d.Name, time.Now())
 			mu.Lock()
 			success++
 			mu.Unlock()
@@ -290,9 +292,9 @@ func (p *Pipeline) uploadOne(
 	if err := st.Upload(ctx, objectPath, dump); err != nil {
 		return fmt.Errorf("upload dump: %w", err)
 	}
-	metricStore.ObserveUploadDuration(target, d.Name, d.StorageType, time.Since(start))
+	metrics.ObserveUploadDuration(target, d.Name, d.StorageType, time.Since(start))
 
-	if err := st.Upload(ctx, metaPath, bytesReader(meta)); err != nil {
+	if err := st.Upload(ctx, metaPath, bytes.NewReader(meta)); err != nil {
 		return fmt.Errorf("upload meta: %w", err)
 	}
 	return nil
@@ -321,11 +323,11 @@ func (p *Pipeline) loadPreviousStats(ctx context.Context, dests []*secrets.Desti
 			if err != nil {
 				continue
 			}
-			var m metaFile
+			var m meta.MetaFile
 			if err := json.Unmarshal(raw, &m); err != nil {
 				continue
 			}
-			if m.Status == "failed" {
+			if m.IsFailure() {
 				continue
 			}
 			return m.Stats, m.EncryptedSizeBytes
@@ -353,24 +355,12 @@ func sortedMetaPaths(objs []storage.Object) []string {
 	return out
 }
 
-type metaFile struct {
-	Target             string           `json:"target"`
-	Timestamp          string           `json:"timestamp"`
-	DBType             string           `json:"dbType"`
-	Status             string           `json:"status,omitempty"`
-	Error              string           `json:"error,omitempty"`
-	Phase              string           `json:"phase,omitempty"`
-	EncryptedSizeBytes int64            `json:"encryptedSizeBytes,omitempty"`
-	Stats              *dumper.Stats    `json:"stats,omitempty"`
-	Report             *analyzer.Report `json:"report,omitempty"`
-}
-
 func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report, size int64, timestamp string) []byte {
-	m := metaFile{
+	m := meta.MetaFile{
 		Target:             src.TargetName,
 		Timestamp:          timestamp,
 		DBType:             src.DBType,
-		Status:             "success",
+		Status:             meta.StatusSuccess,
 		EncryptedSizeBytes: size,
 		Stats:              stats,
 		Report:             report,
@@ -387,11 +377,11 @@ func failureMetaJSON(src *secrets.Source, timestamp, phase string, runErr error)
 	if runErr != nil {
 		msg = runErr.Error()
 	}
-	m := metaFile{
+	m := meta.MetaFile{
 		Target:    src.TargetName,
 		Timestamp: timestamp,
 		DBType:    src.DBType,
-		Status:    "failed",
+		Status:    meta.StatusFailed,
 		Error:     msg,
 		Phase:     phase,
 	}
@@ -404,16 +394,16 @@ func emitAnalyzerMetrics(target string, r *analyzer.Report) {
 		return
 	}
 	if r.SizeChangeRatio > 0 {
-		metricStore.SetDumpSizeChangeRatio(target, r.SizeChangeRatio)
+		metrics.SetDumpSizeChangeRatio(target, r.SizeChangeRatio)
 	}
-	metricStore.SetSchemaChanged(target, r.SchemaChanged)
+	metrics.SetSchemaChanged(target, r.SchemaChanged)
 	if r.Current != nil {
-		metricStore.SetTableCount(target, len(r.Current.Tables))
+		metrics.SetTableCount(target, len(r.Current.Tables))
 		for _, t := range r.Current.Tables {
-			metricStore.SetTableRowCount(target, t.Name, t.RowCount)
+			metrics.SetTableRowCount(target, t.Name, t.RowCount)
 		}
 	}
-	metricStore.SetLastRunAnomalies(target, len(r.Anomalies))
+	metrics.SetLastRunAnomalies(target, len(r.Anomalies))
 }
 
 func buildObjectPath(target, timestamp, ext string) string {
@@ -430,30 +420,4 @@ func buildObjectPath(target, timestamp, ext string) string {
 	)
 }
 
-type byteReader struct{ b []byte }
 
-func (r *byteReader) Read(p []byte) (int, error) {
-	if len(r.b) == 0 {
-		return 0, io.EOF
-	}
-	n := copy(p, r.b)
-	r.b = r.b[n:]
-	return n, nil
-}
-
-func bytesReader(b []byte) io.Reader { return &byteReader{b: b} }
-
-// filterDestinations applies the source's optional destination allow-list.
-// An empty allow-list means fan out to every discovered destination.
-func filterDestinations(all []*secrets.Destination, src *secrets.Source) []*secrets.Destination {
-	if len(src.DestinationAllow) == 0 {
-		return all
-	}
-	out := make([]*secrets.Destination, 0, len(all))
-	for _, d := range all {
-		if src.AllowsDestination(d.Name) {
-			out = append(out, d)
-		}
-	}
-	return out
-}

@@ -8,11 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"backup-operator/analyzer"
-	"backup-operator/dumper"
 	"backup-operator/internal/labels"
+	"backup-operator/internal/meta"
 	"backup-operator/internal/secrets"
-	"backup-operator/metricStore"
+	"backup-operator/metrics"
 	"backup-operator/storage"
 	storageFactory "backup-operator/storage/factory"
 
@@ -37,23 +36,6 @@ type MetricsRefresher struct {
 	mu             sync.Mutex
 	trackedTargets map[string]bool
 }
-
-// metaFile mirrors the unencrypted sidecar JSON the worker writes next to
-// every dump. The pipeline writes one of these for both successful and failed
-// runs — distinguish via the Status field. Kept as a private type here
-// (rather than imported from the pipeline package) so the controllers package
-// does not depend on internal/backup.
-type metaFile struct {
-	Target             string           `json:"target"`
-	Timestamp          string           `json:"timestamp"`
-	DBType             string           `json:"dbType"`
-	Status             string           `json:"status,omitempty"` // "success" | "failed" | "" (legacy = success)
-	EncryptedSizeBytes int64            `json:"encryptedSizeBytes,omitempty"`
-	Stats              *dumper.Stats    `json:"stats,omitempty"`
-	Report             *analyzer.Report `json:"report,omitempty"`
-}
-
-func (m *metaFile) succeeded() bool { return m.Status != "failed" }
 
 // Start runs the refresh loop until ctx is cancelled. It satisfies
 // manager.Runnable so the controller-runtime Manager owns its lifecycle.
@@ -102,7 +84,7 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 	r.mu.Lock()
 	for prev := range r.trackedTargets {
 		if !current[prev] {
-			metricStore.DeleteTargetMetrics(prev)
+			metrics.DeleteTargetMetrics(prev)
 		}
 	}
 	r.trackedTargets = current
@@ -141,26 +123,21 @@ func (r *MetricsRefresher) listSecrets(ctx context.Context) ([]corev1.Secret, []
 }
 
 func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Source, all []*secrets.Destination) {
-	allowed := make([]*secrets.Destination, 0, len(all))
-	for _, d := range all {
-		if src.AllowsDestination(d.Name) {
-			allowed = append(allowed, d)
-		}
-	}
+	allowed := secrets.FilterDestinations(src, all)
 
 	// We track two independent "best" metas across destinations:
 	//   - newest:    dictates last_run_status / last_run_anomalies / size_change_ratio
 	//                even if it represents a failed run
 	//   - success:   dictates dump_size, table_count, last_success_timestamp —
 	//                fields that only make sense when a real artifact exists
-	var newest, success *metaFile
+	var newest, success *meta.MetaFile
 	var newestTS, successTS time.Time
 	for _, d := range allowed {
 		st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, r.Logger)
 		if err != nil {
 			r.Logger.V(1).Info("storage init failed; treating destination as failing",
 				"target", src.TargetName, "destination", d.Name, "err", err.Error())
-			metricStore.SetDestinationFailed(src.TargetName, d.Name, true)
+			metrics.SetDestinationFailed(src.TargetName, d.Name, true)
 			continue
 		}
 		m, ts, found := loadLatestMeta(ctx, st, src.TargetName)
@@ -170,15 +147,15 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 			continue
 		}
 		// Storage is reachable since we just read a meta from it.
-		metricStore.SetDestinationFailed(src.TargetName, d.Name, false)
-		if m.succeeded() {
-			metricStore.SetLastSuccess(src.TargetName, d.Name, ts)
+		metrics.SetDestinationFailed(src.TargetName, d.Name, false)
+		if !m.IsFailure() {
+			metrics.SetLastSuccess(src.TargetName, d.Name, ts)
 		}
 		if newest == nil || ts.After(newestTS) {
 			newest = m
 			newestTS = ts
 		}
-		if m.succeeded() && (success == nil || ts.After(successTS)) {
+		if !m.IsFailure() && (success == nil || ts.After(successTS)) {
 			success = m
 			successTS = ts
 		}
@@ -190,26 +167,26 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 		return
 	}
 
-	metricStore.SetLastRunStatus(src.TargetName, newest.succeeded())
+	metrics.SetLastRunStatus(src.TargetName, !newest.IsFailure())
 	if newest.Report != nil {
 		if newest.Report.SizeChangeRatio > 0 {
-			metricStore.SetDumpSizeChangeRatio(src.TargetName, newest.Report.SizeChangeRatio)
+			metrics.SetDumpSizeChangeRatio(src.TargetName, newest.Report.SizeChangeRatio)
 		}
-		metricStore.SetSchemaChanged(src.TargetName, newest.Report.SchemaChanged)
-		metricStore.SetLastRunAnomalies(src.TargetName, len(newest.Report.Anomalies))
+		metrics.SetSchemaChanged(src.TargetName, newest.Report.SchemaChanged)
+		metrics.SetLastRunAnomalies(src.TargetName, len(newest.Report.Anomalies))
 	} else {
 		// A failed run won't have a report. Keep these gauges sticky on their
 		// last known good values rather than zeroing them — a transient
 		// failure should not silence schema/size alerts.
-		metricStore.SetLastRunAnomalies(src.TargetName, 0)
+		metrics.SetLastRunAnomalies(src.TargetName, 0)
 	}
 
 	if success != nil {
-		metricStore.SetDumpSize(src.TargetName, success.EncryptedSizeBytes)
+		metrics.SetDumpSize(src.TargetName, success.EncryptedSizeBytes)
 		if success.Stats != nil {
-			metricStore.SetTableCount(src.TargetName, len(success.Stats.Tables))
+			metrics.SetTableCount(src.TargetName, len(success.Stats.Tables))
 			for _, t := range success.Stats.Tables {
-				metricStore.SetTableRowCount(src.TargetName, t.Name, t.RowCount)
+				metrics.SetTableRowCount(src.TargetName, t.Name, t.RowCount)
 			}
 		}
 	}
@@ -218,7 +195,7 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 // loadLatestMeta fetches and parses the most recent *.meta.json under the
 // given target prefix. Returns (nil, zero-time, false) if storage cannot be
 // listed, no meta exists, or the latest one cannot be parsed.
-func loadLatestMeta(ctx context.Context, st storage.Storage, target string) (*metaFile, time.Time, bool) {
+func loadLatestMeta(ctx context.Context, st storage.Storage, target string) (*meta.MetaFile, time.Time, bool) {
 	objs, err := st.List(ctx, target+"/")
 	if err != nil || len(objs) == 0 {
 		return nil, time.Time{}, false
@@ -236,12 +213,12 @@ func loadLatestMeta(ctx context.Context, st storage.Storage, target string) (*me
 	if err != nil {
 		return nil, time.Time{}, false
 	}
-	var m metaFile
+	var m meta.MetaFile
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, time.Time{}, false
 	}
 	ts := latest.LastModified
-	if parsed, err := time.Parse("20060102T150405Z", m.Timestamp); err == nil {
+	if parsed := m.ParsedTimestamp(); !parsed.IsZero() {
 		// Prefer the timestamp baked into the meta payload over the storage
 		// LastModified, since some backends update mtime on listing or
 		// replicate with skewed clocks.

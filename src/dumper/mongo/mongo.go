@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"backup-operator/dumper"
@@ -217,7 +218,8 @@ func indexSignature(ctx context.Context, coll *mongo.Collection) (string, error)
 	for _, e := range entries {
 		parts = append(parts, e.Name+":"+e.Keys)
 	}
-	return joinSorted(parts), nil
+	sort.Strings(parts)
+	return strings.Join(parts, ";"), nil
 }
 
 func sortedMap(m bson.M) []kv {
@@ -244,14 +246,4 @@ func hashSchema(seed []string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func joinSorted(parts []string) string {
-	sort.Strings(parts)
-	out := ""
-	for i, p := range parts {
-		if i > 0 {
-			out += ";"
-		}
-		out += p
-	}
-	return out
-}
+

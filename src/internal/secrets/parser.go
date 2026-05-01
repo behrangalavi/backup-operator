@@ -241,3 +241,18 @@ func extraFromAnnotations(ann map[string]string) map[string]string {
 	}
 	return out
 }
+
+// FilterDestinations returns the subset of destinations the source's
+// allow-list permits. An empty allow-list means all destinations pass.
+func FilterDestinations(src *Source, all []*Destination) []*Destination {
+	if len(src.DestinationAllow) == 0 {
+		return all
+	}
+	out := make([]*Destination, 0, len(all))
+	for _, d := range all {
+		if src.AllowsDestination(d.Name) {
+			out = append(out, d)
+		}
+	}
+	return out
+}

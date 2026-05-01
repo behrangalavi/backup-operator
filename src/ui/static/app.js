@@ -610,7 +610,7 @@ const settingsSteps = [
 ];
 
 async function renderSettings(loading = true) {
-  // Fetch fresh settings from the API (initial load or SSE refresh).
+  if (loading) showLoading();
   let settings = null;
   let unavailable = false;
   try {

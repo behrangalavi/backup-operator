@@ -1,14 +1,11 @@
-// Package ui exposes a minimal read-only HTML/JSON dashboard for the
-// backup-operator operator. It runs as an in-process HTTP server alongside
-// the controller manager and answers two questions a human operator asks
-// in practice:
+// Package ui exposes an HTML/JSON dashboard and CRUD API for the
+// backup-operator. It runs as an in-process HTTP server alongside
+// the controller manager, providing:
 //
-//   - What targets does this namespace back up?
-//   - What does the run history of a given target look like?
-//
-// It does not write anything to the cluster, hold encryption keys, or
-// trigger backups. Anything that would do so belongs in a separate v2
-// (or in the existing CLI surface).
+//   - Read-only dashboard for backup targets and run history
+//   - CRUD endpoints for source and destination Secrets
+//   - Manual backup trigger via Job creation
+//   - Server-Sent Events (SSE) for live status updates
 package ui
 
 import (
@@ -16,6 +13,7 @@ import (
 	"embed"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"net/http"
 	"strconv"
 	"strings"
@@ -30,6 +28,9 @@ import (
 //go:embed templates/*.html
 var templatesFS embed.FS
 
+//go:embed static/*
+var staticFS embed.FS
+
 // Config carries everything the server needs to render itself.
 type Config struct {
 	Addr      string // ":8081" by default — kept off the metrics port to keep concerns separate
@@ -43,6 +44,7 @@ type Server struct {
 	cfg  Config
 	tpl  *template.Template
 	data dataSource
+	sse  *sseBroker
 }
 
 func New(cfg Config) (*Server, error) {
@@ -54,6 +56,7 @@ func New(cfg Config) (*Server, error) {
 		cfg:  cfg,
 		tpl:  tpl,
 		data: newK8sData(cfg.Client, cfg.Namespace, cfg.Logger.WithName("data")),
+		sse:  newSSEBroker(),
 	}, nil
 }
 
@@ -61,20 +64,50 @@ func New(cfg Config) (*Server, error) {
 // shut down with a short grace period.
 func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.handleIndex)
-	mux.HandleFunc("/target/", s.handleTarget)
+
+	// SPA frontend — serves index.html for the root, static assets for /static/
+	staticSub, _ := fs.Sub(staticFS, "static")
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
+
+	// Legacy template routes (kept for backward compatibility)
+	mux.HandleFunc("/legacy", s.handleIndex)
+	mux.HandleFunc("/legacy/target/", s.handleTarget)
+
+	// Read-only JSON API
 	mux.HandleFunc("/api/targets", s.handleAPITargets)
 	mux.HandleFunc("/api/targets/", s.handleAPITargetRuns)
+	mux.HandleFunc("/api/destinations", s.handleAPIListDestinations)
+	mux.HandleFunc("/api/jobs", s.handleAPIJobs)
+
+	// CRUD API
+	mux.HandleFunc("/api/sources", s.handleAPICreateSource)
+	mux.HandleFunc("/api/sources/", s.routeSourceByMethod)
+	mux.HandleFunc("/api/destinations/", s.routeDestinationByMethod)
+
+	// Manual trigger
+	mux.HandleFunc("/api/trigger/", s.handleAPITriggerBackup)
+
+	// SSE live updates
+	mux.HandleFunc("/api/events", s.handleSSE)
+
+	// Downloads
 	mux.HandleFunc("/download/", s.handleDownload)
+
+	// Health
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})
+
+	// SPA catch-all: serve index.html for any unmatched path
+	mux.HandleFunc("/", s.handleSPA)
 
 	srv := &http.Server{
 		Addr:              s.cfg.Addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+
+	go s.periodicRefresh(ctx)
 
 	go func() {
 		<-ctx.Done()
@@ -88,6 +121,47 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
+	// For API routes that fell through, return 404
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		http.NotFound(w, r)
+		return
+	}
+	data, err := staticFS.ReadFile("static/index.html")
+	if err != nil {
+		renderError(w, http.StatusInternalServerError, "SPA not found")
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(data)
+}
+
+func (s *Server) routeSourceByMethod(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleAPIGetSource(w, r)
+	case http.MethodPut:
+		s.handleAPIUpdateSource(w, r)
+	case http.MethodDelete:
+		s.handleAPIDeleteSource(w, r)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "method not allowed"})
+	}
+}
+
+func (s *Server) routeDestinationByMethod(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleAPIGetDestination(w, r)
+	case http.MethodPut:
+		s.handleAPIUpdateDestination(w, r)
+	case http.MethodDelete:
+		s.handleAPIDeleteDestination(w, r)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "method not allowed"})
+	}
 }
 
 func funcMap() template.FuncMap {

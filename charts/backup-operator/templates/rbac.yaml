@@ -7,19 +7,20 @@ metadata:
   labels: {{- include "backup-operator.labels" . | nindent 4 }}
 rules:
   # Operator reconciles source/destination Secrets into CronJobs.
+  # create/update/delete needed for UI-driven CRUD of source/destination Secrets.
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
   # Operator — manages CronJobs as the per-source materialised schedule.
   - apiGroups: ["batch"]
     resources: ["cronjobs"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-  # Operator — observes Jobs spawned by CronJobs (so reconciler sees status).
+  # Operator — observes Jobs spawned by CronJobs and creates manual-trigger Jobs.
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create"]
 
   # Operator — leader election lease.
   - apiGroups: ["coordination.k8s.io"]

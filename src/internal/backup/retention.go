@@ -44,54 +44,67 @@ func (p *Pipeline) applyRetention(
 	}
 
 	for _, dest := range dests {
-		st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, log)
+		p.retainForDestination(ctx, dest, target, policy, now, log)
+	}
+}
+
+// retainForDestination handles retention for a single destination, scoped so
+// that defer properly closes any batch session at the end of this call.
+func (p *Pipeline) retainForDestination(
+	ctx context.Context,
+	dest *secrets.Destination,
+	target string,
+	policy RetentionPolicy,
+	now time.Time,
+	log logr.Logger,
+) {
+	st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, log)
+	if err != nil {
+		log.Error(err, "retention: init storage", "destination", dest.Name)
+		metrics.IncRetentionFailure(target, dest.Name)
+		return
+	}
+
+	// Reuse a single connection for the List + N×Delete batch when the
+	// storage supports it (SFTP). Falls back to per-call dialing otherwise.
+	active := st
+	if bs, ok := st.(storage.BatchStorage); ok {
+		sess, closer, err := bs.WithSession(ctx)
 		if err != nil {
-			log.Error(err, "retention: init storage", "destination", dest.Name)
+			log.Error(err, "retention: open session", "destination", dest.Name)
+			metrics.IncRetentionFailure(target, dest.Name)
+			return
+		}
+		defer func() { _ = closer() }()
+		active = sess
+	}
+
+	objs, err := active.List(ctx, target+"/")
+	if err != nil {
+		log.Error(err, "retention: list", "destination", dest.Name)
+		metrics.IncRetentionFailure(target, dest.Name)
+		return
+	}
+
+	victims := selectForDeletion(objs, policy, now)
+	if len(victims) == 0 {
+		return
+	}
+	log.Info("retention deleting",
+		"destination", dest.Name,
+		"target", target,
+		"count", len(victims),
+		"policy_days", policy.Days,
+		"min_keep", policy.MinKeep,
+	)
+
+	for _, v := range victims {
+		if err := active.Delete(ctx, v); err != nil {
+			log.Error(err, "retention: delete", "destination", dest.Name, "path", v)
 			metrics.IncRetentionFailure(target, dest.Name)
 			continue
 		}
-
-		// Reuse a single connection for the List + N×Delete batch when the
-		// storage supports it (SFTP). Falls back to per-call dialing otherwise.
-		active := st
-		if bs, ok := st.(storage.BatchStorage); ok {
-			sess, closer, err := bs.WithSession(ctx)
-			if err != nil {
-				log.Error(err, "retention: open session", "destination", dest.Name)
-				metrics.IncRetentionFailure(target, dest.Name)
-				continue
-			}
-			defer func() { _ = closer() }()
-			active = sess
-		}
-
-		objs, err := active.List(ctx, target+"/")
-		if err != nil {
-			log.Error(err, "retention: list", "destination", dest.Name)
-			metrics.IncRetentionFailure(target, dest.Name)
-			continue
-		}
-
-		victims := selectForDeletion(objs, policy, now)
-		if len(victims) == 0 {
-			continue
-		}
-		log.Info("retention deleting",
-			"destination", dest.Name,
-			"target", target,
-			"count", len(victims),
-			"policy_days", policy.Days,
-			"min_keep", policy.MinKeep,
-		)
-
-		for _, v := range victims {
-			if err := active.Delete(ctx, v); err != nil {
-				log.Error(err, "retention: delete", "destination", dest.Name, "path", v)
-				metrics.IncRetentionFailure(target, dest.Name)
-				continue
-			}
-			metrics.IncRetentionDeleted(target, dest.Name, classifyKind(v))
-		}
+		metrics.IncRetentionDeleted(target, dest.Name, classifyKind(v))
 	}
 }
 

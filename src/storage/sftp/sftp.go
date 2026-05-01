@@ -316,7 +316,7 @@ func (s *sftpSession) Get(_ context.Context, p string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", p, err)
 	}
-	return io.NopCloser(f), nil
+	return f, nil
 }
 
 func (s *sftpSession) Delete(_ context.Context, p string) error {

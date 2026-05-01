@@ -197,7 +197,7 @@ spec:
                   number: 8081
 ```
 
-The operator UI only exposes non-sensitive metadata (target names, timestamps, dump sizes). It **never** shows database credentials or decrypted backup content. Still, authentication prevents unauthorized users from browsing backup history or downloading encrypted dumps.
+The operator UI exposes a full management interface: CRUD for source and destination Secrets, manual backup triggers, job status, and live SSE updates. Passwords and SSH keys are masked in API responses (`***`). Authentication prevents unauthorized users from modifying backup configurations or browsing backup history.
 
 ---
 
@@ -226,10 +226,21 @@ src/
 │   ├── meta/            # MetaFile type — deserialized sidecar JSON (shared across pipeline, refresher, UI)
 │   └── secrets/         # Parses Secrets into Source/Destination configs; FilterDestinations helper
 ├── metrics/             # Prometheus metrics — semantic signals for Alertmanager
-└── storage/             # Upload destination abstraction
-    ├── factory/         # Creates the right Storage from storage-type label
-    ├── sftp/            # Hetzner Storage Box and generic SFTP
-    └── s3/              # AWS S3, MinIO, Hetzner Object Storage, R2, B2, ...
+├── storage/             # Upload destination abstraction
+│   ├── factory/         # Creates the right Storage from storage-type label
+│   ├── sftp/            # Hetzner Storage Box and generic SFTP
+│   └── s3/              # AWS S3, MinIO, Hetzner Object Storage, R2, B2, ...
+└── ui/                  # Built-in web dashboard and management API
+    ├── cache.go         # Cached Secret data for dashboard rendering
+    ├── data.go          # Data aggregation helpers for templates
+    ├── handlers.go      # Legacy HTML template handlers (backward compat)
+    ├── handlers_api.go  # REST API: CRUD sources/destinations, trigger, SSE
+    ├── server.go        # HTTP server, routing, SPA handler, SSE broker
+    ├── static/          # SPA frontend (vanilla JS, no build step)
+    │   ├── index.html   # SPA shell with sidebar, modal, toast containers
+    │   ├── style.css    # Dark theme, responsive layout, component styles
+    │   └── app.js       # Hash-router, API helpers, page renderers, forms
+    └── templates/       # Legacy Go HTML templates (kept for backward compat)
 charts/backup-operator/   # Helm chart (Deployment, RBAC, Service, ServiceMonitor, PrometheusRule)
 test/local/              # Manifests for the Docker Desktop test stack (see section 16)
 Dockerfile               # Builds operator + worker into one alpine image with DB clients
@@ -958,6 +969,20 @@ The notable ones, with the reasoning that future readers should preserve.
 - **Optional NetworkPolicy for operator pod.** Helm template restricts egress to DNS (53), K8s API (443/6443), SSH (22/23), and HTTPS (443). Opt-in via `networkPolicy.enabled: true`. `extraEgressRules` allows non-standard ports (e.g. MinIO 9000). Limits blast radius of a compromised operator pod.
 
 - **EmptyDir mount at configured TEMP_DIR.** The worker's emptyDir mounts at `r.Worker.TempDir` (not hardcoded `/tmp`). When `TempDir` is not under `/tmp`, a second small emptyDir covers `/tmp` for `os.CreateTemp` calls. Fixes a regression where custom `TEMP_DIR` broke with `readOnlyRootFilesystem`.
+
+- **Vanilla JS SPA over React/Vue.** The UI is embedded via `go:embed` into the operator binary. A framework would require a Node.js build step, `node_modules`, and a bundler, adding complexity to CI and the Dockerfile. Vanilla JS with hash-based routing keeps the binary self-contained and the frontend instantly deployable without build tooling.
+
+- **SSE over WebSocket for live updates.** Server-Sent Events are unidirectional (server→client), work through standard HTTP, require no protocol upgrade, and auto-reconnect natively. The broker pattern (subscribe/unsubscribe/publish via Go channels) fits Go idioms. WebSocket would add bidirectional complexity for a use case that only needs push.
+
+- **Secret CRUD via Kubernetes API, not a database.** Source and destination configurations already live in Kubernetes Secrets (the discovery contract). The UI writes Secrets directly via the K8s API using the operator's ServiceAccount, preserving the single-source-of-truth model. Adding a database for configuration would create a sync problem between the DB and the actual Secrets.
+
+- **Sensitive field masking in API GET responses.** Passwords, SSH private keys, and S3 secret keys are returned as `***` in GET endpoints. The UI sends these values only on create/update. This prevents accidental exposure through browser dev tools, network logging, or screen sharing — even without an auth proxy.
+
+- **Manual trigger creates Job from CronJob spec.** `POST /api/trigger/{target}` reads the existing CronJob's pod template and creates a one-off Job. This guarantees the manual run uses the exact same image, env vars, and mounts as the scheduled run. No separate template or spec duplication needed.
+
+- **SSE periodic refresh broadcast.** The SSE broker publishes a `refresh` event every 10 seconds in addition to CRUD-triggered events. This ensures clients eventually converge to the current state even if they miss an event (e.g. brief disconnect). The 10s interval is a balance between responsiveness and API load.
+
+- **Legacy template routes preserved.** The old Go HTML template routes are served under `/legacy` for backward compatibility. The SPA serves from `/` via a catch-all handler. This allows gradual migration without breaking existing bookmarks or monitoring that targets the old UI.
 
 ---
 

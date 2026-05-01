@@ -9,6 +9,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"backup-operator/storage"
 
@@ -130,6 +131,7 @@ func (s *sftpStorage) dial(ctx context.Context) (*ssh.Client, *sftp.Client, erro
 		User:            s.user,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(s.signer)},
 		HostKeyCallback: s.hostKeyCB,
+		Timeout:         30 * time.Second,
 	}
 	d := &net.Dialer{}
 	conn, err := d.DialContext(ctx, "tcp", s.addr)

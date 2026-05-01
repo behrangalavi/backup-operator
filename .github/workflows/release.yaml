@@ -4,17 +4,25 @@ on:
   push:
     branches: [main]
 
+# Serialize releases. Two pushes back-to-back must not race on tag push,
+# chart upload, or :latest re-tag. cancel-in-progress=false so the second
+# push waits for the first to finish (success or failure) before starting.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+# Default to read-only at workflow scope; jobs that need write opt in
+# explicitly. Reduces blast radius if any single step is compromised.
 permissions:
-  contents: write
-  packages: write
-  issues: write
-  pull-requests: write
+  contents: read
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # 1. Quality gate. Mirrors ci.yaml so a main-push that bypasses CI
+  #    (e.g. direct push, force-push) still gets the same checks.
   test:
     runs-on: ubuntu-latest
     steps:
@@ -25,85 +33,144 @@ jobs:
           go-version-file: src/go.mod
           cache-dependency-path: src/go.sum
 
+      - name: Build
+        working-directory: src
+        run: go build ./...
+
+      - name: Vet
+        working-directory: src
+        run: go vet ./...
+
       - name: Test
         working-directory: src
         run: go test ./...
 
-  release:
+      - uses: azure/setup-helm@v4
+
+      - name: Helm lint
+        run: helm lint charts/backup-operator --set agePublicKeys="age1test"
+
+  # 2. Dry-run semantic-release to determine whether this push releases
+  #    anything and, if so, the next version. Read-only token; no tag,
+  #    no GitHub release created here.
+  plan:
     runs-on: ubuntu-latest
     needs: test
     outputs:
-      new_release_published: ${{ steps.semantic.outputs.new_release_published }}
-      new_release_version: ${{ steps.semantic.outputs.new_release_version }}
+      published: ${{ steps.dryrun.outputs.new_release_published }}
+      version: ${{ steps.dryrun.outputs.new_release_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: dryrun
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          dry_run: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 3. Build & push multi-arch image with the planned version. No :latest
+  #    tag yet — that floats only after the entire release succeeds.
+  build-image:
+    runs-on: ubuntu-latest
+    needs: plan
+    if: needs.plan.outputs.published == 'true'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: VERSION=${{ needs.plan.outputs.version }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.plan.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+  # 4. Package & push the Helm chart with the planned version. Runs only
+  #    after image push succeeded — chart references the image, so we
+  #    never publish a chart that points at a missing image.
+  publish-chart:
+    runs-on: ubuntu-latest
+    needs: [plan, build-image]
+    if: needs.plan.outputs.published == 'true'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      - name: Stamp chart version
+        run: |
+          sed -i "s/^version:.*/version: ${{ needs.plan.outputs.version }}/" charts/backup-operator/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${{ needs.plan.outputs.version }}\"/" charts/backup-operator/Chart.yaml
+
+      - name: Package chart
+        run: helm package charts/backup-operator
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} --username ${{ github.actor }} --password-stdin
+
+      - name: Push chart
+        run: helm push backup-operator-${{ needs.plan.outputs.version }}.tgz oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
+
+  # 5. Image + chart are now both pushed. Create the Git tag and the
+  #    GitHub Release. If everything above failed, no tag exists and the
+  #    release notes never publish — so a partial release never appears
+  #    in the GitHub Releases page.
+  tag-and-release:
+    runs-on: ubuntu-latest
+    needs: [plan, build-image, publish-chart]
+    if: needs.plan.outputs.published == 'true'
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Semantic Release
-        id: semantic
-        uses: cycjimmy/semantic-release-action@v4
+      - uses: cycjimmy/semantic-release-action@v4
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  build-and-push:
+  # 6. Float :latest only after a fully successful release. Uses
+  #    imagetools to retag the multi-arch manifest without rebuilding.
+  retag-latest:
     runs-on: ubuntu-latest
-    needs: release
-    if: needs.release.outputs.new_release_published == 'true'
+    needs: [plan, tag-and-release]
+    if: needs.plan.outputs.published == 'true'
+    permissions:
+      packages: write
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: v${{ needs.release.outputs.new_release_version }}
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
-          build-args: VERSION=${{ needs.release.outputs.new_release_version }}
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.release.outputs.new_release_version }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  publish-chart:
-    runs-on: ubuntu-latest
-    needs: [release, build-and-push]
-    if: needs.release.outputs.new_release_published == 'true'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: v${{ needs.release.outputs.new_release_version }}
-
-      - name: Set up Helm
-        uses: azure/setup-helm@v4
-
-      - name: Update chart versions
+      - name: Float :latest to ${{ needs.plan.outputs.version }}
         run: |
-          sed -i "s/^version:.*/version: ${{ needs.release.outputs.new_release_version }}/" charts/backup-operator/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"${{ needs.release.outputs.new_release_version }}\"/" charts/backup-operator/Chart.yaml
-
-      - name: Lint chart
-        run: helm lint charts/backup-operator --set agePublicKeys="age1test"
-
-      - name: Package chart
-        run: helm package charts/backup-operator
-
-      - name: Log in to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} --username ${{ github.actor }} --password-stdin
-
-      - name: Push chart to OCI registry
-        run: helm push backup-operator-${{ needs.release.outputs.new_release_version }}.tgz oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
+          docker buildx imagetools create \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.plan.outputs.version }}

@@ -391,7 +391,7 @@ The operator and the worker have separate (overlapping) config schemas. All valu
 | `DEFAULT_MIN_KEEP` | no | `3` | Fallback for sources without annotation |
 | `WORKER_IMAGE` | **yes** | — | Container image for worker pods (Helm sets to operator's image) |
 | `WORKER_IMAGE_PULL_POLICY` | no | `IfNotPresent` | |
-| `WORKER_SERVICE_ACCOUNT` | **yes** | — | SA bound to worker pods (shared with operator) |
+| `WORKER_SERVICE_ACCOUNT` | **yes** | — | SA bound to worker pods (separate from operator SA, minimal privileges) |
 | `AGE_SECRET_NAME` | **yes** | — | Secret holding `AGE_PUBLIC_KEYS` for worker pods to mount |
 | `WORKER_CPU_LIMIT` | no | `2000m` | CPU limit for worker pods |
 | `WORKER_MEMORY_LIMIT` | no | `2Gi` | Memory limit for worker pods |

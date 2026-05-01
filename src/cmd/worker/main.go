@@ -65,7 +65,9 @@ func (e *secretEventEmitter) Emit(eventType, reason, message string) {
 	e.recorder.Event(e.ref, eventType, reason, message)
 }
 
-func main() {
+func main() { os.Exit(run()) }
+
+func run() int {
 	sourceSecret := flag.String("source-secret", "", "name of the source Secret to back up")
 	namespace := flag.String("namespace", "", "namespace of the source Secret (defaults to POD_NAMESPACE)")
 	flag.Parse()
@@ -113,23 +115,23 @@ func main() {
 	srcSecret, err := cs.CoreV1().Secrets(ns).Get(ctx, *sourceSecret, metav1.GetOptions{})
 	if err != nil {
 		log.Error(err, "get source secret", "secret", *sourceSecret, "namespace", ns)
-		os.Exit(1)
+		return 1
 	}
 
 	src, err := secrets.ParseSource(srcSecret, config.GetValue("DEFAULT_SCHEDULE"))
 	if err != nil {
 		log.Error(err, "parse source secret")
-		os.Exit(1)
+		return 1
 	}
 
 	dests, err := loadDestinations(ctx, cs, ns, src)
 	if err != nil {
 		log.Error(err, "load destinations")
-		os.Exit(1)
+		return 1
 	}
 	if len(dests) == 0 {
 		log.Error(nil, "no destinations matched the source's allow-list", "target", src.TargetName)
-		os.Exit(1)
+		return 1
 	}
 
 	enc, err := crypto.NewFromPublicKeys(config.GetValue("AGE_PUBLIC_KEYS"))
@@ -154,9 +156,10 @@ func main() {
 
 	if err := pipeline.Run(ctx, src); err != nil {
 		log.Error(err, "backup run failed", "target", src.TargetName)
-		os.Exit(1)
+		return 1
 	}
 	log.Info("backup run completed", "target", src.TargetName)
+	return 0
 }
 
 // loadDestinations lists Secrets in the namespace carrying the destination

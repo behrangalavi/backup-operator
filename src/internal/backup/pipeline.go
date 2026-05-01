@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -300,14 +301,45 @@ func (p *Pipeline) uploadOne(
 	}
 	defer dump.Close()
 
+	info, err := dump.Stat()
+	if err != nil {
+		return fmt.Errorf("stat dump: %w", err)
+	}
+	localSize := info.Size()
+
 	if err := st.Upload(ctx, objectPath, dump); err != nil {
 		return fmt.Errorf("upload dump: %w", err)
 	}
 	metrics.ObserveUploadDuration(target, d.Name, d.StorageType, time.Since(start))
 
+	if err := verifyUploadSize(ctx, st, objectPath, localSize, p.logger); err != nil {
+		return err
+	}
+
 	if err := st.Upload(ctx, metaPath, bytes.NewReader(meta)); err != nil {
 		return fmt.Errorf("upload meta: %w", err)
 	}
+	return nil
+}
+
+// verifyUploadSize checks that the uploaded object's size matches the local
+// file. Catches silent truncation, network corruption, or partial writes.
+func verifyUploadSize(ctx context.Context, st storage.Storage, objectPath string, expected int64, log logr.Logger) error {
+	objs, err := st.List(ctx, objectPath)
+	if err != nil {
+		log.V(1).Info("post-upload verify: list failed, skipping", "path", objectPath, "err", err.Error())
+		return nil
+	}
+	for _, o := range objs {
+		if o.Path == objectPath || strings.HasSuffix(o.Path, "/"+path.Base(objectPath)) {
+			if o.Size != expected {
+				return fmt.Errorf("upload verify: size mismatch for %s: local=%d remote=%d", objectPath, expected, o.Size)
+			}
+			log.V(1).Info("post-upload verify passed", "path", objectPath, "size", expected)
+			return nil
+		}
+	}
+	log.V(1).Info("post-upload verify: object not found in listing, skipping", "path", objectPath)
 	return nil
 }
 

@@ -1,0 +1,23 @@
+{{- if .Values.ui.enabled -}}
+# Runtime-configurable settings for the operator. The UI Settings Wizard
+# reads and writes this ConfigMap via the Kubernetes API. Values here
+# override the Helm-provided env-var defaults at runtime.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "backup-operator.fullname" . }}-settings
+  labels:
+    {{- include "backup-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: settings
+data:
+  defaultSchedule: {{ .Values.config.defaultSchedule | quote }}
+  runTimeoutSeconds: {{ .Values.config.runTimeoutSeconds | quote }}
+  defaultRetentionDays: {{ .Values.config.defaultRetentionDays | quote }}
+  defaultMinKeep: {{ .Values.config.defaultMinKeep | quote }}
+  tempDir: {{ .Values.config.tempDir | quote }}
+  tempDirSize: {{ .Values.tempDirSize | quote }}
+  workerCpuLimit: {{ (.Values.workerResources).limits.cpu | default "" | quote }}
+  workerMemoryLimit: {{ (.Values.workerResources).limits.memory | default "" | quote }}
+  workerCpuRequest: {{ (.Values.workerResources).requests.cpu | default "" | quote }}
+  workerMemoryRequest: {{ (.Values.workerResources).requests.memory | default "" | quote }}
+{{- end }}

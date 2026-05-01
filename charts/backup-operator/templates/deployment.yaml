@@ -82,6 +82,8 @@ spec:
               value: "true"
             - name: UI_ADDR
               value: ":{{ .Values.ui.port }}"
+            - name: SETTINGS_CONFIGMAP
+              value: {{ include "backup-operator.fullname" . }}-settings
             {{- end }}
           ports:
             - name: metrics

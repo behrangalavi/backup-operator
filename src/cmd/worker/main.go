@@ -20,6 +20,16 @@ import (
 	"strconv"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/record"
+
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
@@ -30,11 +40,6 @@ import (
 	"backup-operator/internal/backup"
 	"backup-operator/internal/labels"
 	"backup-operator/internal/secrets"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 // staticDestProvider implements backup.DestinationProvider with a fixed list —
@@ -45,6 +50,18 @@ type staticDestProvider struct {
 }
 
 func (s *staticDestProvider) Destinations() []*secrets.Destination { return s.dests }
+
+// secretEventEmitter records Kubernetes Events against the source Secret for
+// audit-trail compliance (DSGVO Art. 30, SOC2). Events are visible via
+// `kubectl describe secret <source>` and in cluster audit logs.
+type secretEventEmitter struct {
+	recorder record.EventRecorder
+	ref      *corev1.ObjectReference
+}
+
+func (e *secretEventEmitter) Emit(eventType, reason, message string) {
+	e.recorder.Event(e.ref, eventType, reason, message)
+}
 
 func main() {
 	sourceSecret := flag.String("source-secret", "", "name of the source Secret to back up")
@@ -118,13 +135,16 @@ func main() {
 	defaultMin, _ := strconv.Atoi(config.GetValue("DEFAULT_MIN_KEEP"))
 	policy := backup.RetentionPolicy{Days: defaultRet, MinKeep: defaultMin}
 
-	pipeline := backup.NewPipeline(
+	events := buildEventEmitter(cs, srcSecret)
+
+	pipeline := backup.NewPipelineWithEvents(
 		enc,
 		analyzer.NewAnalyzer(),
 		config.GetValue("TEMP_DIR"),
 		&staticDestProvider{dests: dests},
 		policy,
 		log.WithName("pipeline"),
+		events,
 	)
 
 	if err := pipeline.Run(ctx, src); err != nil {
@@ -190,6 +210,27 @@ func validateNonNegInt(v string) error {
 		return fmt.Errorf("must be >= 0")
 	}
 	return nil
+}
+
+// buildEventEmitter creates a Kubernetes EventRecorder that emits events
+// against the source Secret. Events form a permanent audit trail visible
+// via `kubectl describe secret <source>` and cluster audit logs.
+func buildEventEmitter(cs kubernetes.Interface, sec *corev1.Secret) backup.EventEmitter {
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
+	eventBroadcaster := record.NewBroadcaster()
+	eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{
+		Interface: cs.CoreV1().Events(sec.Namespace),
+	})
+	recorder := eventBroadcaster.NewRecorder(s, corev1.EventSource{Component: "backup-worker"})
+	ref := &corev1.ObjectReference{
+		Kind:       "Secret",
+		Namespace:  sec.Namespace,
+		Name:       sec.Name,
+		UID:        sec.UID,
+		APIVersion: "v1",
+	}
+	return &secretEventEmitter{recorder: recorder, ref: ref}
 }
 
 func die(format string, args ...any) {

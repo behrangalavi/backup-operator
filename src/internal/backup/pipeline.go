@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -181,7 +183,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	dumpFile := path.Join(p.tempDir, fmt.Sprintf("%s-%s.sql.gz.age", src.TargetName, timestamp))
 
 	dumpStart := time.Now()
-	encryptedSize, err := p.dumpToFile(ctx, d, dumpFile)
+	encryptedSize, sha256sum, err := p.dumpToFile(ctx, d, dumpFile)
 	dumpDuration := time.Since(dumpStart)
 	metrics.ObserveDumpDuration(src.TargetName, src.DBType, dumpDuration)
 
@@ -215,7 +217,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		emitAnalyzerMetrics(src.TargetName, report)
 	}
 
-	meta := metaJSON(src, stats, report, encryptedSize, timestamp)
+	meta := metaJSON(src, stats, report, encryptedSize, sha256sum, timestamp)
 
 	successCount := p.fanOut(ctx, dests, src.TargetName, dumpFile, objectPath, metaPath, meta, log)
 	if successCount == 0 {
@@ -275,37 +277,40 @@ func (p *Pipeline) recordFailure(
 	wg.Wait()
 }
 
-func (p *Pipeline) dumpToFile(ctx context.Context, d dumper.Dumper, dumpFile string) (int64, error) {
+func (p *Pipeline) dumpToFile(ctx context.Context, d dumper.Dumper, dumpFile string) (int64, string, error) {
 	f, err := os.Create(dumpFile)
 	if err != nil {
-		return 0, fmt.Errorf("create temp dump: %w", err)
+		return 0, "", fmt.Errorf("create temp dump: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
-	enc, err := p.encryptor.Wrap(f)
+	h := sha256.New()
+	w := io.MultiWriter(f, h)
+
+	enc, err := p.encryptor.Wrap(w)
 	if err != nil {
-		return 0, fmt.Errorf("encrypt wrap: %w", err)
+		return 0, "", fmt.Errorf("encrypt wrap: %w", err)
 	}
 	gz := gzip.NewWriter(enc)
 
 	if err := d.Dump(ctx, gz); err != nil {
 		_ = gz.Close()
 		_ = enc.Close()
-		return 0, err
+		return 0, "", err
 	}
 	if err := gz.Close(); err != nil {
 		_ = enc.Close()
-		return 0, fmt.Errorf("gzip close: %w", err)
+		return 0, "", fmt.Errorf("gzip close: %w", err)
 	}
 	if err := enc.Close(); err != nil {
-		return 0, fmt.Errorf("age close: %w", err)
+		return 0, "", fmt.Errorf("age close: %w", err)
 	}
 
 	info, err := f.Stat()
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	return info.Size(), nil
+	return info.Size(), hex.EncodeToString(h.Sum(nil)), nil
 }
 
 const (
@@ -505,13 +510,14 @@ func sortedMetaPaths(objs []storage.Object) []string {
 	return out
 }
 
-func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report, size int64, timestamp string) []byte {
+func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report, size int64, sha256sum, timestamp string) []byte {
 	m := meta.MetaFile{
 		Target:             src.TargetName,
 		Timestamp:          timestamp,
 		DBType:             src.DBType,
 		Status:             meta.StatusSuccess,
 		EncryptedSizeBytes: size,
+		SHA256:             sha256sum,
 		Stats:              stats,
 		Report:             report,
 	}

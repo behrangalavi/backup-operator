@@ -82,6 +82,16 @@ func (p *Pipeline) resolvePolicy(src *secrets.Source) RetentionPolicy {
 	return policy
 }
 
+// analyzerForSource returns a per-source analyzer with thresholds from
+// annotations, falling back to the pipeline's default analyzer when both
+// thresholds are absent (-1).
+func (p *Pipeline) analyzerForSource(src *secrets.Source) analyzer.Analyzer {
+	if src.RowDropThreshold < 0 && src.SizeDropThreshold < 0 {
+		return p.analyzer
+	}
+	return analyzer.NewAnalyzerWithThresholds(src.RowDropThreshold, src.SizeDropThreshold)
+}
+
 // Run executes a full backup. Errors during destination uploads are reported
 // per-destination via metrics; the function returns nil unless the dump itself
 // fails or no destination accepts the artifact.
@@ -146,7 +156,8 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	var report *analyzer.Report
 	if src.AnalyzerEnabled {
 		prevStats, prevSize := p.loadPreviousStats(ctx, dests, src.TargetName)
-		report = p.analyzer.Compare(prevStats, stats, prevSize, encryptedSize)
+		an := p.analyzerForSource(src)
+		report = an.Compare(prevStats, stats, prevSize, encryptedSize)
 		emitAnalyzerMetrics(src.TargetName, report)
 	}
 

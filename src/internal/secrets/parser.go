@@ -27,9 +27,11 @@ type Source struct {
 	// DestinationAllow is the parsed allow-list from the annotation.
 	// Empty means: fan out to all discovered destinations (default).
 	DestinationAllow []string
-	RetentionDays    int
-	MinKeep          int
-	Config           dumper.Config
+	RetentionDays      int
+	MinKeep            int
+	RowDropThreshold   float64 // -1 = use default
+	SizeDropThreshold  float64 // -1 = use default
+	Config             dumper.Config
 }
 
 // AllowsDestination reports whether the given destination name is permitted
@@ -105,8 +107,10 @@ func ParseSource(s *corev1.Secret, defaultSchedule string) (*Source, error) {
 		Schedule:         schedule,
 		AnalyzerEnabled:  parseBoolAnnotation(s.Annotations[labels.AnnotationAnalyzerEnabled], true),
 		DestinationAllow: parseCSVAnnotation(s.Annotations[labels.AnnotationDestinations]),
-		RetentionDays:    parseIntAnnotation(s.Annotations[labels.AnnotationRetentionDays], -1),
-		MinKeep:          parseIntAnnotation(s.Annotations[labels.AnnotationMinKeep], -1),
+		RetentionDays:      parseIntAnnotation(s.Annotations[labels.AnnotationRetentionDays], -1),
+		MinKeep:            parseIntAnnotation(s.Annotations[labels.AnnotationMinKeep], -1),
+		RowDropThreshold:   parseFloatAnnotation(s.Annotations[labels.AnnotationRowDropThreshold], -1),
+		SizeDropThreshold:  parseFloatAnnotation(s.Annotations[labels.AnnotationSizeDropThreshold], -1),
 		Config: dumper.Config{
 			Name:     target,
 			Host:     host,
@@ -200,6 +204,20 @@ func parseIntAnnotation(v string, def int) int {
 		return def
 	}
 	return n
+}
+
+// parseFloatAnnotation parses a decimal float; empty or malformed values
+// fall back to def — same forgiveness rule as the other parsers.
+func parseFloatAnnotation(v string, def float64) float64 {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return def
+	}
+	return f
 }
 
 // parseCSVAnnotation splits a comma-separated annotation, trimming spaces

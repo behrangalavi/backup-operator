@@ -17,4 +17,6 @@ const (
 	AnnotationDestinations     = "backup.mogenius.io/destinations"
 	AnnotationRetentionDays    = "backup.mogenius.io/retention-days"
 	AnnotationMinKeep          = "backup.mogenius.io/min-keep"
+	AnnotationRowDropThreshold  = "backup.mogenius.io/row-drop-threshold"
+	AnnotationSizeDropThreshold = "backup.mogenius.io/size-drop-threshold"
 )

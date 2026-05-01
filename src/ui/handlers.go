@@ -19,7 +19,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	targets, err := s.data.listTargets(r.Context())
 	if err != nil {
 		s.cfg.Logger.Error(err, "list targets")
-		renderError(w, http.StatusInternalServerError, "failed to load targets: "+err.Error())
+		renderError(w, http.StatusInternalServerError, "failed to load targets")
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -54,7 +54,8 @@ func (s *Server) handleTarget(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAPITargets(w http.ResponseWriter, r *http.Request) {
 	targets, err := s.data.listTargets(r.Context())
 	if err != nil {
-		renderError(w, http.StatusInternalServerError, err.Error())
+		s.cfg.Logger.Error(err, "list targets (API)")
+		renderError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, targets)
@@ -70,7 +71,7 @@ func (s *Server) handleAPITargetRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	detail, err := s.data.target(r.Context(), parts[0])
 	if err != nil {
-		renderError(w, http.StatusNotFound, err.Error())
+		renderError(w, http.StatusNotFound, "target not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, detail.Runs)

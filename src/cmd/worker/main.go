@@ -17,7 +17,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -63,7 +65,9 @@ func (e *secretEventEmitter) Emit(eventType, reason, message string) {
 	e.recorder.Event(e.ref, eventType, reason, message)
 }
 
-func main() {
+func main() { os.Exit(run()) }
+
+func run() int {
 	sourceSecret := flag.String("source-secret", "", "name of the source Secret to back up")
 	namespace := flag.String("namespace", "", "namespace of the source Secret (defaults to POD_NAMESPACE)")
 	flag.Parse()
@@ -102,30 +106,32 @@ func main() {
 	cs, err := kubernetes.NewForConfig(cfg)
 	assert.NoError(err, "failed to build kubernetes client")
 
+	sigCtx, sigStop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer sigStop()
 	runTimeoutSec, _ := strconv.Atoi(config.GetValue("RUN_TIMEOUT_SECONDS"))
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(runTimeoutSec)*time.Second)
+	ctx, cancel := context.WithTimeout(sigCtx, time.Duration(runTimeoutSec)*time.Second)
 	defer cancel()
 
 	srcSecret, err := cs.CoreV1().Secrets(ns).Get(ctx, *sourceSecret, metav1.GetOptions{})
 	if err != nil {
 		log.Error(err, "get source secret", "secret", *sourceSecret, "namespace", ns)
-		os.Exit(1)
+		return 1
 	}
 
 	src, err := secrets.ParseSource(srcSecret, config.GetValue("DEFAULT_SCHEDULE"))
 	if err != nil {
 		log.Error(err, "parse source secret")
-		os.Exit(1)
+		return 1
 	}
 
 	dests, err := loadDestinations(ctx, cs, ns, src)
 	if err != nil {
 		log.Error(err, "load destinations")
-		os.Exit(1)
+		return 1
 	}
 	if len(dests) == 0 {
 		log.Error(nil, "no destinations matched the source's allow-list", "target", src.TargetName)
-		os.Exit(1)
+		return 1
 	}
 
 	enc, err := crypto.NewFromPublicKeys(config.GetValue("AGE_PUBLIC_KEYS"))
@@ -135,7 +141,8 @@ func main() {
 	defaultMin, _ := strconv.Atoi(config.GetValue("DEFAULT_MIN_KEEP"))
 	policy := backup.RetentionPolicy{Days: defaultRet, MinKeep: defaultMin}
 
-	events := buildEventEmitter(cs, srcSecret)
+	events, flushEvents := buildEventEmitter(cs, srcSecret)
+	defer flushEvents()
 
 	pipeline := backup.NewPipelineWithEvents(
 		enc,
@@ -149,9 +156,10 @@ func main() {
 
 	if err := pipeline.Run(ctx, src); err != nil {
 		log.Error(err, "backup run failed", "target", src.TargetName)
-		os.Exit(1)
+		return 1
 	}
 	log.Info("backup run completed", "target", src.TargetName)
+	return 0
 }
 
 // loadDestinations lists Secrets in the namespace carrying the destination
@@ -215,7 +223,9 @@ func validateNonNegInt(v string) error {
 // buildEventEmitter creates a Kubernetes EventRecorder that emits events
 // against the source Secret. Events form a permanent audit trail visible
 // via `kubectl describe secret <source>` and cluster audit logs.
-func buildEventEmitter(cs kubernetes.Interface, sec *corev1.Secret) backup.EventEmitter {
+// The returned cleanup function shuts down the broadcaster, flushing
+// any buffered events before the process exits.
+func buildEventEmitter(cs kubernetes.Interface, sec *corev1.Secret) (backup.EventEmitter, func()) {
 	s := runtime.NewScheme()
 	_ = scheme.AddToScheme(s)
 	eventBroadcaster := record.NewBroadcaster()
@@ -230,7 +240,7 @@ func buildEventEmitter(cs kubernetes.Interface, sec *corev1.Secret) backup.Event
 		UID:        sec.UID,
 		APIVersion: "v1",
 	}
-	return &secretEventEmitter{recorder: recorder, ref: ref}
+	return &secretEventEmitter{recorder: recorder, ref: ref}, eventBroadcaster.Shutdown
 }
 
 func die(format string, args ...any) {

@@ -882,7 +882,7 @@ This section documents the complete data lifecycle for compliance audits (DSGVO/
 
 | Principal | Can access | Cannot access |
 |---|---|---|
-| Operator pod | Source/Dest Secrets (read), CronJobs (CRUD), Leases, Events | Private key, dump contents |
+| Operator pod | Source/Dest Secrets (CRUD), CronJobs (CRUD), ConfigMaps (get/update/patch), Jobs (create), Leases, Events | Private key, dump contents |
 | Worker pod | Source/Dest Secrets (read), Events (create) | CronJobs, Leases, private key |
 | Storage backend | Encrypted dumps, unencrypted meta.json | Private key, DB credentials |
 | Restore operator (human) | Private key, storage backend | Cluster Secrets (unless they have kubectl access) |

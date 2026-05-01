@@ -275,6 +275,8 @@ backup-restore --storage-secret hetzner-sb -n backup --target prod-users \
 | `backup.mogenius.io/destinations` | unset | Comma-separated allow-list of destination *names*. Empty = fan out to all. |
 | `backup.mogenius.io/retention-days` | `DEFAULT_RETENTION_DAYS` (30) | Delete dumps older than N days. `0` = keep forever. |
 | `backup.mogenius.io/min-keep` | `DEFAULT_MIN_KEEP` (3) | Safety floor — never delete below this many newest dumps. |
+| `backup.mogenius.io/row-drop-threshold` | `0.5` | Analyzer anomaly threshold for row-count drops. `0.3` means flag when a table shrinks below 30% of its previous size. |
+| `backup.mogenius.io/size-drop-threshold` | `0.5` | Analyzer anomaly threshold for dump size drops. Same semantics as row-drop. |
 | `backup.mogenius.io/extra-<key>` | none | Surfaced into `dumper.Config.Extra[key]`. Used for DB-specific options (e.g. `extra-sslmode`, `extra-authSource`). |
 
 A typo on a feature-flag annotation falls back to the default rather than rejecting the Secret — backups must keep running even if a flag is misspelled.
@@ -794,6 +796,12 @@ The notable ones, with the reasoning that future readers should preserve.
 - **Canonical `MetaFile` in `internal/meta`, not per-consumer copies.** The pipeline, metrics refresher, and UI all deserialise the same `*.meta.json` sidecar. Three private structs drifted independently (different field subsets, no shared methods). Consolidating into `internal/meta.MetaFile` gives them `IsFailure()` and `ParsedTimestamp()` for free and eliminates a class of serialisation-mismatch bugs.
 
 - **`metrics` package, not `metricStore`.** Go convention is lowercase single-word package names. The rename also narrows `Register()` from `ctrlmetrics.RegistererGatherer` to `prometheus.Registerer`, decoupling the metrics layer from controller-runtime so it can be reused in non-operator contexts (e.g. a future standalone worker metrics endpoint).
+
+- **`BatchStorage` interface for connection reuse.** SFTP operations (List, Delete) each opened a fresh SSH connection. During retention — one List + N Deletes — this meant N+1 handshakes. Rather than embedding pooling into the Storage interface (which S3 doesn't need), we added an optional `BatchStorage` interface with `WithSession()`. Callers type-assert and get a reusable session. This keeps the base `Storage` interface minimal while giving SFTP a proper batch path.
+
+- **Structured error types in the pipeline.** Upload failures are `RetryableError` (transient network issues), storage-init failures are `PermanentError` (bad credentials), and config issues are `ValidationError`. This lets the fan-out distinguish error classes for logging and future retry logic, without changing the existing best-effort error handling contract.
+
+- **Post-upload size verification.** After uploading a dump, the pipeline Lists the uploaded path and compares the remote object's size to the local file. This catches silent truncation or partial writes. If the List itself fails (not all backends support prefix-exact listing), verification is skipped rather than failing the backup — availability over strictness.
 
 - **Operator-side metric aggregation, not Pushgateway.** Backup metrics are produced by short-lived worker pods that Prometheus cannot scrape in time. Three options were considered: (a) Pushgateway, (b) operator aggregates from `meta.json`, (c) drop semantic alerts and rely on kube-state-metrics for Job status. We picked (b): the operator's `MetricsRefresher` controller polls each destination's latest meta.json and writes the result into the operator's local registry. Pushgateway adds a stateful component with known counter-staleness footguns; (c) sacrifices the project's core differentiator (semantic alerts on dump *content*). Aggregating from storage reuses the artifacts we already produce and keeps the system stateless apart from the operator pod itself. Counter-style metrics (`runs_total`, `anomalies_total`) are converted to Gauges (`last_run_status`, `last_run_anomalies`) because monotonic counters require a continuously running producer; reconstructing them from storage would require summing across the retention window and break whenever retention prunes a run.
 

@@ -724,7 +724,7 @@ Two GitHub Actions workflows automate testing and releasing. See `.github/workfl
 
 ### CI (`ci.yaml`)
 
-Runs on every push and pull request to `main`:
+Runs on every pull request to `main`:
 
 | Job | Steps |
 |---|---|
@@ -733,21 +733,28 @@ Runs on every push and pull request to `main`:
 
 ### Release (`release.yaml`)
 
-Triggered by pushing a semver tag (`v*`):
+Triggered automatically on every push to `main` via [Semantic Release](https://github.com/semantic-release/semantic-release). The version is determined from commit messages — no manual tagging required.
 
 1. Run `go test` to gate the release.
-2. Build a multi-arch Docker image (`linux/amd64` + `linux/arm64`).
-3. Push the image to `ghcr.io/behrangalavi/backup-operator:<version>` and `:latest`.
-4. Package the Helm chart with the matching version.
-5. Push the chart to `oci://ghcr.io/behrangalavi/charts/backup-operator`.
+2. Analyze commits since the last release to determine the next version.
+3. Create a GitHub Release with auto-generated release notes.
+4. Build a multi-arch Docker image (`linux/amd64` + `linux/arm64`).
+5. Push the image to `ghcr.io/behrangalavi/backup-operator:<version>` and `:latest`.
+6. Package the Helm chart with the matching version.
+7. Push the chart to `oci://ghcr.io/behrangalavi/charts/backup-operator`.
 
-### Creating a release
+### Commit conventions
 
-```bash
-git tag v0.2.0
-git push origin v0.2.0
-# GitHub Actions builds + publishes automatically
-```
+Releases are driven by [Conventional Commits](https://www.conventionalcommits.org/):
+
+| Prefix | Effect | Example |
+|---|---|---|
+| `fix:` | Patch release (1.0.x) | `fix: correct retention day calculation` |
+| `feat:` | Minor release (1.x.0) | `feat: add S3 destination support` |
+| `feat!:` or `BREAKING CHANGE:` | Major release (x.0.0) | `feat!: rename source annotations` |
+| `docs:`, `ci:`, `chore:` | No release | `docs: update README` |
+
+Merging a PR with `fix:` or `feat:` commits triggers an automatic release. No manual `git tag` needed.
 
 After the workflow completes, users can install with:
 

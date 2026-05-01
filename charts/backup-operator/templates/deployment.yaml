@@ -55,6 +55,28 @@ spec:
               value: {{ include "backup-operator.serviceAccountName" . | quote }}
             - name: AGE_SECRET_NAME
               value: {{ include "backup-operator.fullname" . }}-age
+            {{- with .Values.workerResources }}
+            {{- if .limits }}
+            {{- if .limits.cpu }}
+            - name: WORKER_CPU_LIMIT
+              value: {{ .limits.cpu | quote }}
+            {{- end }}
+            {{- if .limits.memory }}
+            - name: WORKER_MEMORY_LIMIT
+              value: {{ .limits.memory | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .requests }}
+            {{- if .requests.cpu }}
+            - name: WORKER_CPU_REQUEST
+              value: {{ .requests.cpu | quote }}
+            {{- end }}
+            {{- if .requests.memory }}
+            - name: WORKER_MEMORY_REQUEST
+              value: {{ .requests.memory | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.ui.enabled }}
             - name: UI_ENABLED
               value: "true"

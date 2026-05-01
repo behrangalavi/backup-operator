@@ -10,6 +10,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -70,6 +71,12 @@ func main() {
 		{Key: "WORKER_SERVICE_ACCOUNT", Optional: false},
 		{Key: "AGE_SECRET_NAME", Optional: false},
 
+		// Worker resource limits — empty means no limits.
+		{Key: "WORKER_CPU_LIMIT", Optional: true},
+		{Key: "WORKER_MEMORY_LIMIT", Optional: true},
+		{Key: "WORKER_CPU_REQUEST", Optional: true},
+		{Key: "WORKER_MEMORY_REQUEST", Optional: true},
+
 		// UI dashboard — read-only timeline of run history. Disabled by
 		// default to keep the operator's surface minimal; flip UI_ENABLED
 		// to expose it on UI_ADDR.
@@ -120,6 +127,7 @@ func main() {
 		RetentionDaysDef:   config.GetValue("DEFAULT_RETENTION_DAYS"),
 		MinKeepDef:         config.GetValue("DEFAULT_MIN_KEEP"),
 		DefaultSchedule:    config.GetValue("DEFAULT_SCHEDULE"),
+		Resources:          buildWorkerResources(),
 	}
 
 	reconciler := &controllers.CronJobReconciler{
@@ -170,4 +178,43 @@ func namespaceForUI(watchNs string) string {
 		return podNs
 	}
 	return "default"
+}
+
+// buildWorkerResources constructs ResourceRequirements from env vars.
+// Empty values are silently skipped, so resource limits are optional.
+func buildWorkerResources() corev1.ResourceRequirements {
+	reqs := corev1.ResourceRequirements{}
+	if v := config.GetValue("WORKER_CPU_LIMIT"); v != "" {
+		if q, err := resource.ParseQuantity(v); err == nil {
+			if reqs.Limits == nil {
+				reqs.Limits = corev1.ResourceList{}
+			}
+			reqs.Limits[corev1.ResourceCPU] = q
+		}
+	}
+	if v := config.GetValue("WORKER_MEMORY_LIMIT"); v != "" {
+		if q, err := resource.ParseQuantity(v); err == nil {
+			if reqs.Limits == nil {
+				reqs.Limits = corev1.ResourceList{}
+			}
+			reqs.Limits[corev1.ResourceMemory] = q
+		}
+	}
+	if v := config.GetValue("WORKER_CPU_REQUEST"); v != "" {
+		if q, err := resource.ParseQuantity(v); err == nil {
+			if reqs.Requests == nil {
+				reqs.Requests = corev1.ResourceList{}
+			}
+			reqs.Requests[corev1.ResourceCPU] = q
+		}
+	}
+	if v := config.GetValue("WORKER_MEMORY_REQUEST"); v != "" {
+		if q, err := resource.ParseQuantity(v); err == nil {
+			if reqs.Requests == nil {
+				reqs.Requests = corev1.ResourceList{}
+			}
+			reqs.Requests[corev1.ResourceMemory] = q
+		}
+	}
+	return reqs
 }

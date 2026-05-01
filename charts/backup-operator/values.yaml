@@ -35,6 +35,17 @@ resources:
     cpu: 100m
     memory: 128Mi
 
+# Resource limits for worker pods spawned by CronJobs. Size according to
+# the largest expected dump. A MySQL/Postgres dump of ~5 GB typically needs
+# ~1 GiB RAM peak. Empty values mean no limit.
+workerResources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
 # An emptyDir provides scratch space for the encrypted dump file before
 # fan-out. Size it for the largest expected dump — bump if backups fail
 # with "no space left on device".

@@ -37,6 +37,7 @@ type WorkerSpec struct {
 	MinKeepDef         string
 	DefaultSchedule    string
 	ImagePullSecrets   []corev1.LocalObjectReference
+	Resources          corev1.ResourceRequirements
 }
 
 // CronJobReconciler keeps a managed K8s CronJob in sync with each source
@@ -163,6 +164,7 @@ func (r *CronJobReconciler) buildCronJob(sec *corev1.Secret, src *secrets.Source
 		ImagePullPolicy: r.Worker.ImagePullPolicy,
 		Env:             r.workerEnv(sec.Namespace),
 		SecurityContext: workerSecCtx,
+		Resources:       r.Worker.Resources,
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "temp", MountPath: r.Worker.TempDir},
 		},

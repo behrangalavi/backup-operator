@@ -43,6 +43,7 @@ type MetaFile struct {
 	Error              string           `json:"error,omitempty"`
 	Phase              string           `json:"phase,omitempty"`
 	EncryptedSizeBytes int64            `json:"encryptedSizeBytes,omitempty"`
+	SHA256             string           `json:"sha256,omitempty"`
 	Stats              *dumper.Stats    `json:"stats,omitempty"`
 	Report             *analyzer.Report `json:"report,omitempty"`
 

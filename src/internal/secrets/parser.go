@@ -31,6 +31,7 @@ type Source struct {
 	MinKeep            int
 	RowDropThreshold   float64 // -1 = use default
 	SizeDropThreshold  float64 // -1 = use default
+	AnonymizeTables    bool
 	Config             dumper.Config
 }
 
@@ -111,6 +112,7 @@ func ParseSource(s *corev1.Secret, defaultSchedule string) (*Source, error) {
 		MinKeep:            parseIntAnnotation(s.Annotations[labels.AnnotationMinKeep], -1),
 		RowDropThreshold:   parseFloatAnnotation(s.Annotations[labels.AnnotationRowDropThreshold], -1),
 		SizeDropThreshold:  parseFloatAnnotation(s.Annotations[labels.AnnotationSizeDropThreshold], -1),
+		AnonymizeTables:    parseBoolAnnotation(s.Annotations[labels.AnnotationAnonymizeTables], false),
 		Config: dumper.Config{
 			Name:     target,
 			Host:     host,

@@ -1,6 +1,7 @@
 image:
   repository: ghcr.io/mogenius/backup-operator
   tag: ""           # defaults to chart appVersion
+  digest: ""        # set to pin by digest, e.g. "sha256:abc123..." (overrides tag)
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -135,3 +136,16 @@ prometheusRule:
       labels: { severity: info }
       annotations:
         summary: "Backup of {{ $labels.target }} completed successfully"
+
+# Restricts operator pod egress to DNS, K8s API, SSH (22/23), and HTTPS (443).
+# Disabled by default — enable once you've verified your storage endpoints
+# are reachable through the allowed ports. Use extraEgressRules for
+# non-standard ports (e.g. MinIO on 9000, DB ports for MetricsRefresher).
+networkPolicy:
+  enabled: false
+  extraEgressRules: []
+  # Example: allow MinIO on a custom port
+  # extraEgressRules:
+  #   - ports:
+  #       - protocol: TCP
+  #         port: 9000

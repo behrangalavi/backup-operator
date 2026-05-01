@@ -291,7 +291,7 @@ func (p *Pipeline) uploadOne(
 ) error {
 	st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, p.logger)
 	if err != nil {
-		return fmt.Errorf("init storage: %w", err)
+		return &PermanentError{Op: "init storage", Err: err}
 	}
 
 	start := time.Now()
@@ -308,7 +308,7 @@ func (p *Pipeline) uploadOne(
 	localSize := info.Size()
 
 	if err := st.Upload(ctx, objectPath, dump); err != nil {
-		return fmt.Errorf("upload dump: %w", err)
+		return &RetryableError{Op: "upload dump", Err: err}
 	}
 	metrics.ObserveUploadDuration(target, d.Name, d.StorageType, time.Since(start))
 
@@ -317,7 +317,7 @@ func (p *Pipeline) uploadOne(
 	}
 
 	if err := st.Upload(ctx, metaPath, bytes.NewReader(meta)); err != nil {
-		return fmt.Errorf("upload meta: %w", err)
+		return &RetryableError{Op: "upload meta", Err: err}
 	}
 	return nil
 }

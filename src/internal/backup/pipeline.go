@@ -95,7 +95,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 
 	// Resolve destinations up-front so we can persist a failure-meta even
 	// when the dump itself fails.
-	dests := filterDestinations(p.destProvider.Destinations(), src)
+	dests := secrets.FilterDestinations(src, p.destProvider.Destinations())
 
 	d, err := dumperFactory.NewDumper(src.DBType, src.Config, log)
 	if err != nil {
@@ -420,17 +420,4 @@ func buildObjectPath(target, timestamp, ext string) string {
 	)
 }
 
-// filterDestinations applies the source's optional destination allow-list.
-// An empty allow-list means fan out to every discovered destination.
-func filterDestinations(all []*secrets.Destination, src *secrets.Source) []*secrets.Destination {
-	if len(src.DestinationAllow) == 0 {
-		return all
-	}
-	out := make([]*secrets.Destination, 0, len(all))
-	for _, d := range all {
-		if src.AllowsDestination(d.Name) {
-			out = append(out, d)
-		}
-	}
-	return out
-}
+

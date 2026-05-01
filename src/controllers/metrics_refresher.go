@@ -123,12 +123,7 @@ func (r *MetricsRefresher) listSecrets(ctx context.Context) ([]corev1.Secret, []
 }
 
 func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Source, all []*secrets.Destination) {
-	allowed := make([]*secrets.Destination, 0, len(all))
-	for _, d := range all {
-		if src.AllowsDestination(d.Name) {
-			allowed = append(allowed, d)
-		}
-	}
+	allowed := secrets.FilterDestinations(src, all)
 
 	// We track two independent "best" metas across destinations:
 	//   - newest:    dictates last_run_status / last_run_anomalies / size_change_ratio

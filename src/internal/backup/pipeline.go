@@ -250,6 +250,11 @@ func (p *Pipeline) dumpToFile(ctx context.Context, d dumper.Dumper, dumpFile str
 	return info.Size(), nil
 }
 
+const (
+	uploadMaxRetries = 3
+	uploadBaseDelay  = 2 * time.Second
+)
+
 func (p *Pipeline) fanOut(
 	ctx context.Context,
 	dests []*secrets.Destination,
@@ -266,7 +271,7 @@ func (p *Pipeline) fanOut(
 		wg.Add(1)
 		go func(d *secrets.Destination) {
 			defer wg.Done()
-			err := p.uploadOne(ctx, d, target, dumpFile, objectPath, metaPath, meta)
+			err := p.uploadWithRetry(ctx, d, target, dumpFile, objectPath, metaPath, meta, log)
 			if err != nil {
 				log.Error(err, "destination upload failed", "destination", d.Name)
 				metrics.SetDestinationFailed(target, d.Name, true)
@@ -281,6 +286,46 @@ func (p *Pipeline) fanOut(
 	}
 	wg.Wait()
 	return success
+}
+
+// uploadWithRetry wraps uploadOne with exponential backoff for transient
+// failures. Only RetryableError triggers a retry; PermanentError and other
+// errors abort immediately.
+func (p *Pipeline) uploadWithRetry(
+	ctx context.Context,
+	d *secrets.Destination,
+	target, dumpFile, objectPath, metaPath string,
+	meta []byte,
+	log logr.Logger,
+) error {
+	var lastErr error
+	for attempt := 0; attempt < uploadMaxRetries; attempt++ {
+		lastErr = p.uploadOne(ctx, d, target, dumpFile, objectPath, metaPath, meta)
+		if lastErr == nil {
+			return nil
+		}
+
+		var retryable *RetryableError
+		if !errors.As(lastErr, &retryable) {
+			return lastErr
+		}
+
+		if attempt < uploadMaxRetries-1 {
+			delay := uploadBaseDelay * time.Duration(1<<uint(attempt))
+			log.Info("retrying upload after transient failure",
+				"destination", d.Name,
+				"attempt", attempt+1,
+				"delay", delay.String(),
+				"err", lastErr.Error(),
+			)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+	}
+	return lastErr
 }
 
 func (p *Pipeline) uploadOne(

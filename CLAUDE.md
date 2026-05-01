@@ -818,7 +818,67 @@ What lives where in this setup:
 
 ---
 
-## 17. Architectural Decisions
+## 17. Data Flow & Compliance
+
+This section documents the complete data lifecycle for compliance audits (DSGVO/GDPR Art. 30, SOC2).
+
+### 17.1 Data at Rest
+
+| Location | Contents | Encryption | Retention |
+|---|---|---|---|
+| Source Secret (K8s) | DB credentials | Kubernetes Secret encryption (etcd) | Cluster lifecycle |
+| Destination Secret (K8s) | Storage credentials (SSH keys, S3 keys) | Kubernetes Secret encryption (etcd) | Cluster lifecycle |
+| Worker temp volume (`/tmp`) | Encrypted dump file (`.sql.gz.age`) | `age` public-key (X25519) | Pod lifecycle (emptyDir) |
+| Storage backend (SFTP/S3) | Encrypted dump + unencrypted `meta.json` | `age` public-key (X25519) | `retention-days` annotation |
+| Operator machine (offline) | `age` private key | Operator responsibility | Manual |
+
+### 17.2 Data in Transit
+
+| Path | Protocol | Encryption |
+|---|---|---|
+| Worker → Database | DB-native (pg, mysql, mongo) | TLS if configured via `extra-sslmode` / DB driver |
+| Worker → SFTP destination | SSH (SFTP subsystem) | SSH transport encryption |
+| Worker → S3 destination | HTTPS | TLS 1.2+ |
+| Operator → Storage (metrics refresh) | SSH/HTTPS (same as worker) | Same as worker |
+| Operator → K8s API | HTTPS (in-cluster ServiceAccount) | mTLS |
+
+### 17.3 Key Management
+
+- **Public key** (`age` recipient): stored in a K8s Secret (`backup-operator-age`), distributed to worker pods via env var. Used only for encryption.
+- **Private key** (`age` identity): **never enters the cluster**. Lives on the operator's machine. Required only for `backup-restore` CLI.
+- **SSH keys** (SFTP destinations): stored in destination Secrets. Scoped to individual storage backends.
+- **S3 credentials**: stored in destination Secrets. Should use scoped IAM roles with minimal write permissions.
+
+### 17.4 Audit Trail
+
+| Event | Source | Visible via |
+|---|---|---|
+| `BackupStarted` | Worker pod | `kubectl describe secret <source>`, cluster audit log |
+| `BackupCompleted` | Worker pod | Same |
+| `BackupFailed` | Worker pod | Same, includes failure phase |
+| `RetentionDelete` | Worker pod | Same, lists deleted artifact |
+| CronJob/Job status | Kubernetes | `kubectl get jobs`, kube-state-metrics |
+| Prometheus alerts | Alertmanager | Alert history, notification channels |
+
+### 17.5 Data Deletion
+
+- **Automated**: Retention policy deletes dumps older than `retention-days`, respecting `min-keep` safety floor. Deletion events are recorded as Kubernetes Events.
+- **Manual**: Delete the source Secret → OwnerReference cascades to CronJob → no new backups. Existing dumps in storage must be deleted manually from the backend.
+- **Right to erasure (DSGVO Art. 17)**: If a dump contains personal data subject to deletion, the encrypted dump must be deleted from all destinations. Without the private key, the dump is cryptographically inaccessible, but storage-level deletion may still be required by your DPO.
+
+### 17.6 Access Control Summary
+
+| Principal | Can access | Cannot access |
+|---|---|---|
+| Operator pod | Source/Dest Secrets (read), CronJobs (CRUD), Leases, Events | Private key, dump contents |
+| Worker pod | Source/Dest Secrets (read), Events (create) | CronJobs, Leases, private key |
+| Storage backend | Encrypted dumps, unencrypted meta.json | Private key, DB credentials |
+| Restore operator (human) | Private key, storage backend | Cluster Secrets (unless they have kubectl access) |
+| Prometheus/Alertmanager | Metrics (sizes, counts, anomalies) | Dump contents, credentials |
+
+---
+
+## 18. Architectural Decisions
 
 The notable ones, with the reasoning that future readers should preserve.
 
@@ -870,15 +930,30 @@ The notable ones, with the reasoning that future readers should preserve.
 
 - **Operator-side metric aggregation, not Pushgateway.** Backup metrics are produced by short-lived worker pods that Prometheus cannot scrape in time. Three options were considered: (a) Pushgateway, (b) operator aggregates from `meta.json`, (c) drop semantic alerts and rely on kube-state-metrics for Job status. We picked (b): the operator's `MetricsRefresher` controller polls each destination's latest meta.json and writes the result into the operator's local registry. Pushgateway adds a stateful component with known counter-staleness footguns; (c) sacrifices the project's core differentiator (semantic alerts on dump *content*). Aggregating from storage reuses the artifacts we already produce and keeps the system stateless apart from the operator pod itself. Counter-style metrics (`runs_total`, `anomalies_total`) are converted to Gauges (`last_run_status`, `last_run_anomalies`) because monotonic counters require a continuously running producer; reconstructing them from storage would require summing across the retention window and break whenever retention prunes a run.
 
+- **Separate ServiceAccounts for operator and worker.** The operator SA retains Secret watch, CronJob CRUD, Job watch, Lease CRUD. The worker SA is reduced to Secret get/list + Event create/patch. A compromised worker pod can no longer modify CronJob schedules or leader election leases.
+
+- **Writable `/tmp` via emptyDir, not relaxing `readOnlyRootFilesystem`.** The operator needs a small writable `/tmp` (1Mi) for SFTP known-hosts temp files. The worker's main emptyDir is mounted at `/tmp` (covering both `os.CreateTemp` and the `TEMP_DIR` subdirectory). This preserves PSA-restricted compliance.
+
+- **EventBroadcaster shutdown before exit.** The worker defers `eventBroadcaster.Shutdown()` to flush buffered events. Without it, final events like `BackupCompleted` could be lost because the broadcaster sends asynchronously.
+
+- **Signal-aware context for graceful shutdown.** The worker's context chains `signal.NotifyContext(SIGTERM, SIGINT)` → `context.WithTimeout`. SIGTERM from Kubernetes pod termination cancels the pipeline context, allowing in-flight operations to abort cleanly while deferred cleanup (event flush, temp file removal) still runs.
+
+- **Upload concurrency semaphore.** Fan-out uses a channel-based semaphore (default 4) to limit concurrent uploads. Without it, N destinations each open the dump file and upload simultaneously, causing file-descriptor and bandwidth pressure on clusters with many destinations.
+
+- **PodDisruptionBudget for the operator.** Only rendered when `replicaCount > 1`. Prevents voluntary evictions from killing the last operator pod during node drains or cluster upgrades. `minAvailable: 1` is the right choice for a leader-elected controller.
+
+- **UI error sanitization.** HTTP error responses return generic messages ("internal error", "target not found") instead of raw `err.Error()`. Internal details are logged server-side. This prevents leaking implementation details (file paths, storage errors, internal state) to unauthorized clients, especially when the UI is exposed without an auth proxy.
+
 ---
 
-## 18. Important
+## 19. Important
 
 - Every change to the directory structure should be reflected in section 4.
 - New annotations or labels: update sections 6.1–6.5.
 - New env vars: update section 7.
 - New metrics: update section 12. New default alerts: update section 13.
 - New failure modes worth flagging: update section 14.
-- Architectural decisions that change the behaviour of existing systems: update section 17 with the *reason*, not just the change.
+- Data-flow or access-control changes: update section 17.
+- Architectural decisions that change the behaviour of existing systems: update section 18 with the *reason*, not just the change.
 
 Documentation that drifts from code is worse than no documentation. Bring this file with you when you change behaviour.

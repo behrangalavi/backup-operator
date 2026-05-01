@@ -256,3 +256,78 @@ func (s *sftpStorage) Delete(ctx context.Context, p string) error {
 	}
 	return nil
 }
+
+// WithSession opens one SSH+SFTP connection and returns a Storage that
+// reuses it for every call. The caller MUST call closer() when done.
+func (s *sftpStorage) WithSession(ctx context.Context) (storage.Storage, func() error, error) {
+	sshC, sc, err := s.dial(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	sess := &sftpSession{parent: s, sc: sc}
+	closer := func() error {
+		_ = sc.Close()
+		return sshC.Close()
+	}
+	return sess, closer, nil
+}
+
+// sftpSession wraps a single SSH/SFTP connection so multiple List/Delete
+// calls don't re-dial. Upload and Get still work but share the connection.
+type sftpSession struct {
+	parent *sftpStorage
+	sc     *sftp.Client
+}
+
+func (s *sftpSession) Name() string { return s.parent.name }
+
+func (s *sftpSession) Upload(_ context.Context, p string, r io.Reader) error {
+	full := s.parent.full(p)
+	if err := s.sc.MkdirAll(path.Dir(full)); err != nil {
+		return fmt.Errorf("mkdir %s: %w", path.Dir(full), err)
+	}
+	f, err := s.sc.Create(full)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", full, err)
+	}
+	defer f.Close()
+	if _, err := io.Copy(f, r); err != nil {
+		return fmt.Errorf("write %s: %w", full, err)
+	}
+	return nil
+}
+
+func (s *sftpSession) List(_ context.Context, prefix string) ([]storage.Object, error) {
+	walker := s.sc.Walk(s.parent.full(prefix))
+	var out []storage.Object
+	for walker.Step() {
+		if err := walker.Err(); err != nil {
+			return nil, fmt.Errorf("walk: %w", err)
+		}
+		info := walker.Stat()
+		if info.IsDir() {
+			continue
+		}
+		out = append(out, storage.Object{
+			Path:         s.parent.stripPrefix(walker.Path()),
+			Size:         info.Size(),
+			LastModified: info.ModTime(),
+		})
+	}
+	return out, nil
+}
+
+func (s *sftpSession) Get(_ context.Context, p string) (io.ReadCloser, error) {
+	f, err := s.sc.Open(s.parent.full(p))
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", p, err)
+	}
+	return io.NopCloser(f), nil
+}
+
+func (s *sftpSession) Delete(_ context.Context, p string) error {
+	if err := s.sc.Remove(s.parent.full(p)); err != nil {
+		return fmt.Errorf("remove %s: %w", p, err)
+	}
+	return nil
+}

@@ -25,6 +25,15 @@ type Storage interface {
 	Delete(ctx context.Context, path string) error
 }
 
+// BatchStorage is an optional extension for Storage implementations that
+// support connection reuse across multiple operations (e.g. SFTP). Callers
+// should type-assert before using. The returned Storage shares one connection
+// and the closer MUST be called when done.
+type BatchStorage interface {
+	Storage
+	WithSession(ctx context.Context) (session Storage, closer func() error, err error)
+}
+
 // SecretData carries the raw `data` map of a destination Secret. Each
 // Storage implementation parses the keys it needs in its constructor.
 type SecretData = map[string][]byte

@@ -17,7 +17,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -102,8 +104,10 @@ func main() {
 	cs, err := kubernetes.NewForConfig(cfg)
 	assert.NoError(err, "failed to build kubernetes client")
 
+	sigCtx, sigStop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer sigStop()
 	runTimeoutSec, _ := strconv.Atoi(config.GetValue("RUN_TIMEOUT_SECONDS"))
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(runTimeoutSec)*time.Second)
+	ctx, cancel := context.WithTimeout(sigCtx, time.Duration(runTimeoutSec)*time.Second)
 	defer cancel()
 
 	srcSecret, err := cs.CoreV1().Secrets(ns).Get(ctx, *sourceSecret, metav1.GetOptions{})

@@ -37,13 +37,7 @@ function connectSSE() {
   ['source_created','source_updated','source_deleted',
    'destination_created','destination_updated','destination_deleted',
    'backup_triggered','settings_updated'].forEach(ev => {
-    eventSource.addEventListener(ev, () => {
-      const page = currentPage();
-      if (['dashboard','sources'].includes(page)) renderPage(page);
-      if (['dashboard','destinations'].includes(page)) renderPage(page);
-      if (page === 'jobs') renderJobs();
-      if (page === 'settings') renderSettings();
-    });
+    eventSource.addEventListener(ev, () => renderPage(currentPage()));
   });
   eventSource.onerror = () => {
     dot.className = 'status-dot error';
@@ -126,8 +120,13 @@ function escHTML(s) {
   return d.innerHTML;
 }
 
+function showLoading() {
+  content.innerHTML = '<div class="empty-state"><div class="spinner"></div></div>';
+}
+
 // --- Dashboard ---
 async function renderDashboard() {
+  showLoading();
   let targets = [], dests = [], jobs = [];
   try {
     [targets, dests, jobs] = await Promise.all([
@@ -172,7 +171,11 @@ async function renderDashboard() {
           <td style="color:var(--text-muted);font-size:12px">${t.Latest ? timeAgo(t.Latest.timestamp) : 'never'}</td>
           <td class="num" style="font-size:12px">${t.Latest && !t.Latest.status?.includes('fail') ? humanBytes(t.Latest.encryptedSizeBytes) : '—'}</td>
           <td>${(t.Destinations || []).map(d => `<span class="badge badge-sftp" style="margin:1px">${escHTML(d)}</span>`).join('')}</td>
-          <td><button class="btn btn-ghost btn-sm" onclick="triggerBackup('${escHTML(t.Name)}')" title="Trigger manual backup">&#9654;</button></td>
+          <td style="white-space:nowrap">
+            <button class="btn btn-ghost btn-sm" onclick="triggerBackup('${escHTML(t.Name)}')" title="Run now">&#9654;</button>
+            <button class="btn btn-ghost btn-sm" onclick="openSourceForm('${escHTML(t.SecretName)}')" title="Edit">&#9998;</button>
+            <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteSource('${escHTML(t.SecretName)}','${escHTML(t.Name)}')" title="Delete">&#10005;</button>
+          </td>
         </tr>`).join('')}</tbody>
       </table>`}
     </div>`;
@@ -180,6 +183,7 @@ async function renderDashboard() {
 
 // --- Sources ---
 async function renderSources() {
+  showLoading();
   let targets = [];
   try { targets = await api('/api/targets'); } catch(e) { toast(e.message, 'error'); }
 
@@ -213,6 +217,8 @@ async function renderSources() {
         <div class="detail-row"><span class="key">Destinations</span><span class="val">${(t.Destinations||[]).join(', ') || 'all'}</span></div>
         <div style="display:flex;gap:6px;margin-top:12px;justify-content:flex-end">
           <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();triggerBackup('${escHTML(t.Name)}')" title="Run now">&#9654; Run</button>
+          <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openSourceForm('${escHTML(t.SecretName)}')">Edit</button>
+          <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="event.stopPropagation();deleteSource('${escHTML(t.SecretName)}','${escHTML(t.Name)}')">Delete</button>
         </div>
       </div>`).join('')}
     </div>`}`;
@@ -341,6 +347,7 @@ window.confirmDeleteSource = async function(secretName) {
 
 // --- Destinations ---
 async function renderDestinations() {
+  showLoading();
   let dests = [];
   try { dests = await api('/api/destinations'); } catch(e) { toast(e.message, 'error'); }
 
@@ -492,6 +499,7 @@ window.confirmDeleteDest = async function(secretName) {
 
 // --- Jobs ---
 async function renderJobs() {
+  showLoading();
   let jobs = [];
   try { jobs = await api('/api/jobs'); } catch(e) { toast(e.message, 'error'); }
 
@@ -517,6 +525,7 @@ async function renderJobs() {
 // --- Target detail ---
 async function renderTargetDetail(name) {
   if (!name) { renderDashboard(); return; }
+  showLoading();
   let targets = [], runs = [], dests = [];
   try {
     [targets, dests] = await Promise.all([api('/api/targets'), api('/api/destinations')]);
@@ -531,13 +540,6 @@ async function renderTargetDetail(name) {
 
   try { runs = (await api('/api/targets/' + name + '/runs')) || []; } catch(e) { /* ok */ }
 
-  // Find secretName from targets - we need to look it up
-  let secretName = '';
-  try {
-    const srcList = await api('/api/targets');
-    // We don't have secretName from targets API, get from source secrets
-  } catch(e) {}
-
   content.innerHTML = `
     <div class="page-header">
       <div>
@@ -546,6 +548,8 @@ async function renderTargetDetail(name) {
       </div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-secondary btn-sm" onclick="triggerBackup('${escHTML(name)}')">&#9654; Run Now</button>
+        <button class="btn btn-secondary btn-sm" onclick="openSourceForm('${escHTML(target.SecretName)}')">Edit</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteSource('${escHTML(target.SecretName)}','${escHTML(name)}')">Delete</button>
       </div>
     </div>
     <div class="detail-grid">
@@ -796,17 +800,19 @@ window.goToStep = function(n) {
 
 window.submitSettings = async function(e) {
   e.preventDefault();
+  // Collect any form values from the current step before saving.
+  const form = $('#settingsForm');
+  if (form && window._currentSettings) {
+    const fd = new FormData(form);
+    for (const [k, v] of fd.entries()) {
+      window._currentSettings[k] = v;
+    }
+  }
   const s = window._currentSettings;
   if (!s) { toast('No settings loaded', 'error'); return; }
 
   try {
-    await fetch('/api/settings', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(s)
-    }).then(r => r.json()).then(d => {
-      if (!d.ok) throw new Error(d.message);
-    });
+    await api('/api/settings', { method: 'PUT', body: JSON.stringify(s) });
     toast('Settings saved successfully', 'success');
   } catch(e) {
     toast('Failed to save: ' + e.message, 'error');

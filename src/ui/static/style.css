@@ -223,6 +223,14 @@ tbody tr:last-child td { border-bottom: none; }
 .toast-info { background: #1e3a5f; color: #bfdbfe; }
 @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
+/* Loading spinner */
+.spinner {
+  width: 32px; height: 32px; border: 3px solid var(--border);
+  border-top-color: var(--accent); border-radius: 50%;
+  animation: spin 0.6s linear infinite; margin: 0 auto;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
 /* Empty state */
 .empty-state {
   text-align: center; padding: 60px 20px; color: var(--text-muted);

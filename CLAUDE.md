@@ -150,6 +150,55 @@ backup-restore --storage-secret hetzner-sb -n backup --target prod-users \
   --age-key ~/age.key --decompress | psql -h localhost prod_clone
 ```
 
+### 3.1 Securing the UI with an Authentication Proxy
+
+The built-in UI (`UI_ENABLED=true`) has **no authentication**. In production, place an authenticating reverse proxy in front of it. Common options:
+
+**OAuth2 Proxy (recommended for SSO):**
+
+```yaml
+# values.yaml snippet — deploy as sidecar or separate Deployment
+# pointing at the operator's UI port.
+extraContainers:
+  - name: oauth2-proxy
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7
+    args:
+      - --upstream=http://localhost:8081
+      - --http-address=0.0.0.0:4180
+      - --provider=oidc
+      - --oidc-issuer-url=https://accounts.google.com  # or Keycloak, Azure AD, etc.
+      - --email-domain=yourcompany.com
+      - --cookie-secret=$(head -c 32 /dev/urandom | base64)
+    ports:
+      - containerPort: 4180
+```
+
+**Kubernetes Ingress with basic-auth:**
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: backup-ui
+  annotations:
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: backup-ui-htpasswd
+spec:
+  rules:
+    - host: backup.internal.yourcompany.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: backup-operator
+                port:
+                  number: 8081
+```
+
+The operator UI only exposes non-sensitive metadata (target names, timestamps, dump sizes). It **never** shows database credentials or decrypted backup content. Still, authentication prevents unauthorized users from browsing backup history or downloading encrypted dumps.
+
 ---
 
 ## 4. Directory Structure

@@ -1,0 +1,11 @@
+{{- if gt (int .Values.replicaCount) 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "backup-operator.fullname" . }}
+  labels: {{- include "backup-operator.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {{- include "backup-operator.selectorLabels" . | nindent 6 }}
+{{- end }}

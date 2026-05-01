@@ -1016,18 +1016,21 @@ Two GitHub Actions workflows:
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yaml` | Push/PR to `main` | `go build`, `go test`, `go vet`, `helm lint` |
-| `release.yaml` | Tag push `v*` | Build multi-arch Docker image → GHCR, package + push Helm chart to OCI registry |
+| `ci.yaml` | PR to `main` | `go build`, `go test`, `go vet`, `helm lint` |
+| `release.yaml` | Push to `main` | Semantic Release → multi-arch Docker image → GHCR, package + push Helm chart to OCI registry |
 
 ### 19.3 Release Process
 
-```bash
-# 1. Bump Chart.yaml version + appVersion
-# 2. Tag and push
-git tag v0.2.0
-git push origin v0.2.0
-# 3. GitHub Actions builds image + publishes chart automatically
-```
+Releases are fully automated via [Semantic Release](https://github.com/semantic-release/semantic-release). Merging a PR with conventional commit prefixes triggers the appropriate version bump:
+
+| Prefix | Effect |
+|---|---|
+| `fix:` | Patch release (1.0.x) |
+| `feat:` | Minor release (1.x.0) |
+| `feat!:` / `BREAKING CHANGE:` | Major release (x.0.0) |
+| `docs:`, `ci:`, `chore:` | No release |
+
+No manual tagging required. The workflow runs `go test`, then semantic-release determines the next version, creates a GitHub Release, builds the Docker image, and publishes the Helm chart.
 
 ### 19.4 Settings Wizard
 

@@ -326,6 +326,7 @@ backup-restore --storage-secret hetzner-sb -n backup --target prod-users \
 | `backup.mogenius.io/min-keep` | `DEFAULT_MIN_KEEP` (3) | Safety floor — never delete below this many newest dumps. |
 | `backup.mogenius.io/row-drop-threshold` | `0.5` | Analyzer anomaly threshold for row-count drops. `0.3` means flag when a table shrinks below 30% of its previous size. |
 | `backup.mogenius.io/size-drop-threshold` | `0.5` | Analyzer anomaly threshold for dump size drops. Same semantics as row-drop. |
+| `backup.mogenius.io/anonymize-tables` | `false` | `true` → hash table names in `meta.json` with SHA256 (16 hex chars). Row counts preserved. |
 | `backup.mogenius.io/extra-<key>` | none | Surfaced into `dumper.Config.Extra[key]`. Used for DB-specific options (e.g. `extra-sslmode`, `extra-authSource`). |
 
 A typo on a feature-flag annotation falls back to the default rather than rejecting the Secret — backups must keep running even if a flag is misspelled.
@@ -864,7 +865,7 @@ This section documents the complete data lifecycle for compliance audits (DSGVO/
 
 - **Automated**: Retention policy deletes dumps older than `retention-days`, respecting `min-keep` safety floor. Deletion events are recorded as Kubernetes Events.
 - **Manual**: Delete the source Secret → OwnerReference cascades to CronJob → no new backups. Existing dumps in storage must be deleted manually from the backend.
-- **Right to erasure (DSGVO Art. 17)**: If a dump contains personal data subject to deletion, the encrypted dump must be deleted from all destinations. Without the private key, the dump is cryptographically inaccessible, but storage-level deletion may still be required by your DPO.
+- **Right to erasure (DSGVO Art. 17)**: Use `backup-restore --purge --target X --before YYYY-MM-DD` to delete all artifacts for a target from storage. Add `--dry-run` to preview. Without the private key, the dump is cryptographically inaccessible, but storage-level deletion may still be required by your DPO.
 
 ### 17.6 Access Control Summary
 
@@ -932,7 +933,7 @@ The notable ones, with the reasoning that future readers should preserve.
 
 - **Separate ServiceAccounts for operator and worker.** The operator SA retains Secret watch, CronJob CRUD, Job watch, Lease CRUD. The worker SA is reduced to Secret get/list + Event create/patch. A compromised worker pod can no longer modify CronJob schedules or leader election leases.
 
-- **Writable `/tmp` via emptyDir, not relaxing `readOnlyRootFilesystem`.** The operator needs a small writable `/tmp` (1Mi) for SFTP known-hosts temp files. The worker's main emptyDir is mounted at `/tmp` (covering both `os.CreateTemp` and the `TEMP_DIR` subdirectory). This preserves PSA-restricted compliance.
+- **Writable `/tmp` via emptyDir, not relaxing `readOnlyRootFilesystem`.** The operator needs a small writable `/tmp` (1Mi) for SFTP known-hosts temp files. The worker's main emptyDir is mounted at the configured `TEMP_DIR` path. When `TEMP_DIR` is not under `/tmp`, a second small emptyDir covers `/tmp` for `os.CreateTemp` calls. This preserves PSA-restricted compliance.
 
 - **EventBroadcaster shutdown before exit.** The worker defers `eventBroadcaster.Shutdown()` to flush buffered events. Without it, final events like `BackupCompleted` could be lost because the broadcaster sends asynchronously.
 
@@ -943,6 +944,20 @@ The notable ones, with the reasoning that future readers should preserve.
 - **PodDisruptionBudget for the operator.** Only rendered when `replicaCount > 1`. Prevents voluntary evictions from killing the last operator pod during node drains or cluster upgrades. `minAvailable: 1` is the right choice for a leader-elected controller.
 
 - **UI error sanitization.** HTTP error responses return generic messages ("internal error", "target not found") instead of raw `err.Error()`. Internal details are logged server-side. This prevents leaking implementation details (file paths, storage errors, internal state) to unauthorized clients, especially when the UI is exposed without an auth proxy.
+
+- **SHA256 checksum in meta.json.** The pipeline computes SHA256 of the encrypted dump during file writing via `io.MultiWriter(file, hash)`. The hex-encoded hash is stored in `meta.json`. This enables offline integrity verification during restore and periodic bit-rot detection without downloading the full dump — compare `sha256` from meta with the stored object.
+
+- **MetricsRefresher parallel with semaphore.** Destination meta-fetches within `refreshSource()` now run as goroutines bounded by a channel semaphore (default 4). Previously sequential — with many destinations, refresh could take long and open too many simultaneous connections. Caps I/O while being faster than serial.
+
+- **Table-name anonymization.** When `backup.mogenius.io/anonymize-tables=true`, table names in `meta.json` are replaced with truncated SHA256 hashes (16 hex chars). Row counts and sizes are preserved for anomaly detection. Real names stay in Prometheus metrics (scrape-only, not persisted to storage). Protects against information leakage through table names like `medical_records` in stored metadata.
+
+- **Purge CLI for DSGVO Art. 17.** `backup-restore --purge --target X --before YYYY-MM-DD` deletes all artifacts from storage. `--dry-run` previews. Enables right-to-erasure workflows without manual storage access. The cutoff is timezone-naive UTC.
+
+- **Image digest pinning.** Helm supports `image.digest` in `values.yaml`. When set (e.g. `sha256:abc123...`), both operator and worker use `@sha256:...` instead of `:tag`. Tags are mutable — a compromised registry or accidental re-push can silently change what runs. Digest-pinning guarantees byte-identical images across deploys. Populate from CI: `crane digest ghcr.io/mogenius/backup-operator:v1.2.3`.
+
+- **Optional NetworkPolicy for operator pod.** Helm template restricts egress to DNS (53), K8s API (443/6443), SSH (22/23), and HTTPS (443). Opt-in via `networkPolicy.enabled: true`. `extraEgressRules` allows non-standard ports (e.g. MinIO 9000). Limits blast radius of a compromised operator pod.
+
+- **EmptyDir mount at configured TEMP_DIR.** The worker's emptyDir mounts at `r.Worker.TempDir` (not hardcoded `/tmp`). When `TempDir` is not under `/tmp`, a second small emptyDir covers `/tmp` for `os.CreateTemp` calls. Fixes a regression where custom `TEMP_DIR` broke with `readOnlyRootFilesystem`.
 
 ---
 

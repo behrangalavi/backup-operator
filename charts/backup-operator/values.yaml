@@ -1,6 +1,7 @@
 image:
   repository: ghcr.io/mogenius/backup-operator
   tag: ""           # defaults to chart appVersion
+  digest: ""        # set to pin by digest, e.g. "sha256:abc123..." (overrides tag)
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []

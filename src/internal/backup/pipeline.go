@@ -17,6 +17,7 @@ import (
 	"backup-operator/crypto"
 	"backup-operator/dumper"
 	dumperFactory "backup-operator/dumper/factory"
+	"backup-operator/internal/meta"
 	"backup-operator/internal/secrets"
 	"backup-operator/metrics"
 	"backup-operator/storage"
@@ -321,11 +322,11 @@ func (p *Pipeline) loadPreviousStats(ctx context.Context, dests []*secrets.Desti
 			if err != nil {
 				continue
 			}
-			var m metaFile
+			var m meta.MetaFile
 			if err := json.Unmarshal(raw, &m); err != nil {
 				continue
 			}
-			if m.Status == "failed" {
+			if m.IsFailure() {
 				continue
 			}
 			return m.Stats, m.EncryptedSizeBytes
@@ -353,24 +354,12 @@ func sortedMetaPaths(objs []storage.Object) []string {
 	return out
 }
 
-type metaFile struct {
-	Target             string           `json:"target"`
-	Timestamp          string           `json:"timestamp"`
-	DBType             string           `json:"dbType"`
-	Status             string           `json:"status,omitempty"`
-	Error              string           `json:"error,omitempty"`
-	Phase              string           `json:"phase,omitempty"`
-	EncryptedSizeBytes int64            `json:"encryptedSizeBytes,omitempty"`
-	Stats              *dumper.Stats    `json:"stats,omitempty"`
-	Report             *analyzer.Report `json:"report,omitempty"`
-}
-
 func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report, size int64, timestamp string) []byte {
-	m := metaFile{
+	m := meta.MetaFile{
 		Target:             src.TargetName,
 		Timestamp:          timestamp,
 		DBType:             src.DBType,
-		Status:             "success",
+		Status:             meta.StatusSuccess,
 		EncryptedSizeBytes: size,
 		Stats:              stats,
 		Report:             report,
@@ -387,11 +376,11 @@ func failureMetaJSON(src *secrets.Source, timestamp, phase string, runErr error)
 	if runErr != nil {
 		msg = runErr.Error()
 	}
-	m := metaFile{
+	m := meta.MetaFile{
 		Target:    src.TargetName,
 		Timestamp: timestamp,
 		DBType:    src.DBType,
-		Status:    "failed",
+		Status:    meta.StatusFailed,
 		Error:     msg,
 		Phase:     phase,
 	}

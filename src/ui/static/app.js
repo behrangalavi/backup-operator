@@ -31,13 +31,13 @@ function connectSSE() {
   });
   eventSource.addEventListener('refresh', () => {
     const page = currentPage();
-    if (page === 'dashboard') renderDashboard();
-    if (page === 'jobs') renderJobs();
+    if (page === 'dashboard') renderDashboard(false);
+    if (page === 'jobs') renderJobs(false);
   });
   ['source_created','source_updated','source_deleted',
    'destination_created','destination_updated','destination_deleted',
    'backup_triggered','settings_updated'].forEach(ev => {
-    eventSource.addEventListener(ev, () => renderPage(currentPage()));
+    eventSource.addEventListener(ev, () => renderPage(currentPage(), false));
   });
   eventSource.onerror = () => {
     dot.className = 'status-dot error';
@@ -58,18 +58,18 @@ function currentParam() {
 
 window.addEventListener('hashchange', () => renderPage(currentPage()));
 
-function renderPage(page) {
+function renderPage(page, loading = true) {
   $$('.nav-link').forEach(a => {
     a.classList.toggle('active', a.dataset.page === page);
   });
   switch(page) {
-    case 'dashboard': renderDashboard(); break;
-    case 'sources': renderSources(); break;
-    case 'destinations': renderDestinations(); break;
-    case 'jobs': renderJobs(); break;
-    case 'target': renderTargetDetail(currentParam()); break;
-    case 'settings': renderSettings(); break;
-    default: renderDashboard();
+    case 'dashboard': renderDashboard(loading); break;
+    case 'sources': renderSources(loading); break;
+    case 'destinations': renderDestinations(loading); break;
+    case 'jobs': renderJobs(loading); break;
+    case 'target': renderTargetDetail(currentParam(), loading); break;
+    case 'settings': renderSettings(loading); break;
+    default: renderDashboard(loading);
   }
 }
 
@@ -125,8 +125,8 @@ function showLoading() {
 }
 
 // --- Dashboard ---
-async function renderDashboard() {
-  showLoading();
+async function renderDashboard(loading = true) {
+  if (loading) showLoading();
   let targets = [], dests = [], jobs = [];
   try {
     [targets, dests, jobs] = await Promise.all([
@@ -182,8 +182,8 @@ async function renderDashboard() {
 }
 
 // --- Sources ---
-async function renderSources() {
-  showLoading();
+async function renderSources(loading = true) {
+  if (loading) showLoading();
   let targets = [];
   try { targets = await api('/api/targets'); } catch(e) { toast(e.message, 'error'); }
 
@@ -346,8 +346,8 @@ window.confirmDeleteSource = async function(secretName) {
 };
 
 // --- Destinations ---
-async function renderDestinations() {
-  showLoading();
+async function renderDestinations(loading = true) {
+  if (loading) showLoading();
   let dests = [];
   try { dests = await api('/api/destinations'); } catch(e) { toast(e.message, 'error'); }
 
@@ -498,8 +498,8 @@ window.confirmDeleteDest = async function(secretName) {
 };
 
 // --- Jobs ---
-async function renderJobs() {
-  showLoading();
+async function renderJobs(loading = true) {
+  if (loading) showLoading();
   let jobs = [];
   try { jobs = await api('/api/jobs'); } catch(e) { toast(e.message, 'error'); }
 
@@ -523,9 +523,9 @@ async function renderJobs() {
 }
 
 // --- Target detail ---
-async function renderTargetDetail(name) {
+async function renderTargetDetail(name, loading = true) {
   if (!name) { renderDashboard(); return; }
-  showLoading();
+  if (loading) showLoading();
   let targets = [], runs = [], dests = [];
   try {
     [targets, dests] = await Promise.all([api('/api/targets'), api('/api/destinations')]);
@@ -609,7 +609,7 @@ const settingsSteps = [
   { id: 'review', title: 'Review & Apply', icon: '&#10003;' }
 ];
 
-async function renderSettings() {
+async function renderSettings(loading = true) {
   // Fetch fresh settings from the API (initial load or SSE refresh).
   let settings = null;
   let unavailable = false;

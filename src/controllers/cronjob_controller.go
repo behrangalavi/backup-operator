@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"backup-operator/internal/labels"
 	"backup-operator/internal/secrets"
@@ -165,9 +166,7 @@ func (r *CronJobReconciler) buildCronJob(sec *corev1.Secret, src *secrets.Source
 		Env:             r.workerEnv(sec.Namespace),
 		SecurityContext: workerSecCtx,
 		Resources:       r.Worker.Resources,
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: "temp", MountPath: "/tmp"},
-		},
+		VolumeMounts: r.workerVolumeMounts(),
 	}}
 
 	tempVolume := corev1.Volume{
@@ -228,13 +227,36 @@ func (r *CronJobReconciler) buildCronJob(sec *corev1.Secret, src *secrets.Source
 								SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 							},
 							Containers: containers,
-							Volumes:    []corev1.Volume{tempVolume},
+							Volumes:    r.workerVolumes(tempVolume),
 						},
 					},
 				},
 			},
 		},
 	}
+}
+
+func (r *CronJobReconciler) workerVolumeMounts() []corev1.VolumeMount {
+	mounts := []corev1.VolumeMount{
+		{Name: "temp", MountPath: r.Worker.TempDir},
+	}
+	if !strings.HasPrefix(r.Worker.TempDir, "/tmp") {
+		mounts = append(mounts, corev1.VolumeMount{Name: "tmp", MountPath: "/tmp"})
+	}
+	return mounts
+}
+
+func (r *CronJobReconciler) workerVolumes(tempVolume corev1.Volume) []corev1.Volume {
+	vols := []corev1.Volume{tempVolume}
+	if !strings.HasPrefix(r.Worker.TempDir, "/tmp") {
+		vols = append(vols, corev1.Volume{
+			Name: "tmp",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		})
+	}
+	return vols
 }
 
 func (r *CronJobReconciler) workerEnv(namespace string) []corev1.EnvVar {

@@ -140,7 +140,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		defer rc.Close()
+		defer func() { _ = rc.Close() }()
 
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, filename))

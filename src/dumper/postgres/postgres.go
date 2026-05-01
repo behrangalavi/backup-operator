@@ -62,7 +62,7 @@ func (d *postgresDumper) CollectStats(ctx context.Context) (*dumper.Stats, error
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 
 	tables, err := d.queryTables(ctx, conn)
 	if err != nil {
@@ -152,7 +152,7 @@ ORDER BY table_schema, table_name, ordinal_position`
 		if err := rows.Scan(&schema, &table, &column, &dataType, &maxLen, &isNullable, &colDefault); err != nil {
 			return "", err
 		}
-		fmt.Fprintf(h, "%s|%s|%s|%s|%d|%s|%s\n",
+		_, _ = fmt.Fprintf(h, "%s|%s|%s|%s|%d|%s|%s\n",
 			schema, table, column, dataType, maxLen, isNullable, colDefault)
 	}
 	if err := rows.Err(); err != nil {

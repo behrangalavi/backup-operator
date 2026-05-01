@@ -130,7 +130,7 @@ func fetchOne(ctx context.Context, st storage.Storage, p string) (*MetaFile, err
 	if err != nil {
 		return nil, err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	raw, err := io.ReadAll(rc)
 	if err != nil {
 		return nil, err

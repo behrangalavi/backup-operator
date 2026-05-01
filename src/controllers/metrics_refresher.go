@@ -208,7 +208,7 @@ func loadLatestMeta(ctx context.Context, st storage.Storage, target string) (*me
 	if err != nil {
 		return nil, time.Time{}, false
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	raw, err := io.ReadAll(rc)
 	if err != nil {
 		return nil, time.Time{}, false

@@ -108,7 +108,7 @@ func buildHostKeyCallback(name string, knownHostsData []byte, logger logr.Logger
 	if err != nil {
 		return nil, fmt.Errorf("known-hosts temp file: %w", err)
 	}
-	defer os.Remove(f.Name())
+	defer func() { _ = os.Remove(f.Name()) }()
 
 	if _, err := f.Write(knownHostsData); err != nil {
 		_ = f.Close()
@@ -172,8 +172,8 @@ func (s *sftpStorage) Upload(ctx context.Context, p string, r io.Reader) error {
 	if err != nil {
 		return err
 	}
-	defer ssh.Close()
-	defer sc.Close()
+	defer func() { _ = ssh.Close() }()
+	defer func() { _ = sc.Close() }()
 
 	full := s.full(p)
 	if err := sc.MkdirAll(path.Dir(full)); err != nil {
@@ -183,24 +183,23 @@ func (s *sftpStorage) Upload(ctx context.Context, p string, r io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("create %s: %w", full, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := io.Copy(f, r); err != nil {
 		return fmt.Errorf("write %s: %w", full, err)
 	}
 	return nil
 }
 
-func (s *sftpStorage) List(ctx context.Context, prefix string) ([]storage.Object, error) {
-	ssh, sc, err := s.dial(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer ssh.Close()
-	defer sc.Close()
-
-	walker := sc.Walk(s.full(prefix))
+// walkList traverses the directory tree and collects non-directory objects,
+// checking for context cancellation between steps so long walks can be
+// interrupted.
+func walkList(ctx context.Context, sc *sftp.Client, root string, strip func(string) string) ([]storage.Object, error) {
+	walker := sc.Walk(root)
 	var out []storage.Object
 	for walker.Step() {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("walk cancelled: %w", err)
+		}
 		if err := walker.Err(); err != nil {
 			return nil, fmt.Errorf("walk: %w", err)
 		}
@@ -209,12 +208,23 @@ func (s *sftpStorage) List(ctx context.Context, prefix string) ([]storage.Object
 			continue
 		}
 		out = append(out, storage.Object{
-			Path:         s.stripPrefix(walker.Path()),
+			Path:         strip(walker.Path()),
 			Size:         info.Size(),
 			LastModified: info.ModTime(),
 		})
 	}
 	return out, nil
+}
+
+func (s *sftpStorage) List(ctx context.Context, prefix string) ([]storage.Object, error) {
+	ssh, sc, err := s.dial(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = ssh.Close() }()
+	defer func() { _ = sc.Close() }()
+
+	return walkList(ctx, sc, s.full(prefix), s.stripPrefix)
 }
 
 func (s *sftpStorage) Get(ctx context.Context, p string) (io.ReadCloser, error) {
@@ -249,9 +259,68 @@ func (s *sftpStorage) Delete(ctx context.Context, p string) error {
 	if err != nil {
 		return err
 	}
-	defer ssh.Close()
-	defer sc.Close()
+	defer func() { _ = ssh.Close() }()
+	defer func() { _ = sc.Close() }()
 	if err := sc.Remove(s.full(p)); err != nil {
+		return fmt.Errorf("remove %s: %w", p, err)
+	}
+	return nil
+}
+
+// WithSession opens one SSH+SFTP connection and returns a Storage that
+// reuses it for every call. The caller MUST call closer() when done.
+func (s *sftpStorage) WithSession(ctx context.Context) (storage.Storage, func() error, error) {
+	sshC, sc, err := s.dial(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	sess := &sftpSession{parent: s, sc: sc}
+	closer := func() error {
+		_ = sc.Close()
+		return sshC.Close()
+	}
+	return sess, closer, nil
+}
+
+// sftpSession wraps a single SSH/SFTP connection so multiple List/Delete
+// calls don't re-dial. Upload and Get still work but share the connection.
+type sftpSession struct {
+	parent *sftpStorage
+	sc     *sftp.Client
+}
+
+func (s *sftpSession) Name() string { return s.parent.name }
+
+func (s *sftpSession) Upload(_ context.Context, p string, r io.Reader) error {
+	full := s.parent.full(p)
+	if err := s.sc.MkdirAll(path.Dir(full)); err != nil {
+		return fmt.Errorf("mkdir %s: %w", path.Dir(full), err)
+	}
+	f, err := s.sc.Create(full)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", full, err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := io.Copy(f, r); err != nil {
+		return fmt.Errorf("write %s: %w", full, err)
+	}
+	return nil
+}
+
+func (s *sftpSession) List(ctx context.Context, prefix string) ([]storage.Object, error) {
+	return walkList(ctx, s.sc, s.parent.full(prefix), s.parent.stripPrefix)
+}
+
+func (s *sftpSession) Get(_ context.Context, p string) (io.ReadCloser, error) {
+	f, err := s.sc.Open(s.parent.full(p))
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", p, err)
+	}
+	return io.NopCloser(f), nil
+}
+
+func (s *sftpSession) Delete(_ context.Context, p string) error {
+	if err := s.sc.Remove(s.parent.full(p)); err != nil {
 		return fmt.Errorf("remove %s: %w", p, err)
 	}
 	return nil

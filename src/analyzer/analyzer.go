@@ -32,6 +32,12 @@ type TableDiff struct {
 	RowChangeRatio float64 `json:"rowChangeRatio"`
 }
 
+// Default thresholds — used when the source annotation is absent (-1).
+const (
+	DefaultRowDropThreshold  = 0.5 // table shrunk to less than half its rows
+	DefaultSizeDropThreshold = 0.5 // dump shrunk to less than half its bytes
+)
+
 // Analyzer compares two consecutive runs.
 type Analyzer interface {
 	Compare(prev, curr *dumper.Stats, prevDumpSize, currDumpSize int64) *Report
@@ -42,12 +48,29 @@ type analyzer struct {
 	sizeDropThreshold float64
 }
 
-// NewAnalyzer returns an Analyzer with sensible defaults. Thresholds are
-// fixed for now; if real-world tuning shows they drift, lift them to config.
+// NewAnalyzer returns an Analyzer with sensible defaults.
 func NewAnalyzer() Analyzer {
 	return &analyzer{
-		rowDropThreshold:  0.5, // table shrunk to less than half its rows
-		sizeDropThreshold: 0.5, // dump shrunk to less than half its bytes
+		rowDropThreshold:  DefaultRowDropThreshold,
+		sizeDropThreshold: DefaultSizeDropThreshold,
+	}
+}
+
+// NewAnalyzerWithThresholds returns an Analyzer whose row-drop and size-drop
+// thresholds can be tuned per source. Pass -1 for either value to use the
+// default.
+func NewAnalyzerWithThresholds(rowDrop, sizeDrop float64) Analyzer {
+	rd := DefaultRowDropThreshold
+	sd := DefaultSizeDropThreshold
+	if rowDrop >= 0 {
+		rd = rowDrop
+	}
+	if sizeDrop >= 0 {
+		sd = sizeDrop
+	}
+	return &analyzer{
+		rowDropThreshold:  rd,
+		sizeDropThreshold: sd,
 	}
 }
 

@@ -211,18 +211,16 @@ func findRun(runs []*meta.MetaFile, timestamp string) *meta.MetaFile {
 	return nil
 }
 
-// destinationsAllowedFor returns the names of destinations the source's
-// allow-list permits, used purely for display.
+// destinationsAllowedFor returns the sorted names of destinations the source's
+// allow-list permits, used purely for display. Delegates to secrets.FilterDestinations
+// for the actual filtering logic.
 func destinationsAllowedFor(src *secrets.Source, all []*secrets.Destination) []string {
-	out := []string{}
-	for _, d := range all {
-		if src.AllowsDestination(d.Name) {
-			out = append(out, d.Name)
-		}
+	filtered := secrets.FilterDestinations(src, all)
+	names := make([]string, len(filtered))
+	for i, d := range filtered {
+		names[i] = d.Name
 	}
-	sort.Strings(out)
-	return out
+	sort.Strings(names)
+	return names
 }
-
-
 

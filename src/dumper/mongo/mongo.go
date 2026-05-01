@@ -189,7 +189,7 @@ func indexSignature(ctx context.Context, coll *mongo.Collection) (string, error)
 	if err != nil {
 		return "", err
 	}
-	defer cur.Close(ctx)
+	defer func() { _ = cur.Close(ctx) }()
 
 	type indexEntry struct {
 		Name string

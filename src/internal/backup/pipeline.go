@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -82,6 +83,16 @@ func (p *Pipeline) resolvePolicy(src *secrets.Source) RetentionPolicy {
 	return policy
 }
 
+// analyzerForSource returns a per-source analyzer with thresholds from
+// annotations, falling back to the pipeline's default analyzer when both
+// thresholds are absent (-1).
+func (p *Pipeline) analyzerForSource(src *secrets.Source) analyzer.Analyzer {
+	if src.RowDropThreshold < 0 && src.SizeDropThreshold < 0 {
+		return p.analyzer
+	}
+	return analyzer.NewAnalyzerWithThresholds(src.RowDropThreshold, src.SizeDropThreshold)
+}
+
 // Run executes a full backup. Errors during destination uploads are reported
 // per-destination via metrics; the function returns nil unless the dump itself
 // fails or no destination accepts the artifact.
@@ -129,7 +140,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		p.recordFailure(ctx, dests, src, timestamp, "dump", err, log)
 		return fmt.Errorf("dump: %w", err)
 	}
-	defer os.Remove(dumpFile)
+	defer func() { _ = os.Remove(dumpFile) }()
 
 	metrics.SetDumpSize(src.TargetName, encryptedSize)
 
@@ -146,7 +157,8 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	var report *analyzer.Report
 	if src.AnalyzerEnabled {
 		prevStats, prevSize := p.loadPreviousStats(ctx, dests, src.TargetName)
-		report = p.analyzer.Compare(prevStats, stats, prevSize, encryptedSize)
+		an := p.analyzerForSource(src)
+		report = an.Compare(prevStats, stats, prevSize, encryptedSize)
 		emitAnalyzerMetrics(src.TargetName, report)
 	}
 
@@ -210,7 +222,7 @@ func (p *Pipeline) dumpToFile(ctx context.Context, d dumper.Dumper, dumpFile str
 	if err != nil {
 		return 0, fmt.Errorf("create temp dump: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	enc, err := p.encryptor.Wrap(f)
 	if err != nil {
@@ -279,7 +291,7 @@ func (p *Pipeline) uploadOne(
 ) error {
 	st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, p.logger)
 	if err != nil {
-		return fmt.Errorf("init storage: %w", err)
+		return &PermanentError{Op: "init storage", Err: err}
 	}
 
 	start := time.Now()
@@ -287,16 +299,47 @@ func (p *Pipeline) uploadOne(
 	if err != nil {
 		return fmt.Errorf("open dump: %w", err)
 	}
-	defer dump.Close()
+	defer func() { _ = dump.Close() }()
+
+	info, err := dump.Stat()
+	if err != nil {
+		return fmt.Errorf("stat dump: %w", err)
+	}
+	localSize := info.Size()
 
 	if err := st.Upload(ctx, objectPath, dump); err != nil {
-		return fmt.Errorf("upload dump: %w", err)
+		return &RetryableError{Op: "upload dump", Err: err}
 	}
 	metrics.ObserveUploadDuration(target, d.Name, d.StorageType, time.Since(start))
 
-	if err := st.Upload(ctx, metaPath, bytes.NewReader(meta)); err != nil {
-		return fmt.Errorf("upload meta: %w", err)
+	if err := verifyUploadSize(ctx, st, objectPath, localSize, p.logger); err != nil {
+		return err
 	}
+
+	if err := st.Upload(ctx, metaPath, bytes.NewReader(meta)); err != nil {
+		return &RetryableError{Op: "upload meta", Err: err}
+	}
+	return nil
+}
+
+// verifyUploadSize checks that the uploaded object's size matches the local
+// file. Catches silent truncation, network corruption, or partial writes.
+func verifyUploadSize(ctx context.Context, st storage.Storage, objectPath string, expected int64, log logr.Logger) error {
+	objs, err := st.List(ctx, objectPath)
+	if err != nil {
+		log.V(1).Info("post-upload verify: list failed, skipping", "path", objectPath, "err", err.Error())
+		return nil
+	}
+	for _, o := range objs {
+		if o.Path == objectPath || strings.HasSuffix(o.Path, "/"+path.Base(objectPath)) {
+			if o.Size != expected {
+				return fmt.Errorf("upload verify: size mismatch for %s: local=%d remote=%d", objectPath, expected, o.Size)
+			}
+			log.V(1).Info("post-upload verify passed", "path", objectPath, "size", expected)
+			return nil
+		}
+	}
+	log.V(1).Info("post-upload verify: object not found in listing, skipping", "path", objectPath)
 	return nil
 }
 

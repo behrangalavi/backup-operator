@@ -109,6 +109,39 @@ func TestCompare_NoSchemaChangeOnEmptyHash(t *testing.T) {
 	}
 }
 
+func TestNewAnalyzerWithThresholds_Custom(t *testing.T) {
+	// With a 0.2 threshold, a 40% shrink (ratio=0.4) should NOT trigger.
+	a := NewAnalyzerWithThresholds(0.2, 0.2)
+	prev := &dumper.Stats{
+		SchemaHash: "h",
+		Tables:     []dumper.TableStats{{Name: "users", RowCount: 100}},
+	}
+	curr := &dumper.Stats{
+		SchemaHash: "h",
+		Tables:     []dumper.TableStats{{Name: "users", RowCount: 40}},
+	}
+	r := a.Compare(prev, curr, 1000, 400)
+
+	if hasAnomaly(r.Anomalies, "size-collapse") {
+		t.Error("0.2 threshold should not flag a 0.4 ratio as size-collapse")
+	}
+	if hasAnomalyForSubject(r.Anomalies, "row-count-drop", "users") {
+		t.Error("0.2 threshold should not flag a 0.4 ratio as row-count-drop")
+	}
+}
+
+func TestNewAnalyzerWithThresholds_NegativeUsesDefault(t *testing.T) {
+	a := NewAnalyzerWithThresholds(-1, -1)
+	prev := &dumper.Stats{SchemaHash: "h"}
+	curr := &dumper.Stats{SchemaHash: "h"}
+
+	// With default 0.5 threshold, a 0.1 ratio should trigger.
+	r := a.Compare(prev, curr, 1000, 100)
+	if !hasAnomaly(r.Anomalies, "size-collapse") {
+		t.Error("negative threshold should use default 0.5; 0.1 ratio should trigger")
+	}
+}
+
 func hasAnomaly(as []Anomaly, kind string) bool {
 	for _, a := range as {
 		if a.Kind == kind {

@@ -1,0 +1,10 @@
+apiVersion: v2
+name: backup-operator
+description: Kubernetes-native backup service for Postgres/MySQL/Mongo with semantic dump analysis
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+icon: https://raw.githubusercontent.com/mogenius/branding/main/logo.svg
+maintainers:
+  - name: mogenius
+    url: https://mogenius.com

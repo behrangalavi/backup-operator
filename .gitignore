@@ -1,0 +1,15 @@
+/dist/
+/.idea/
+/.vscode/
+*.swp
+.env
+.env.*
+!.env.example
+src/static/js/
+/test/local
+
+# Per-developer MCP server config — references local secrets in .env.mcp.
+# Each developer brings their own tools; this file should not live in the
+# public repo.
+.mcp.json
+.mcp.local.json

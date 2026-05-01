@@ -1,0 +1,126 @@
+image:
+  repository: ghcr.io/mogenius/backup-operator
+  tag: ""           # defaults to chart appVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+replicaCount: 1
+
+# Discovery is namespace-scoped — the service watches its own namespace only.
+# Set to a different namespace to override; "" means the release namespace.
+watchNamespace: ""
+
+config:
+  defaultSchedule: "0 2 * * *"
+  runTimeoutSeconds: 3600
+  tempDir: /tmp/backup-operator
+  leaderElectionId: "backup-operator"
+  # Retention defaults — sources can override per-secret via annotations
+  # backup.mogenius.io/retention-days and /min-keep.
+  # 0 retentionDays disables pruning (keep forever); minKeep is the safety
+  # floor that prevents accidentally deleting the most recent backups.
+  defaultRetentionDays: 30
+  defaultMinKeep: 3
+
+# Public age recipient(s) — newline-separated for rotation.
+# Required: the chart will fail to render if this is empty.
+agePublicKeys: ""
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# An emptyDir provides scratch space for the encrypted dump file before
+# fan-out. Size it for the largest expected dump — bump if backups fail
+# with "no space left on device".
+tempDirSize: 10Gi
+
+serviceAccount:
+  create: true
+  name: ""
+
+rbac:
+  create: true
+
+service:
+  type: ClusterIP
+  port: 8080      # /metrics
+
+# Read-only HTML/JSON dashboard served by the operator pod itself.
+# Disabled by default — flip `enabled: true` to expose it on a second
+# container port + Service port. The dashboard never writes to the
+# cluster and never sees the age private key. Cluster-internal only by
+# default; bring your own auth proxy (oauth2-proxy, ingress basic auth)
+# if exposing externally.
+ui:
+  enabled: false
+  port: 8081
+
+# Conditional on Prometheus Operator presence — see _helpers.
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+  # Extra labels merged into ServiceMonitor metadata. kube-prometheus-stack's
+  # Prometheus selects ServiceMonitors by `release: <release-name>`; if you
+  # installed it as `kube-prometheus-stack`, set `release: kube-prometheus-stack`.
+  labels: {}
+
+prometheusRule:
+  enabled: true
+  # Same story as serviceMonitor.labels — required so kube-prometheus-stack's
+  # Prometheus picks up the rule group.
+  labels: {}
+  # Ship sensible defaults; override at install time to suit your environment.
+  rules:
+    - alert: BackupOverdue
+      expr: time() - max by (target) (backup_operator_last_success_timestamp_seconds) > 86400 * 1.5
+      for: 10m
+      labels: { severity: warning }
+      annotations:
+        summary: "Backup target {{ $labels.target }} hasn't succeeded in over 36h"
+    - alert: BackupDestinationFailing
+      expr: max by (target, destination) (backup_operator_destination_failed) == 1
+      for: 15m
+      labels: { severity: warning }
+      annotations:
+        summary: "Backup target {{ $labels.target }} failing to {{ $labels.destination }}"
+    - alert: BackupDumpSizeCollapsed
+      expr: backup_operator_dump_size_change_ratio < 0.5
+      for: 5m
+      labels: { severity: critical }
+      annotations:
+        summary: "Backup {{ $labels.target }} shrunk to less than half — possible data loss"
+    - alert: BackupSchemaChanged
+      expr: backup_operator_schema_changed == 1
+      for: 1m
+      labels: { severity: info }
+      annotations:
+        summary: "Schema changed for backup target {{ $labels.target }}"
+    - alert: BackupAnomaliesAppearing
+      expr: backup_operator_last_run_anomalies > 0
+      for: 5m
+      labels: { severity: warning }
+      annotations:
+        summary: "Analyzer reported {{ $value }} anomalies in the last run of {{ $labels.target }}"
+    - alert: BackupLastRunFailed
+      expr: backup_operator_last_run_status == 0
+      for: 5m
+      labels: { severity: warning }
+      annotations:
+        summary: "Most recent backup run for {{ $labels.target }} did not produce a usable artifact"
+    # Notify on every successful run. The expression fires for ~2 minutes
+    # after `last_success_timestamp_seconds` updates and then resolves, so
+    # each completed run generates one firing + one resolved notification
+    # (Alertmanager has send_resolved: true). This is intentionally noisy —
+    # it is the "I'm still alive and working" heartbeat the user asked for.
+    - alert: BackupSucceeded
+      expr: time() - max by (target) (backup_operator_last_success_timestamp_seconds) < 120
+      labels: { severity: info }
+      annotations:
+        summary: "Backup of {{ $labels.target }} completed successfully"

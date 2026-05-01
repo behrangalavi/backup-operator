@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "backup-operator.fullname" . }}
+  labels: {{- include "backup-operator.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels: {{- include "backup-operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "backup-operator.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "backup-operator.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: backup-operator
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef: { fieldPath: metadata.namespace }
+            - name: WATCH_NAMESPACE
+              value: {{ .Values.watchNamespace | default .Release.Namespace | quote }}
+            - name: LEADER_ELECTION_ID
+              value: {{ .Values.config.leaderElectionId | quote }}
+            - name: DEFAULT_SCHEDULE
+              value: {{ .Values.config.defaultSchedule | quote }}
+            - name: RUN_TIMEOUT_SECONDS
+              value: {{ .Values.config.runTimeoutSeconds | quote }}
+            - name: TEMP_DIR
+              value: {{ .Values.config.tempDir | quote }}
+            - name: TEMP_DIR_SIZE
+              value: {{ .Values.tempDirSize | quote }}
+            - name: DEFAULT_RETENTION_DAYS
+              value: {{ .Values.config.defaultRetentionDays | quote }}
+            - name: DEFAULT_MIN_KEEP
+              value: {{ .Values.config.defaultMinKeep | quote }}
+            # Worker pod template — reconciler bakes these into every CronJob it produces.
+            - name: WORKER_IMAGE
+              value: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+            - name: WORKER_IMAGE_PULL_POLICY
+              value: {{ .Values.image.pullPolicy | quote }}
+            - name: WORKER_SERVICE_ACCOUNT
+              value: {{ include "backup-operator.serviceAccountName" . | quote }}
+            - name: AGE_SECRET_NAME
+              value: {{ include "backup-operator.fullname" . }}-age
+            {{- if .Values.ui.enabled }}
+            - name: UI_ENABLED
+              value: "true"
+            - name: UI_ADDR
+              value: ":{{ .Values.ui.port }}"
+            {{- end }}
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            {{- if .Values.ui.enabled }}
+            - name: ui
+              containerPort: {{ .Values.ui.port }}
+              protocol: TCP
+            {{- end }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}

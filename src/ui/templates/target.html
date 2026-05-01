@@ -1,0 +1,97 @@
+{{define "target"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{.Detail.Source.TargetName}} — backup-operator</title>
+{{template "style" .}}
+</head>
+<body>
+<header>
+  <p><a href="/">← all targets</a></p>
+  <h1>{{.Detail.Source.TargetName}} <span class="pill pill-{{.Detail.Source.DBType}}">{{.Detail.Source.DBType}}</span></h1>
+  <dl>
+    <dt>Schedule</dt><dd><code>{{.Detail.Source.Schedule}}</code></dd>
+    <dt>Secret</dt><dd><code>{{.Detail.Source.SecretName}}</code></dd>
+    <dt>Destinations</dt>
+    <dd>
+      {{if .Detail.Destinations}}
+        {{range $i, $d := .Detail.Destinations}}{{if $i}}, {{end}}<code>{{$d.Name}}</code> <span class="subtle">({{$d.StorageType}})</span>{{end}}
+      {{else}}<span class="subtle">none</span>{{end}}
+    </dd>
+    <dt>Retention</dt>
+    <dd>
+      {{if lt .Detail.Source.RetentionDays 0}}default{{else if eq .Detail.Source.RetentionDays 0}}keep forever{{else}}{{.Detail.Source.RetentionDays}} day(s){{end}},
+      min-keep {{if lt .Detail.Source.MinKeep 0}}default{{else}}{{.Detail.Source.MinKeep}}{{end}}
+    </dd>
+    <dt>Analyzer</dt>
+    <dd>{{if .Detail.Source.AnalyzerEnabled}}enabled{{else}}<span class="subtle">disabled</span>{{end}}</dd>
+  </dl>
+</header>
+
+<h2>Run history</h2>
+{{if not .Detail.Runs}}
+<p class="empty">No runs recorded for this target yet.</p>
+{{else}}
+<table>
+  <thead>
+    <tr>
+      <th>Timestamp</th>
+      <th>Status</th>
+      <th class="num">Size</th>
+      <th class="num">Δ size</th>
+      <th>Schema</th>
+      <th class="num">Tables</th>
+      <th class="num">Rows</th>
+      <th>Anomalies / Error</th>
+      <th>Download</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Detail.Runs}}
+    <tr>
+      <td title="{{.Timestamp}}">{{.ParsedTimestamp.Format "2006-01-02 15:04:05 UTC"}}</td>
+      {{if .IsFailure}}
+        <td><span class="bad">✗ failed{{if .Phase}} ({{.Phase}}){{end}}</span></td>
+        <td class="num subtle">—</td>
+        <td class="num subtle">—</td>
+        <td class="subtle">—</td>
+        <td class="num subtle">—</td>
+        <td class="num subtle">—</td>
+        <td><span class="bad" title="{{.Error}}">{{.Error}}</span></td>
+        <td class="dl"><span class="subtle">—</span></td>
+      {{else}}
+        <td><span class="ok">✓ ok</span></td>
+        <td class="num">{{humanBytes .EncryptedSizeBytes}}</td>
+        <td class="num">
+          {{if and .Report (ne .Report.SizeChangeRatio 0.0)}}
+            {{percentChange .Report.SizeChangeRatio}}
+          {{else}}<span class="subtle">—</span>{{end}}
+        </td>
+        <td>
+          {{if and .Report .Report.SchemaChanged}}<span class="bad">changed</span>
+          {{else if .Report}}<span class="ok">stable</span>
+          {{else}}<span class="subtle">first run</span>{{end}}
+        </td>
+        <td class="num">{{if .Stats}}{{len .Stats.Tables}}{{else}}—{{end}}</td>
+        <td class="num">{{totalRows .Stats}}</td>
+        <td>
+          {{if and .Report .Report.Anomalies}}
+            {{range $i, $a := .Report.Anomalies}}{{if $i}}, {{end}}<span class="bad" title="{{$a.Subject}}: {{$a.Detail}}">{{$a.Kind}}</span>{{end}}
+          {{else}}—{{end}}
+        </td>
+        <td class="dl">
+          <a href="/download/{{.Target}}/{{.Timestamp}}/dump" title="Encrypted dump — decrypt locally with age">.age</a>
+          <a href="/download/{{.Target}}/{{.Timestamp}}/meta" title="Unencrypted analyzer metadata">.json</a>
+        </td>
+      {{end}}
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}
+
+<footer>
+  <a href="/api/targets/{{.Detail.Source.TargetName}}/runs">JSON</a>
+</footer>
+</body>
+</html>{{end}}

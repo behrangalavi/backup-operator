@@ -1,0 +1,85 @@
+{{define "index"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>backup-operator — {{.Namespace}}</title>
+{{template "style" .}}
+</head>
+<body>
+<header>
+  <h1>backup-operator</h1>
+  <p class="subtle">Namespace <code>{{.Namespace}}</code> · {{len .Targets}} target{{if ne (len .Targets) 1}}s{{end}}</p>
+</header>
+
+{{if not .Targets}}
+<p class="empty">No source Secrets in this namespace. Label a Secret with <code>backup.mogenius.io/role=source</code> to register a target.</p>
+{{else}}
+<table>
+  <thead>
+    <tr>
+      <th>Target</th>
+      <th>DB</th>
+      <th>Schedule</th>
+      <th>Status</th>
+      <th>Last run</th>
+      <th class="num">Last size</th>
+      <th>Schema</th>
+      <th class="num">Anomalies</th>
+      <th>Destinations</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Targets}}
+    <tr>
+      <td><strong>{{.Name}}</strong></td>
+      <td><span class="pill pill-{{.DBType}}">{{.DBType}}</span></td>
+      <td><code>{{.Schedule}}</code></td>
+      {{if .Latest}}
+        {{if .Latest.IsFailure}}
+          <td><span class="bad" title="{{.Latest.Phase}}: {{.Latest.Error}}">✗ failed</span></td>
+        {{else}}
+          <td><span class="ok">✓ ok</span></td>
+        {{end}}
+        <td title="{{.Latest.Timestamp}}">{{.Latest.ParsedTimestamp.Format "2006-01-02 15:04:05 UTC"}}</td>
+        {{if .Latest.IsFailure}}
+          <td class="num subtle">—</td>
+          <td class="subtle">—</td>
+          <td class="num subtle">—</td>
+        {{else}}
+          <td class="num">{{humanBytes .Latest.EncryptedSizeBytes}}</td>
+          <td>
+            {{if and .Latest.Report .Latest.Report.SchemaChanged}}
+              <span class="bad">changed</span>
+            {{else}}
+              <span class="ok">stable</span>
+            {{end}}
+          </td>
+          <td class="num">
+            {{if and .Latest.Report .Latest.Report.Anomalies}}
+              <span class="bad">{{len .Latest.Report.Anomalies}}</span>
+            {{else}}0{{end}}
+          </td>
+        {{end}}
+      {{else}}
+        <td class="subtle">—</td>
+        <td class="subtle">never</td>
+        <td class="num subtle">—</td>
+        <td class="subtle">—</td>
+        <td class="num subtle">—</td>
+      {{end}}
+      <td>
+        {{range $i, $d := .Destinations}}{{if $i}}, {{end}}<code>{{$d}}</code>{{end}}
+      </td>
+      <td><a href="/target/{{.Name}}">runs →</a></td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}
+
+<footer>
+  <a href="/api/targets">JSON</a> · <a href="https://github.com/mogenius/backup-operator">docs</a>
+</footer>
+</body>
+</html>{{end}}

@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "backup-operator.fullname" . }}
+  labels: {{- include "backup-operator.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+    {{- if .Values.ui.enabled }}
+    - port: {{ .Values.ui.port }}
+      targetPort: ui
+      protocol: TCP
+      name: ui
+    {{- end }}
+  selector: {{- include "backup-operator.selectorLabels" . | nindent 4 }}

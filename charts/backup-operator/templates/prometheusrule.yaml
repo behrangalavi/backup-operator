@@ -1,0 +1,15 @@
+{{- if and .Values.prometheusRule.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "backup-operator.fullname" . }}
+  labels:
+    {{- include "backup-operator.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: backup-operator
+      rules: {{- toYaml .Values.prometheusRule.rules | nindent 8 }}
+{{- end }}

@@ -1,0 +1,45 @@
+{{- if .Values.rbac.create -}}
+# Single ServiceAccount used by both the operator pod and worker pods.
+# The operator needs CronJob/Job write perms; the worker needs Secret read.
+# Splitting into two SAs is documented as a future hardening step but adds
+# Helm complexity for limited extra security in a namespace-scoped install.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "backup-operator.fullname" . }}
+  labels: {{- include "backup-operator.labels" . | nindent 4 }}
+rules:
+  # Both operator and worker — operator reconciles them, worker reads them.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+
+  # Operator — manages CronJobs as the per-source materialised schedule.
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Operator — observes Jobs spawned by CronJobs (so reconciler sees status).
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch"]
+
+  # Operator — leader election lease.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "backup-operator.fullname" . }}
+  labels: {{- include "backup-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "backup-operator.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "backup-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

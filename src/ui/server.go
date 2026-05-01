@@ -67,8 +67,10 @@ func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 
 	// SPA frontend — serves index.html for the root, static assets for /static/
+	// no-cache forces the browser to revalidate on every load so new deploys
+	// are picked up immediately (embedded files change on rebuild).
 	staticSub, _ := fs.Sub(staticFS, "static")
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
+	mux.Handle("/static/", noCacheMiddleware(http.StripPrefix("/static/", http.FileServer(http.FS(staticSub)))))
 
 	// Legacy template routes (kept for backward compatibility)
 	mux.HandleFunc("/legacy", s.handleIndex)
@@ -140,7 +142,15 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
 	_, _ = w.Write(data)
+}
+
+func noCacheMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) routeSourceByMethod(w http.ResponseWriter, r *http.Request) {

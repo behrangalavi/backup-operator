@@ -166,7 +166,7 @@ func (r *CronJobReconciler) buildCronJob(sec *corev1.Secret, src *secrets.Source
 		SecurityContext: workerSecCtx,
 		Resources:       r.Worker.Resources,
 		VolumeMounts: []corev1.VolumeMount{
-			{Name: "temp", MountPath: r.Worker.TempDir},
+			{Name: "temp", MountPath: "/tmp"},
 		},
 	}}
 

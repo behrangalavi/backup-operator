@@ -168,6 +168,9 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		log.V(1).Info("analyzer disabled by annotation; skipping stats collection")
 	}
 
+	if err := os.MkdirAll(p.tempDir, 0o755); err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
 	dumpFile := path.Join(p.tempDir, fmt.Sprintf("%s-%s.sql.gz.age", src.TargetName, timestamp))
 
 	dumpStart := time.Now()

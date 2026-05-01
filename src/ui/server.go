@@ -33,10 +33,11 @@ var staticFS embed.FS
 
 // Config carries everything the server needs to render itself.
 type Config struct {
-	Addr      string // ":8081" by default — kept off the metrics port to keep concerns separate
-	Namespace string
-	Client    client.Client
-	Logger    logr.Logger
+	Addr              string // ":8081" by default — kept off the metrics port to keep concerns separate
+	Namespace         string
+	Client            client.Client
+	Logger            logr.Logger
+	SettingsConfigMap string // name of the ConfigMap for runtime-configurable settings (empty = disabled)
 }
 
 // Server is constructed once at process start and run by Start.
@@ -76,7 +77,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Read-only JSON API
 	mux.HandleFunc("/api/targets", s.handleAPITargets)
 	mux.HandleFunc("/api/targets/", s.handleAPITargetRuns)
-	mux.HandleFunc("/api/destinations", s.handleAPIListDestinations)
+	mux.HandleFunc("/api/destinations", s.routeDestinationsList)
 	mux.HandleFunc("/api/jobs", s.handleAPIJobs)
 
 	// CRUD API
@@ -86,6 +87,10 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Manual trigger
 	mux.HandleFunc("/api/trigger/", s.handleAPITriggerBackup)
+
+	// Settings API
+	mux.HandleFunc("/api/settings", s.routeSettings)
+	mux.HandleFunc("/api/settings/export", s.handleSettingsExport)
 
 	// SSE live updates
 	mux.HandleFunc("/api/events", s.handleSSE)
@@ -146,6 +151,28 @@ func (s *Server) routeSourceByMethod(w http.ResponseWriter, r *http.Request) {
 		s.handleAPIUpdateSource(w, r)
 	case http.MethodDelete:
 		s.handleAPIDeleteSource(w, r)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "method not allowed"})
+	}
+}
+
+func (s *Server) routeDestinationsList(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleAPIListDestinations(w, r)
+	case http.MethodPost:
+		s.handleAPICreateDestination(w, r)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "method not allowed"})
+	}
+}
+
+func (s *Server) routeSettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleGetSettings(w, r)
+	case http.MethodPut:
+		s.handleUpdateSettings(w, r)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "method not allowed"})
 	}

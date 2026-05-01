@@ -10,9 +10,9 @@ import (
 	storageFactory "backup-operator/storage/factory"
 )
 
-// handleIndex renders the namespace overview at /.
+// handleIndex renders the namespace overview at /legacy.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	if r.URL.Path != "/" && r.URL.Path != "/legacy" {
 		http.NotFound(w, r)
 		return
 	}
@@ -31,9 +31,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleTarget renders the per-target run history at /target/<name>.
+// handleTarget renders the per-target run history at /legacy/target/<name>.
 func (s *Server) handleTarget(w http.ResponseWriter, r *http.Request) {
-	name := trimPrefixPath(r.URL.Path, "/target/")
+	name := trimPrefixPath(r.URL.Path, "/legacy/target/")
 	if name == "" || strings.Contains(name, "/") {
 		http.NotFound(w, r)
 		return

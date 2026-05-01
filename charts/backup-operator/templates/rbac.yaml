@@ -27,6 +27,11 @@ rules:
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
+  # Operator — reads/writes the settings ConfigMap for the UI wizard.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "update", "patch"]
+
   # Operator — MetricsRefresher and UI may emit events in future.
   - apiGroups: [""]
     resources: ["events"]

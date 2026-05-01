@@ -36,12 +36,13 @@ function connectSSE() {
   });
   ['source_created','source_updated','source_deleted',
    'destination_created','destination_updated','destination_deleted',
-   'backup_triggered'].forEach(ev => {
+   'backup_triggered','settings_updated'].forEach(ev => {
     eventSource.addEventListener(ev, () => {
       const page = currentPage();
       if (['dashboard','sources'].includes(page)) renderPage(page);
       if (['dashboard','destinations'].includes(page)) renderPage(page);
       if (page === 'jobs') renderJobs();
+      if (page === 'settings') renderSettings();
     });
   });
   eventSource.onerror = () => {
@@ -73,6 +74,7 @@ function renderPage(page) {
     case 'destinations': renderDestinations(); break;
     case 'jobs': renderJobs(); break;
     case 'target': renderTargetDetail(currentParam()); break;
+    case 'settings': renderSettings(); break;
     default: renderDashboard();
   }
 }
@@ -592,6 +594,235 @@ window.triggerBackup = async function(targetName) {
     await api('/api/trigger/' + targetName, { method: 'POST' });
     toast('Backup triggered for ' + targetName, 'success');
   } catch(e) { toast('Trigger failed: ' + e.message, 'error'); }
+};
+
+// --- Settings Wizard ---
+let settingsStep = 0;
+const settingsSteps = [
+  { id: 'schedule', title: 'Schedule & Timeout', icon: '&#128339;' },
+  { id: 'retention', title: 'Retention Policy', icon: '&#128451;' },
+  { id: 'resources', title: 'Worker Resources', icon: '&#9881;' },
+  { id: 'review', title: 'Review & Apply', icon: '&#10003;' }
+];
+
+async function renderSettings() {
+  let settings = null;
+  let unavailable = false;
+  try {
+    const resp = await api('/api/settings');
+    settings = resp.settings;
+  } catch(e) {
+    unavailable = true;
+  }
+
+  if (unavailable || !settings) {
+    content.innerHTML = `
+      <div class="page-header">
+        <div><h1>Settings</h1><div class="subtitle">Operator configuration</div></div>
+      </div>
+      <div class="empty-state">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09"/></svg>
+        <h3>Settings not available</h3>
+        <p>The settings wizard requires the operator to be deployed with <code>ui.enabled=true</code> in the Helm chart. The settings ConfigMap is created automatically when enabled.</p>
+      </div>`;
+    return;
+  }
+
+  content.innerHTML = `
+    <div class="page-header">
+      <div><h1>Settings</h1><div class="subtitle">Operator configuration wizard</div></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-secondary" onclick="exportSettings()">&#8681; Export values.yaml</button>
+      </div>
+    </div>
+    <div class="wizard">
+      <div class="wizard-steps">
+        ${settingsSteps.map((s, i) => `
+          <div class="wizard-step ${i === settingsStep ? 'active' : ''} ${i < settingsStep ? 'done' : ''}" onclick="goToStep(${i})">
+            <div class="wizard-step-num">${i < settingsStep ? '&#10003;' : i + 1}</div>
+            <div class="wizard-step-label">${s.title}</div>
+          </div>
+          ${i < settingsSteps.length - 1 ? '<div class="wizard-step-line"></div>' : ''}
+        `).join('')}
+      </div>
+      <form id="settingsForm" onsubmit="submitSettings(event)">
+        <div class="wizard-body">
+          ${renderSettingsStepContent(settingsStep, settings)}
+        </div>
+        <div class="wizard-footer">
+          <div>
+            ${settingsStep > 0 ? '<button type="button" class="btn btn-secondary" onclick="goToStep(' + (settingsStep - 1) + ')">&#8592; Back</button>' : ''}
+          </div>
+          <div style="display:flex;gap:8px">
+            ${settingsStep < settingsSteps.length - 1
+              ? '<button type="button" class="btn btn-primary" onclick="goToStep(' + (settingsStep + 1) + ')">Next &#8594;</button>'
+              : '<button type="submit" class="btn btn-primary">Save Settings</button>'}
+          </div>
+        </div>
+      </form>
+    </div>`;
+
+  // Store current settings for form navigation
+  window._currentSettings = settings;
+}
+
+function renderSettingsStepContent(step, s) {
+  switch(step) {
+    case 0: return `
+      <h3>Schedule & Timeout</h3>
+      <p class="wizard-desc">Configure the default backup schedule and execution timeout.</p>
+      <div class="form-group">
+        <label for="defaultSchedule">Default Cron Schedule</label>
+        <input type="text" id="defaultSchedule" name="defaultSchedule" value="${escHTML(s.defaultSchedule)}" placeholder="0 2 * * *">
+        <div class="hint">Cron expression for new sources without a custom schedule. Example: "0 2 * * *" = daily at 2 AM</div>
+      </div>
+      <div class="form-group">
+        <label for="runTimeoutSeconds">Run Timeout (seconds)</label>
+        <input type="number" id="runTimeoutSeconds" name="runTimeoutSeconds" value="${escHTML(s.runTimeoutSeconds)}" placeholder="3600" min="0">
+        <div class="hint">Maximum duration for a single backup run before it's killed. 3600 = 1 hour.</div>
+      </div>`;
+
+    case 1: return `
+      <h3>Retention Policy</h3>
+      <p class="wizard-desc">Control how long backups are kept and the minimum safety floor.</p>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="defaultRetentionDays">Retention Days</label>
+          <input type="number" id="defaultRetentionDays" name="defaultRetentionDays" value="${escHTML(s.defaultRetentionDays)}" placeholder="30" min="0">
+          <div class="hint">Backups older than this are pruned. 0 = keep forever.</div>
+        </div>
+        <div class="form-group">
+          <label for="defaultMinKeep">Minimum Keep</label>
+          <input type="number" id="defaultMinKeep" name="defaultMinKeep" value="${escHTML(s.defaultMinKeep)}" placeholder="3" min="0">
+          <div class="hint">Always keep at least this many backups, regardless of retention age.</div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="tempDir">Temp Directory</label>
+          <input type="text" id="tempDir" name="tempDir" value="${escHTML(s.tempDir)}" placeholder="/tmp/backup-operator">
+          <div class="hint">Scratch space for encrypted dumps before upload.</div>
+        </div>
+        <div class="form-group">
+          <label for="tempDirSize">Temp Dir Size</label>
+          <input type="text" id="tempDirSize" name="tempDirSize" value="${escHTML(s.tempDirSize)}" placeholder="10Gi">
+          <div class="hint">emptyDir size limit. Increase for large dumps.</div>
+        </div>
+      </div>`;
+
+    case 2: return `
+      <h3>Worker Resources</h3>
+      <p class="wizard-desc">CPU and memory limits for backup worker pods spawned by CronJobs.</p>
+      <div class="form-section">
+        <h4>Limits</h4>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="workerCpuLimit">CPU Limit</label>
+            <input type="text" id="workerCpuLimit" name="workerCpuLimit" value="${escHTML(s.workerCpuLimit)}" placeholder="2000m">
+            <div class="hint">e.g. 2000m = 2 cores</div>
+          </div>
+          <div class="form-group">
+            <label for="workerMemoryLimit">Memory Limit</label>
+            <input type="text" id="workerMemoryLimit" name="workerMemoryLimit" value="${escHTML(s.workerMemoryLimit)}" placeholder="2Gi">
+            <div class="hint">e.g. 2Gi, 512Mi</div>
+          </div>
+        </div>
+      </div>
+      <div class="form-section">
+        <h4>Requests</h4>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="workerCpuRequest">CPU Request</label>
+            <input type="text" id="workerCpuRequest" name="workerCpuRequest" value="${escHTML(s.workerCpuRequest)}" placeholder="250m">
+            <div class="hint">Minimum guaranteed CPU</div>
+          </div>
+          <div class="form-group">
+            <label for="workerMemoryRequest">Memory Request</label>
+            <input type="text" id="workerMemoryRequest" name="workerMemoryRequest" value="${escHTML(s.workerMemoryRequest)}" placeholder="256Mi">
+            <div class="hint">Minimum guaranteed memory</div>
+          </div>
+        </div>
+      </div>`;
+
+    case 3:
+      return `
+      <h3>Review & Apply</h3>
+      <p class="wizard-desc">Review your settings before saving. Changes take effect immediately for new backup runs.</p>
+      <div class="review-grid">
+        <div class="detail-card">
+          <h3>Schedule & Timeout</h3>
+          <div class="detail-row"><span class="key">Schedule</span><code class="val">${escHTML(s.defaultSchedule)}</code></div>
+          <div class="detail-row"><span class="key">Timeout</span><span class="val">${escHTML(s.runTimeoutSeconds)}s</span></div>
+        </div>
+        <div class="detail-card">
+          <h3>Retention</h3>
+          <div class="detail-row"><span class="key">Retention Days</span><span class="val">${escHTML(s.defaultRetentionDays)}</span></div>
+          <div class="detail-row"><span class="key">Min Keep</span><span class="val">${escHTML(s.defaultMinKeep)}</span></div>
+          <div class="detail-row"><span class="key">Temp Dir</span><code class="val">${escHTML(s.tempDir)}</code></div>
+          <div class="detail-row"><span class="key">Temp Dir Size</span><span class="val">${escHTML(s.tempDirSize)}</span></div>
+        </div>
+        <div class="detail-card">
+          <h3>Worker Resources</h3>
+          <div class="detail-row"><span class="key">CPU Limit</span><span class="val">${escHTML(s.workerCpuLimit) || '—'}</span></div>
+          <div class="detail-row"><span class="key">Memory Limit</span><span class="val">${escHTML(s.workerMemoryLimit) || '—'}</span></div>
+          <div class="detail-row"><span class="key">CPU Request</span><span class="val">${escHTML(s.workerCpuRequest) || '—'}</span></div>
+          <div class="detail-row"><span class="key">Memory Request</span><span class="val">${escHTML(s.workerMemoryRequest) || '—'}</span></div>
+        </div>
+      </div>
+      <div class="wizard-note">
+        <strong>Note:</strong> Click "Export values.yaml" to download a Helm-compatible values file for GitOps workflows.
+      </div>`;
+  }
+}
+
+window.goToStep = function(n) {
+  // Collect form values before navigating
+  const form = $('#settingsForm');
+  if (form && window._currentSettings) {
+    const fd = new FormData(form);
+    for (const [k, v] of fd.entries()) {
+      window._currentSettings[k] = v;
+    }
+  }
+  settingsStep = Math.max(0, Math.min(n, settingsSteps.length - 1));
+  renderSettings();
+};
+
+window.submitSettings = async function(e) {
+  e.preventDefault();
+  const s = window._currentSettings;
+  if (!s) { toast('No settings loaded', 'error'); return; }
+
+  try {
+    await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(s)
+    }).then(r => r.json()).then(d => {
+      if (!d.ok) throw new Error(d.message);
+    });
+    toast('Settings saved successfully', 'success');
+  } catch(e) {
+    toast('Failed to save: ' + e.message, 'error');
+  }
+};
+
+window.exportSettings = async function() {
+  try {
+    const resp = await fetch('/api/settings/export');
+    if (!resp.ok) {
+      const err = await resp.json();
+      throw new Error(err.message || 'export failed');
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'values.yaml';
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('values.yaml exported', 'success');
+  } catch(e) { toast('Export failed: ' + e.message, 'error'); }
 };
 
 // --- Init ---

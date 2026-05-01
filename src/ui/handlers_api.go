@@ -117,8 +117,15 @@ func (s *Server) handleAPIUpdateSource(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, apiResponse{Message: "secret not found"})
 		return
 	}
+	if existing.Labels[labels.LabelRole] != labels.RoleSource {
+		writeJSON(w, http.StatusForbidden, apiResponse{Message: "not a backup source secret"})
+		return
+	}
 
 	if req.DBType != "" {
+		if existing.Labels == nil {
+			existing.Labels = make(map[string]string)
+		}
 		existing.Labels[labels.LabelDBType] = req.DBType
 	}
 	mergeSourceAnnotations(existing, req)
@@ -144,14 +151,17 @@ func (s *Server) handleAPIDeleteSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: s.cfg.Namespace,
-		},
-	}
-	if err := s.cfg.Client.Delete(r.Context(), secret); err != nil {
+	existing := &corev1.Secret{}
+	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, existing); err != nil {
 		writeJSON(w, http.StatusNotFound, apiResponse{Message: "not found or already deleted"})
+		return
+	}
+	if existing.Labels[labels.LabelRole] != labels.RoleSource {
+		writeJSON(w, http.StatusForbidden, apiResponse{Message: "not a backup source secret"})
+		return
+	}
+	if err := s.cfg.Client.Delete(r.Context(), existing); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "delete failed"})
 		return
 	}
 	s.broadcast(sseEvent{Type: "source_deleted", Data: secretName})
@@ -273,8 +283,15 @@ func (s *Server) handleAPIUpdateDestination(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusNotFound, apiResponse{Message: "secret not found"})
 		return
 	}
+	if existing.Labels[labels.LabelRole] != labels.RoleDestination {
+		writeJSON(w, http.StatusForbidden, apiResponse{Message: "not a backup destination secret"})
+		return
+	}
 
 	if req.StorageType != "" {
+		if existing.Labels == nil {
+			existing.Labels = make(map[string]string)
+		}
 		existing.Labels[labels.LabelStorageType] = req.StorageType
 	}
 	if req.Name != "" {
@@ -316,14 +333,17 @@ func (s *Server) handleAPIDeleteDestination(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: s.cfg.Namespace,
-		},
-	}
-	if err := s.cfg.Client.Delete(r.Context(), secret); err != nil {
+	existing := &corev1.Secret{}
+	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, existing); err != nil {
 		writeJSON(w, http.StatusNotFound, apiResponse{Message: "not found or already deleted"})
+		return
+	}
+	if existing.Labels[labels.LabelRole] != labels.RoleDestination {
+		writeJSON(w, http.StatusForbidden, apiResponse{Message: "not a backup destination secret"})
+		return
+	}
+	if err := s.cfg.Client.Delete(r.Context(), existing); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "delete failed"})
 		return
 	}
 	s.broadcast(sseEvent{Type: "destination_deleted", Data: secretName})
@@ -671,6 +691,10 @@ func (s *Server) handleAPIGetSource(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, apiResponse{Message: "secret not found"})
 		return
 	}
+	if sec.Labels[labels.LabelRole] != labels.RoleSource {
+		writeJSON(w, http.StatusForbidden, apiResponse{Message: "not a backup source secret"})
+		return
+	}
 
 	type sourceInfo struct {
 		SecretName        string `json:"secretName"`
@@ -731,6 +755,10 @@ func (s *Server) handleAPIGetDestination(w http.ResponseWriter, r *http.Request)
 	sec := &corev1.Secret{}
 	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, sec); err != nil {
 		writeJSON(w, http.StatusNotFound, apiResponse{Message: "secret not found"})
+		return
+	}
+	if sec.Labels[labels.LabelRole] != labels.RoleDestination {
+		writeJSON(w, http.StatusForbidden, apiResponse{Message: "not a backup destination secret"})
 		return
 	}
 

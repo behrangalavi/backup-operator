@@ -235,6 +235,7 @@ src/
     ├── data.go          # Data aggregation helpers for templates
     ├── handlers.go      # Legacy HTML template handlers (backward compat)
     ├── handlers_api.go  # REST API: CRUD sources/destinations, trigger, SSE
+    ├── handlers_settings.go  # Settings API: GET/PUT /api/settings, values.yaml export
     ├── server.go        # HTTP server, routing, SPA handler, SSE broker
     ├── static/          # SPA frontend (vanilla JS, no build step)
     │   ├── index.html   # SPA shell with sidebar, modal, toast containers
@@ -882,7 +883,7 @@ This section documents the complete data lifecycle for compliance audits (DSGVO/
 
 | Principal | Can access | Cannot access |
 |---|---|---|
-| Operator pod | Source/Dest Secrets (read), CronJobs (CRUD), Leases, Events | Private key, dump contents |
+| Operator pod | Source/Dest Secrets (CRUD), CronJobs (CRUD), ConfigMaps (get/update/patch), Jobs (create), Leases, Events | Private key, dump contents |
 | Worker pod | Source/Dest Secrets (read), Events (create) | CronJobs, Leases, private key |
 | Storage backend | Encrypted dumps, unencrypted meta.json | Private key, DB credentials |
 | Restore operator (human) | Private key, storage backend | Cluster Secrets (unless they have kubectl access) |
@@ -984,9 +985,75 @@ The notable ones, with the reasoning that future readers should preserve.
 
 - **Legacy template routes preserved.** The old Go HTML template routes are served under `/legacy` for backward compatibility. The SPA serves from `/` via a catch-all handler. This allows gradual migration without breaking existing bookmarks or monitoring that targets the old UI.
 
+- **Settings ConfigMap as runtime override layer.** Helm values are the master configuration source — they initialize the `{fullname}-settings` ConfigMap at install time. The UI Settings Wizard reads and writes this ConfigMap via the Kubernetes API (`GET/PUT /api/settings`), allowing live configuration changes without `helm upgrade`. An "Export values.yaml" button generates a downloadable values file so changes can be committed to Git for reproducible `helm upgrade` deployments. This gives operators the best of both worlds: interactive UI for quick tuning and declarative GitOps for controlled rollouts.
+
+- **CRUD role verification on all Secret endpoints.** All GET, UPDATE, and DELETE handlers for sources and destinations verify the target Secret carries the expected `backup.mogenius.io/role` label before proceeding. This prevents the operator's expanded RBAC (full Secret CRUD) from being used to access or delete non-backup Secrets in the namespace.
+
 ---
 
-## 19. Important
+## 19. Helm Distribution
+
+### 19.1 Installation
+
+```bash
+# From OCI registry (after release)
+helm install backup-operator oci://ghcr.io/behrangalavi/charts/backup-operator \
+  -n backup --create-namespace \
+  --set agePublicKeys="age1qx...your-recipient"
+
+# From local chart (development)
+helm install backup-operator ./charts/backup-operator \
+  -n backup --create-namespace \
+  --set agePublicKeys="age1qx...your-recipient"
+```
+
+### 19.2 CI/CD
+
+Two GitHub Actions workflows:
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `ci.yaml` | Push/PR to `main` | `go build`, `go test`, `go vet`, `helm lint` |
+| `release.yaml` | Tag push `v*` | Build multi-arch Docker image → GHCR, package + push Helm chart to OCI registry |
+
+### 19.3 Release Process
+
+```bash
+# 1. Bump Chart.yaml version + appVersion
+# 2. Tag and push
+git tag v0.2.0
+git push origin v0.2.0
+# 3. GitHub Actions builds image + publishes chart automatically
+```
+
+### 19.4 Settings Wizard
+
+The UI Settings Wizard (`#/settings`) provides a 4-step form:
+
+| Step | Fields |
+|---|---|
+| 1. Schedule & Timeout | `defaultSchedule`, `runTimeoutSeconds` |
+| 2. Retention Policy | `defaultRetentionDays`, `defaultMinKeep`, `tempDir`, `tempDirSize` |
+| 3. Worker Resources | CPU/Memory limits and requests |
+| 4. Review & Apply | Summary of all settings, save button |
+
+**API Endpoints:**
+- `GET /api/settings` — reads the settings ConfigMap
+- `PUT /api/settings` — validates and updates the ConfigMap
+- `GET /api/settings/export` — generates a downloadable `values.yaml`
+
+**Architecture:**
+```
+Helm values.yaml → ConfigMap (install-time defaults)
+                         ↕
+                    UI Settings Wizard (runtime overrides)
+                         ↓
+                    Export values.yaml → Git → helm upgrade (GitOps)
+```
+
+---
+
+## 20. Important
 
 - Every change to the directory structure should be reflected in section 4.
 - New annotations or labels: update sections 6.1–6.5.

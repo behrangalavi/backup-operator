@@ -82,6 +82,7 @@ func main() {
 		// to expose it on UI_ADDR.
 		{Key: "UI_ENABLED", Optional: true, Default: "false"},
 		{Key: "UI_ADDR", Optional: true, Default: ":8081"},
+		{Key: "SETTINGS_CONFIGMAP", Optional: true},
 	})
 	assert.NoError(err, "failed to initialize config module")
 
@@ -150,10 +151,11 @@ func main() {
 
 	if config.GetValue("UI_ENABLED") == "true" {
 		uiServer, err := ui.New(ui.Config{
-			Addr:      config.GetValue("UI_ADDR"),
-			Namespace: namespaceForUI(watchNs),
-			Client:    mgr.GetClient(),
-			Logger:    ctrl.Log.WithName("ui"),
+			Addr:               config.GetValue("UI_ADDR"),
+			Namespace:          namespaceForUI(watchNs),
+			Client:             mgr.GetClient(),
+			Logger:             ctrl.Log.WithName("ui"),
+			SettingsConfigMap:  config.GetValue("SETTINGS_CONFIGMAP"),
 		})
 		assert.NoError(err, "failed to construct UI server")
 		// Register before manager start so the cache and HTTP listener share

@@ -217,7 +217,11 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		emitAnalyzerMetrics(src.TargetName, report)
 	}
 
-	meta := metaJSON(src, stats, report, encryptedSize, sha256sum, timestamp)
+	metaStats := stats
+	if src.AnonymizeTables && stats != nil {
+		metaStats = anonymizeStats(stats)
+	}
+	meta := metaJSON(src, metaStats, report, encryptedSize, sha256sum, timestamp)
 
 	successCount := p.fanOut(ctx, dests, src.TargetName, dumpFile, objectPath, metaPath, meta, log)
 	if successCount == 0 {
@@ -560,6 +564,23 @@ func emitAnalyzerMetrics(target string, r *analyzer.Report) {
 		}
 	}
 	metrics.SetLastRunAnomalies(target, len(r.Anomalies))
+}
+
+func anonymizeStats(s *dumper.Stats) *dumper.Stats {
+	anon := &dumper.Stats{
+		SchemaHash:  s.SchemaHash,
+		GeneratedAt: s.GeneratedAt,
+		Tables:      make([]dumper.TableStats, len(s.Tables)),
+	}
+	for i, t := range s.Tables {
+		h := sha256.Sum256([]byte(t.Name))
+		anon.Tables[i] = dumper.TableStats{
+			Name:      hex.EncodeToString(h[:8]),
+			RowCount:  t.RowCount,
+			SizeBytes: t.SizeBytes,
+		}
+	}
+	return anon
 }
 
 func buildObjectPath(target, timestamp, ext string) string {

@@ -612,15 +612,16 @@ const settingsSteps = [
 async function renderSettings(loading = true) {
   if (loading) showLoading();
   let settings = null;
-  let unavailable = false;
+  let errorMsg = '';
   try {
     const resp = await api('/api/settings');
-    settings = resp.settings;
+    settings = resp.settings || null;
   } catch(e) {
-    unavailable = true;
+    errorMsg = e.message || 'unknown error';
+    console.error('[Settings] Failed to load:', errorMsg);
   }
 
-  if (unavailable || !settings) {
+  if (!settings) {
     window._currentSettings = null;
     content.innerHTML = `
       <div class="page-header">
@@ -629,7 +630,9 @@ async function renderSettings(loading = true) {
       <div class="empty-state">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09"/></svg>
         <h3>Settings not available</h3>
-        <p>The settings wizard requires the operator to be deployed with <code>ui.enabled=true</code> in the Helm chart. The settings ConfigMap is created automatically when enabled.</p>
+        <p>Could not load operator settings.${errorMsg ? ' <strong>Error:</strong> ' + escHTML(errorMsg) : ''}</p>
+        <p style="margin-top:8px;font-size:0.9em;opacity:0.7">Ensure the operator is deployed with <code>ui.enabled=true</code> and the Docker image is rebuilt after code changes.</p>
+        <button class="btn btn-primary" onclick="renderSettings(true)" style="margin-top:12px">Retry</button>
       </div>`;
     return;
   }
@@ -800,7 +803,6 @@ window.goToStep = function(n) {
 
 window.submitSettings = async function(e) {
   e.preventDefault();
-  // Collect any form values from the current step before saving.
   const form = $('#settingsForm');
   if (form && window._currentSettings) {
     const fd = new FormData(form);
@@ -809,13 +811,19 @@ window.submitSettings = async function(e) {
     }
   }
   const s = window._currentSettings;
-  if (!s) { toast('No settings loaded', 'error'); return; }
+  if (!s) { toast('No settings loaded — please reload the page', 'error'); return; }
+
+  const btn = form ? form.querySelector('[type="submit"]') : null;
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
 
   try {
     await api('/api/settings', { method: 'PUT', body: JSON.stringify(s) });
     toast('Settings saved successfully', 'success');
   } catch(e) {
+    console.error('[Settings] Save failed:', e.message);
     toast('Failed to save: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Save Settings'; }
   }
 };
 

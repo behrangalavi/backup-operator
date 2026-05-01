@@ -15,6 +15,13 @@ spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets: {{- toYaml . | nindent 8 }}
       {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: backup-operator
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
@@ -48,6 +55,28 @@ spec:
               value: {{ include "backup-operator.serviceAccountName" . | quote }}
             - name: AGE_SECRET_NAME
               value: {{ include "backup-operator.fullname" . }}-age
+            {{- with .Values.workerResources }}
+            {{- if .limits }}
+            {{- if .limits.cpu }}
+            - name: WORKER_CPU_LIMIT
+              value: {{ .limits.cpu | quote }}
+            {{- end }}
+            {{- if .limits.memory }}
+            - name: WORKER_MEMORY_LIMIT
+              value: {{ .limits.memory | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .requests }}
+            {{- if .requests.cpu }}
+            - name: WORKER_CPU_REQUEST
+              value: {{ .requests.cpu | quote }}
+            {{- end }}
+            {{- if .requests.memory }}
+            - name: WORKER_MEMORY_REQUEST
+              value: {{ .requests.memory | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.ui.enabled }}
             - name: UI_ENABLED
               value: "true"
@@ -58,9 +87,29 @@ spec:
             - name: metrics
               containerPort: 8080
               protocol: TCP
+            - name: health
+              containerPort: 8082
+              protocol: TCP
             {{- if .Values.ui.enabled }}
             - name: ui
               containerPort: {{ .Values.ui.port }}
               protocol: TCP
             {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           resources: {{- toYaml .Values.resources | nindent 12 }}

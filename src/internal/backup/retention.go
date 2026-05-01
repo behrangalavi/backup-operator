@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"fmt"
 	"path"
 	"sort"
 	"strings"
@@ -97,6 +98,9 @@ func (p *Pipeline) retainForDestination(
 		"policy_days", policy.Days,
 		"min_keep", policy.MinKeep,
 	)
+	p.events.Emit("Normal", "RetentionDelete",
+		fmt.Sprintf("Retention pruning %d artifacts for target %s from %s (policy: %d days, min-keep %d)",
+			len(victims), target, dest.Name, policy.Days, policy.MinKeep))
 
 	for _, v := range victims {
 		if err := active.Delete(ctx, v); err != nil {

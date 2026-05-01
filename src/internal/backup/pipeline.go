@@ -28,6 +28,18 @@ import (
 	"github.com/go-logr/logr"
 )
 
+// EventEmitter abstracts Kubernetes event recording so the pipeline stays
+// testable without a real API server. The worker injects an implementation
+// backed by record.EventRecorder; tests can use NoopEventEmitter.
+type EventEmitter interface {
+	Emit(eventType, reason, message string)
+}
+
+// NoopEventEmitter silently drops events — used in tests and the restore CLI.
+type NoopEventEmitter struct{}
+
+func (NoopEventEmitter) Emit(string, string, string) {}
+
 // Pipeline runs one backup of one Source to N Destinations:
 //   1. CollectStats from the live DB (best-effort; missing stats just skip the analyzer step).
 //   2. Dump → gzip → age → temp file (single dump regardless of N destinations).
@@ -42,6 +54,7 @@ type Pipeline struct {
 	logger       logr.Logger
 	destProvider DestinationProvider
 	defaults     RetentionPolicy
+	events       EventEmitter
 }
 
 // DestinationProvider returns the current set of destinations at run time.
@@ -65,6 +78,29 @@ func NewPipeline(
 		logger:       logger,
 		destProvider: dp,
 		defaults:     defaults,
+		events:       NoopEventEmitter{},
+	}
+}
+
+// NewPipelineWithEvents creates a pipeline that emits Kubernetes events for
+// audit-trail compliance. Used by the worker binary.
+func NewPipelineWithEvents(
+	enc crypto.Encryptor,
+	an analyzer.Analyzer,
+	tempDir string,
+	dp DestinationProvider,
+	defaults RetentionPolicy,
+	logger logr.Logger,
+	events EventEmitter,
+) *Pipeline {
+	return &Pipeline{
+		encryptor:    enc,
+		analyzer:     an,
+		tempDir:      tempDir,
+		logger:       logger,
+		destProvider: dp,
+		defaults:     defaults,
+		events:       events,
 	}
 }
 
@@ -104,6 +140,9 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	log := p.logger.WithValues("target", src.TargetName, "db_type", src.DBType)
 	timestamp := time.Now().UTC().Format("20060102T150405Z")
 
+	p.events.Emit("Normal", "BackupStarted",
+		fmt.Sprintf("Backup started for target %s (db=%s)", src.TargetName, src.DBType))
+
 	// Resolve destinations up-front so we can persist a failure-meta even
 	// when the dump itself fails.
 	dests := secrets.FilterDestinations(src, p.destProvider.Destinations())
@@ -111,6 +150,8 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	d, err := dumperFactory.NewDumper(src.DBType, src.Config, log)
 	if err != nil {
 		metrics.SetLastRunStatus(src.TargetName, false)
+		p.events.Emit("Warning", "BackupFailed",
+			fmt.Sprintf("Backup failed for target %s in phase dumper-init: %v", src.TargetName, err))
 		p.recordFailure(ctx, dests, src, timestamp, "dumper-init", err, log)
 		return fmt.Errorf("dumper: %w", err)
 	}
@@ -137,6 +178,8 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	if err != nil {
 		metrics.SetLastRunStatus(src.TargetName, false)
 		_ = os.Remove(dumpFile)
+		p.events.Emit("Warning", "BackupFailed",
+			fmt.Sprintf("Backup failed for target %s in phase dump: %v", src.TargetName, err))
 		p.recordFailure(ctx, dests, src, timestamp, "dump", err, log)
 		return fmt.Errorf("dump: %w", err)
 	}
@@ -167,10 +210,15 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	successCount := p.fanOut(ctx, dests, src.TargetName, dumpFile, objectPath, metaPath, meta, log)
 	if successCount == 0 {
 		metrics.SetLastRunStatus(src.TargetName, false)
+		p.events.Emit("Warning", "BackupFailed",
+			fmt.Sprintf("Backup failed for target %s: all %d destination uploads failed", src.TargetName, len(dests)))
 		p.recordFailure(ctx, dests, src, timestamp, "upload", errors.New("all destination uploads failed"), log)
 		return errors.New("all destination uploads failed")
 	}
 	metrics.SetLastRunStatus(src.TargetName, true)
+	p.events.Emit("Normal", "BackupCompleted",
+		fmt.Sprintf("Backup completed for target %s (%d/%d destinations, %d bytes)",
+			src.TargetName, successCount, len(dests), encryptedSize))
 	log.Info("backup completed", "destinations_succeeded", successCount, "destinations_total", len(dests))
 
 	// Retention runs after a successful upload so old artifacts are pruned
@@ -250,6 +298,11 @@ func (p *Pipeline) dumpToFile(ctx context.Context, d dumper.Dumper, dumpFile str
 	return info.Size(), nil
 }
 
+const (
+	uploadMaxRetries = 3
+	uploadBaseDelay  = 2 * time.Second
+)
+
 func (p *Pipeline) fanOut(
 	ctx context.Context,
 	dests []*secrets.Destination,
@@ -266,7 +319,7 @@ func (p *Pipeline) fanOut(
 		wg.Add(1)
 		go func(d *secrets.Destination) {
 			defer wg.Done()
-			err := p.uploadOne(ctx, d, target, dumpFile, objectPath, metaPath, meta)
+			err := p.uploadWithRetry(ctx, d, target, dumpFile, objectPath, metaPath, meta, log)
 			if err != nil {
 				log.Error(err, "destination upload failed", "destination", d.Name)
 				metrics.SetDestinationFailed(target, d.Name, true)
@@ -281,6 +334,46 @@ func (p *Pipeline) fanOut(
 	}
 	wg.Wait()
 	return success
+}
+
+// uploadWithRetry wraps uploadOne with exponential backoff for transient
+// failures. Only RetryableError triggers a retry; PermanentError and other
+// errors abort immediately.
+func (p *Pipeline) uploadWithRetry(
+	ctx context.Context,
+	d *secrets.Destination,
+	target, dumpFile, objectPath, metaPath string,
+	meta []byte,
+	log logr.Logger,
+) error {
+	var lastErr error
+	for attempt := 0; attempt < uploadMaxRetries; attempt++ {
+		lastErr = p.uploadOne(ctx, d, target, dumpFile, objectPath, metaPath, meta)
+		if lastErr == nil {
+			return nil
+		}
+
+		var retryable *RetryableError
+		if !errors.As(lastErr, &retryable) {
+			return lastErr
+		}
+
+		if attempt < uploadMaxRetries-1 {
+			delay := uploadBaseDelay * time.Duration(1<<uint(attempt))
+			log.Info("retrying upload after transient failure",
+				"destination", d.Name,
+				"attempt", attempt+1,
+				"delay", delay.String(),
+				"err", lastErr.Error(),
+			)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+	}
+	return lastErr
 }
 
 func (p *Pipeline) uploadOne(

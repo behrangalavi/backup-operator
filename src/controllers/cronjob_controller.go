@@ -37,6 +37,7 @@ type WorkerSpec struct {
 	MinKeepDef         string
 	DefaultSchedule    string
 	ImagePullSecrets   []corev1.LocalObjectReference
+	Resources          corev1.ResourceRequirements
 }
 
 // CronJobReconciler keeps a managed K8s CronJob in sync with each source
@@ -146,6 +147,12 @@ func (r *CronJobReconciler) buildCronJob(sec *corev1.Secret, src *secrets.Source
 		"backup.mogenius.io/target":    src.TargetName,
 	}
 
+	workerSecCtx := &corev1.SecurityContext{
+		AllowPrivilegeEscalation: ptr(false),
+		ReadOnlyRootFilesystem:   ptr(true),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+	}
+
 	containers := []corev1.Container{{
 		Name:    "worker",
 		Image:   r.Worker.Image,
@@ -156,6 +163,8 @@ func (r *CronJobReconciler) buildCronJob(sec *corev1.Secret, src *secrets.Source
 		},
 		ImagePullPolicy: r.Worker.ImagePullPolicy,
 		Env:             r.workerEnv(sec.Namespace),
+		SecurityContext: workerSecCtx,
+		Resources:       r.Worker.Resources,
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "temp", MountPath: r.Worker.TempDir},
 		},
@@ -211,8 +220,15 @@ func (r *CronJobReconciler) buildCronJob(sec *corev1.Secret, src *secrets.Source
 							RestartPolicy:      corev1.RestartPolicyNever,
 							ServiceAccountName: r.Worker.ServiceAccountName,
 							ImagePullSecrets:   r.Worker.ImagePullSecrets,
-							Containers:         containers,
-							Volumes:            []corev1.Volume{tempVolume},
+							SecurityContext: &corev1.PodSecurityContext{
+								RunAsNonRoot:   ptr(true),
+								RunAsUser:      ptrInt64(1000),
+								RunAsGroup:     ptrInt64(1000),
+								FSGroup:        ptrInt64(1000),
+								SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+							},
+							Containers: containers,
+							Volumes:    []corev1.Volume{tempVolume},
 						},
 					},
 				},
@@ -274,3 +290,4 @@ func roleLabelTransitionPredicate() predicate.Predicate {
 
 func ptr[T any](v T) *T       { return &v }
 func ptrInt32(v int32) *int32 { return &v }
+func ptrInt64(v int64) *int64 { return &v }

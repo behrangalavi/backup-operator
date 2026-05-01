@@ -1,15 +1,12 @@
 {{- if .Values.rbac.create -}}
-# Single ServiceAccount used by both the operator pod and worker pods.
-# The operator needs CronJob/Job write perms; the worker needs Secret read.
-# Splitting into two SAs is documented as a future hardening step but adds
-# Helm complexity for limited extra security in a namespace-scoped install.
+# Operator Role — manages CronJobs, watches Secrets/Jobs, leader election.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "backup-operator.fullname" . }}
   labels: {{- include "backup-operator.labels" . | nindent 4 }}
 rules:
-  # Both operator and worker — operator reconciles them, worker reads them.
+  # Operator reconciles source/destination Secrets into CronJobs.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "watch"]
@@ -29,7 +26,7 @@ rules:
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-  # Worker — audit-trail events attached to source Secrets.
+  # Operator — MetricsRefresher and UI may emit events in future.
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
@@ -46,5 +43,36 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: {{ include "backup-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# Worker Role — minimal privileges: read Secrets, emit audit events.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "backup-operator.fullname" . }}-worker
+  labels: {{- include "backup-operator.labels" . | nindent 4 }}
+rules:
+  # Worker reads the source Secret it was pointed at and lists destinations.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+
+  # Worker — audit-trail events attached to source Secrets.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "backup-operator.fullname" . }}-worker
+  labels: {{- include "backup-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "backup-operator.fullname" . }}-worker
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "backup-operator.fullname" . }}-worker
     namespace: {{ .Release.Namespace }}
 {{- end }}

@@ -52,7 +52,7 @@ spec:
             - name: WORKER_IMAGE_PULL_POLICY
               value: {{ .Values.image.pullPolicy | quote }}
             - name: WORKER_SERVICE_ACCOUNT
-              value: {{ include "backup-operator.serviceAccountName" . | quote }}
+              value: {{ include "backup-operator.fullname" . }}-worker
             - name: AGE_SECRET_NAME
               value: {{ include "backup-operator.fullname" . }}-age
             {{- with .Values.workerResources }}

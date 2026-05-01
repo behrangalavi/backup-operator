@@ -190,17 +190,16 @@ func (s *sftpStorage) Upload(ctx context.Context, p string, r io.Reader) error {
 	return nil
 }
 
-func (s *sftpStorage) List(ctx context.Context, prefix string) ([]storage.Object, error) {
-	ssh, sc, err := s.dial(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer ssh.Close()
-	defer sc.Close()
-
-	walker := sc.Walk(s.full(prefix))
+// walkList traverses the directory tree and collects non-directory objects,
+// checking for context cancellation between steps so long walks can be
+// interrupted.
+func walkList(ctx context.Context, sc *sftp.Client, root string, strip func(string) string) ([]storage.Object, error) {
+	walker := sc.Walk(root)
 	var out []storage.Object
 	for walker.Step() {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("walk cancelled: %w", err)
+		}
 		if err := walker.Err(); err != nil {
 			return nil, fmt.Errorf("walk: %w", err)
 		}
@@ -209,12 +208,23 @@ func (s *sftpStorage) List(ctx context.Context, prefix string) ([]storage.Object
 			continue
 		}
 		out = append(out, storage.Object{
-			Path:         s.stripPrefix(walker.Path()),
+			Path:         strip(walker.Path()),
 			Size:         info.Size(),
 			LastModified: info.ModTime(),
 		})
 	}
 	return out, nil
+}
+
+func (s *sftpStorage) List(ctx context.Context, prefix string) ([]storage.Object, error) {
+	ssh, sc, err := s.dial(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer ssh.Close()
+	defer sc.Close()
+
+	return walkList(ctx, sc, s.full(prefix), s.stripPrefix)
 }
 
 func (s *sftpStorage) Get(ctx context.Context, p string) (io.ReadCloser, error) {
@@ -297,24 +307,8 @@ func (s *sftpSession) Upload(_ context.Context, p string, r io.Reader) error {
 	return nil
 }
 
-func (s *sftpSession) List(_ context.Context, prefix string) ([]storage.Object, error) {
-	walker := s.sc.Walk(s.parent.full(prefix))
-	var out []storage.Object
-	for walker.Step() {
-		if err := walker.Err(); err != nil {
-			return nil, fmt.Errorf("walk: %w", err)
-		}
-		info := walker.Stat()
-		if info.IsDir() {
-			continue
-		}
-		out = append(out, storage.Object{
-			Path:         s.parent.stripPrefix(walker.Path()),
-			Size:         info.Size(),
-			LastModified: info.ModTime(),
-		})
-	}
-	return out, nil
+func (s *sftpSession) List(ctx context.Context, prefix string) ([]storage.Object, error) {
+	return walkList(ctx, s.sc, s.parent.full(prefix), s.parent.stripPrefix)
 }
 
 func (s *sftpSession) Get(_ context.Context, p string) (io.ReadCloser, error) {

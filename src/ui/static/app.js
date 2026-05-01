@@ -529,7 +529,7 @@ async function renderTargetDetail(name) {
     return;
   }
 
-  try { runs = await api('/api/targets/' + name + '/runs'); } catch(e) { /* ok */ }
+  try { runs = (await api('/api/targets/' + name + '/runs')) || []; } catch(e) { /* ok */ }
 
   // Find secretName from targets - we need to look it up
   let secretName = '';
@@ -578,7 +578,7 @@ async function renderTargetDetail(name) {
           <td>${r.status === 'failed' ? '<span class="badge badge-failed">Failed</span>' : '<span class="badge badge-ok">OK</span>'}</td>
           <td class="num" style="font-size:12px">${r.status !== 'failed' ? humanBytes(r.encryptedSizeBytes) : '—'}</td>
           <td>${r.report ? (r.report.schemaChanged ? '<span class="badge badge-failed">Changed</span>' : '<span class="badge badge-ok">Stable</span>') : '—'}</td>
-          <td class="num" style="font-size:12px">${r.stats ? r.stats.tables.length : '—'}</td>
+          <td class="num" style="font-size:12px">${r.stats && r.stats.tables ? r.stats.tables.length : '—'}</td>
           <td class="num">${r.report && r.report.anomalies ? '<span style="color:var(--danger)">' + r.report.anomalies.length + '</span>' : '0'}</td>
           <td>${r.status !== 'failed' ? `
             <a href="/download/${escHTML(name)}/${escHTML(r.timestamp)}/meta" class="btn btn-ghost btn-sm" style="font-size:11px">.json</a>

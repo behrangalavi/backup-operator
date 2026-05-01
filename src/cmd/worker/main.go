@@ -135,7 +135,8 @@ func main() {
 	defaultMin, _ := strconv.Atoi(config.GetValue("DEFAULT_MIN_KEEP"))
 	policy := backup.RetentionPolicy{Days: defaultRet, MinKeep: defaultMin}
 
-	events := buildEventEmitter(cs, srcSecret)
+	events, flushEvents := buildEventEmitter(cs, srcSecret)
+	defer flushEvents()
 
 	pipeline := backup.NewPipelineWithEvents(
 		enc,
@@ -215,7 +216,9 @@ func validateNonNegInt(v string) error {
 // buildEventEmitter creates a Kubernetes EventRecorder that emits events
 // against the source Secret. Events form a permanent audit trail visible
 // via `kubectl describe secret <source>` and cluster audit logs.
-func buildEventEmitter(cs kubernetes.Interface, sec *corev1.Secret) backup.EventEmitter {
+// The returned cleanup function shuts down the broadcaster, flushing
+// any buffered events before the process exits.
+func buildEventEmitter(cs kubernetes.Interface, sec *corev1.Secret) (backup.EventEmitter, func()) {
 	s := runtime.NewScheme()
 	_ = scheme.AddToScheme(s)
 	eventBroadcaster := record.NewBroadcaster()
@@ -230,7 +233,7 @@ func buildEventEmitter(cs kubernetes.Interface, sec *corev1.Secret) backup.Event
 		UID:        sec.UID,
 		APIVersion: "v1",
 	}
-	return &secretEventEmitter{recorder: recorder, ref: ref}
+	return &secretEventEmitter{recorder: recorder, ref: ref}, eventBroadcaster.Shutdown
 }
 
 func die(format string, args ...any) {

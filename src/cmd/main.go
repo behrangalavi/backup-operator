@@ -19,7 +19,7 @@ import (
 	"backup-operator/assert"
 	"backup-operator/config"
 	"backup-operator/controllers"
-	"backup-operator/metricStore"
+	"backup-operator/metrics"
 	"backup-operator/ui"
 )
 
@@ -85,7 +85,7 @@ func main() {
 	cfg := ctrl.GetConfigOrDie()
 	adaptKubeConfig(cfg)
 
-	metricStore.Register(ctrlmetrics.Registry)
+	metrics.Register(ctrlmetrics.Registry)
 
 	watchNs := config.GetValue("WATCH_NAMESPACE")
 	leaderElectionID := config.GetValue("LEADER_ELECTION_ID")

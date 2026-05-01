@@ -12,7 +12,7 @@ import (
 	"backup-operator/dumper"
 	"backup-operator/internal/labels"
 	"backup-operator/internal/secrets"
-	"backup-operator/metricStore"
+	"backup-operator/metrics"
 	"backup-operator/storage"
 	storageFactory "backup-operator/storage/factory"
 
@@ -102,7 +102,7 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 	r.mu.Lock()
 	for prev := range r.trackedTargets {
 		if !current[prev] {
-			metricStore.DeleteTargetMetrics(prev)
+			metrics.DeleteTargetMetrics(prev)
 		}
 	}
 	r.trackedTargets = current
@@ -160,7 +160,7 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 		if err != nil {
 			r.Logger.V(1).Info("storage init failed; treating destination as failing",
 				"target", src.TargetName, "destination", d.Name, "err", err.Error())
-			metricStore.SetDestinationFailed(src.TargetName, d.Name, true)
+			metrics.SetDestinationFailed(src.TargetName, d.Name, true)
 			continue
 		}
 		m, ts, found := loadLatestMeta(ctx, st, src.TargetName)
@@ -170,9 +170,9 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 			continue
 		}
 		// Storage is reachable since we just read a meta from it.
-		metricStore.SetDestinationFailed(src.TargetName, d.Name, false)
+		metrics.SetDestinationFailed(src.TargetName, d.Name, false)
 		if m.succeeded() {
-			metricStore.SetLastSuccess(src.TargetName, d.Name, ts)
+			metrics.SetLastSuccess(src.TargetName, d.Name, ts)
 		}
 		if newest == nil || ts.After(newestTS) {
 			newest = m
@@ -190,26 +190,26 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 		return
 	}
 
-	metricStore.SetLastRunStatus(src.TargetName, newest.succeeded())
+	metrics.SetLastRunStatus(src.TargetName, newest.succeeded())
 	if newest.Report != nil {
 		if newest.Report.SizeChangeRatio > 0 {
-			metricStore.SetDumpSizeChangeRatio(src.TargetName, newest.Report.SizeChangeRatio)
+			metrics.SetDumpSizeChangeRatio(src.TargetName, newest.Report.SizeChangeRatio)
 		}
-		metricStore.SetSchemaChanged(src.TargetName, newest.Report.SchemaChanged)
-		metricStore.SetLastRunAnomalies(src.TargetName, len(newest.Report.Anomalies))
+		metrics.SetSchemaChanged(src.TargetName, newest.Report.SchemaChanged)
+		metrics.SetLastRunAnomalies(src.TargetName, len(newest.Report.Anomalies))
 	} else {
 		// A failed run won't have a report. Keep these gauges sticky on their
 		// last known good values rather than zeroing them — a transient
 		// failure should not silence schema/size alerts.
-		metricStore.SetLastRunAnomalies(src.TargetName, 0)
+		metrics.SetLastRunAnomalies(src.TargetName, 0)
 	}
 
 	if success != nil {
-		metricStore.SetDumpSize(src.TargetName, success.EncryptedSizeBytes)
+		metrics.SetDumpSize(src.TargetName, success.EncryptedSizeBytes)
 		if success.Stats != nil {
-			metricStore.SetTableCount(src.TargetName, len(success.Stats.Tables))
+			metrics.SetTableCount(src.TargetName, len(success.Stats.Tables))
 			for _, t := range success.Stats.Tables {
-				metricStore.SetTableRowCount(src.TargetName, t.Name, t.RowCount)
+				metrics.SetTableRowCount(src.TargetName, t.Name, t.RowCount)
 			}
 		}
 	}

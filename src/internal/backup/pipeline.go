@@ -218,10 +218,16 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	}
 
 	metaStats := stats
-	if src.AnonymizeTables && stats != nil {
-		metaStats = anonymizeStats(stats)
+	metaReport := report
+	if src.AnonymizeTables {
+		if stats != nil {
+			metaStats = anonymizeStats(stats)
+		}
+		if report != nil {
+			metaReport = anonymizeReport(report)
+		}
 	}
-	meta := metaJSON(src, metaStats, report, encryptedSize, sha256sum, timestamp)
+	meta := metaJSON(src, metaStats, metaReport, encryptedSize, sha256sum, timestamp)
 
 	successCount := p.fanOut(ctx, dests, src.TargetName, dumpFile, objectPath, metaPath, meta, log)
 	if successCount == 0 {
@@ -566,6 +572,11 @@ func emitAnalyzerMetrics(target string, r *analyzer.Report) {
 	metrics.SetLastRunAnomalies(target, len(r.Anomalies))
 }
 
+func hashTableName(name string) string {
+	h := sha256.Sum256([]byte(name))
+	return hex.EncodeToString(h[:8])
+}
+
 func anonymizeStats(s *dumper.Stats) *dumper.Stats {
 	anon := &dumper.Stats{
 		SchemaHash:  s.SchemaHash,
@@ -573,11 +584,49 @@ func anonymizeStats(s *dumper.Stats) *dumper.Stats {
 		Tables:      make([]dumper.TableStats, len(s.Tables)),
 	}
 	for i, t := range s.Tables {
-		h := sha256.Sum256([]byte(t.Name))
 		anon.Tables[i] = dumper.TableStats{
-			Name:      hex.EncodeToString(h[:8]),
+			Name:      hashTableName(t.Name),
 			RowCount:  t.RowCount,
 			SizeBytes: t.SizeBytes,
+		}
+	}
+	return anon
+}
+
+func anonymizeReport(r *analyzer.Report) *analyzer.Report {
+	anon := &analyzer.Report{
+		SizeChangeRatio: r.SizeChangeRatio,
+		SchemaChanged:   r.SchemaChanged,
+	}
+	if r.Current != nil {
+		anon.Current = anonymizeStats(r.Current)
+	}
+	if r.Previous != nil {
+		anon.Previous = anonymizeStats(r.Previous)
+	}
+	if len(r.Anomalies) > 0 {
+		anon.Anomalies = make([]analyzer.Anomaly, len(r.Anomalies))
+		for i, a := range r.Anomalies {
+			subj := a.Subject
+			if subj != "" && subj != "<dump>" {
+				subj = hashTableName(subj)
+			}
+			anon.Anomalies[i] = analyzer.Anomaly{
+				Kind:    a.Kind,
+				Subject: subj,
+				Detail:  a.Detail,
+			}
+		}
+	}
+	if len(r.TableDiffs) > 0 {
+		anon.TableDiffs = make([]analyzer.TableDiff, len(r.TableDiffs))
+		for i, td := range r.TableDiffs {
+			anon.TableDiffs[i] = analyzer.TableDiff{
+				Name:           hashTableName(td.Name),
+				PrevRows:       td.PrevRows,
+				CurrRows:       td.CurrRows,
+				RowChangeRatio: td.RowChangeRatio,
+			}
 		}
 	}
 	return anon

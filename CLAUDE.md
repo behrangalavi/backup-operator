@@ -344,6 +344,10 @@ The operator and the worker have separate (overlapping) config schemas. All valu
 | `WORKER_IMAGE_PULL_POLICY` | no | `IfNotPresent` | |
 | `WORKER_SERVICE_ACCOUNT` | **yes** | — | SA bound to worker pods (shared with operator) |
 | `AGE_SECRET_NAME` | **yes** | — | Secret holding `AGE_PUBLIC_KEYS` for worker pods to mount |
+| `WORKER_CPU_LIMIT` | no | `2000m` | CPU limit for worker pods |
+| `WORKER_MEMORY_LIMIT` | no | `2Gi` | Memory limit for worker pods |
+| `WORKER_CPU_REQUEST` | no | `250m` | CPU request for worker pods |
+| `WORKER_MEMORY_REQUEST` | no | `256Mi` | Memory request for worker pods |
 | `METRICS_REFRESH_INTERVAL_SECONDS` | no | `30` | Tick interval of the `MetricsRefresher`. Floor: 5. Trade off frequency against destination read load. |
 
 ### Worker (`cmd/worker/main.go`)
@@ -802,6 +806,18 @@ The notable ones, with the reasoning that future readers should preserve.
 - **Structured error types in the pipeline.** Upload failures are `RetryableError` (transient network issues), storage-init failures are `PermanentError` (bad credentials), and config issues are `ValidationError`. This lets the fan-out distinguish error classes for logging and future retry logic, without changing the existing best-effort error handling contract.
 
 - **Post-upload size verification.** After uploading a dump, the pipeline Lists the uploaded path and compares the remote object's size to the local file. This catches silent truncation or partial writes. If the List itself fails (not all backends support prefix-exact listing), verification is skipped rather than failing the backup — availability over strictness.
+
+- **PSA-restricted SecurityContext on all pods.** Both operator and worker pods run with `readOnlyRootFilesystem`, `allowPrivilegeEscalation: false`, `capabilities: drop: ALL`, `seccompProfile: RuntimeDefault`, and `runAsNonRoot: true` (UID 1000). The worker writes only to its emptyDir temp volume. This passes Pod Security Admission in `restricted` mode, which is required for hardened production clusters.
+
+- **Exponential retry on transient upload failures.** Upload operations tagged as `RetryableError` are retried up to 3 times with 2s/4s exponential backoff. `PermanentError` (bad credentials, missing bucket) aborts immediately. This makes the backup resilient to short network glitches without wasting time on configuration errors. Context cancellation is respected between retries.
+
+- **SSH handshake timeout.** The SFTP `ssh.ClientConfig` sets `Timeout: 30s`. Without it, the SSH handshake (key exchange, auth) blocks indefinitely on an unresponsive server — the ctx-based TCP dialer only covers the initial connect, not the protocol handshake.
+
+- **Worker resource limits via env vars.** `WORKER_CPU_LIMIT`, `WORKER_MEMORY_LIMIT`, `WORKER_CPU_REQUEST`, `WORKER_MEMORY_REQUEST` flow from Helm into every CronJob's container spec. Sensible defaults ship (2 CPU / 2Gi); empty disables. Without limits, a large dump can OOM the node.
+
+- **Kubernetes Events as audit trail.** The worker emits `BackupStarted`, `BackupCompleted`, `BackupFailed`, and `RetentionDelete` events against the source Secret. Visible via `kubectl describe secret <source>` and preserved in cluster audit logs. Satisfies DSGVO Art. 30 and SOC2 requirements. The pipeline uses an `EventEmitter` interface so tests stay API-server-free (`NoopEventEmitter`). RBAC grants `events: create, patch` to the shared ServiceAccount.
+
+- **Health probes on the operator.** controller-runtime's built-in `/healthz` and `/readyz` are served on `:8082` (separate from metrics `:8080` and UI `:8081`). Without probes, Kubernetes cannot detect a stuck operator and restart it.
 
 - **Operator-side metric aggregation, not Pushgateway.** Backup metrics are produced by short-lived worker pods that Prometheus cannot scrape in time. Three options were considered: (a) Pushgateway, (b) operator aggregates from `meta.json`, (c) drop semantic alerts and rely on kube-state-metrics for Job status. We picked (b): the operator's `MetricsRefresher` controller polls each destination's latest meta.json and writes the result into the operator's local registry. Pushgateway adds a stateful component with known counter-staleness footguns; (c) sacrifices the project's core differentiator (semantic alerts on dump *content*). Aggregating from storage reuses the artifacts we already produce and keeps the system stateless apart from the operator pod itself. Counter-style metrics (`runs_total`, `anomalies_total`) are converted to Gauges (`last_run_status`, `last_run_anomalies`) because monotonic counters require a continuously running producer; reconstructing them from storage would require summing across the retention window and break whenever retention prunes a run.
 

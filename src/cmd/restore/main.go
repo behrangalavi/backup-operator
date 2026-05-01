@@ -97,9 +97,9 @@ func main() {
 	sort.Slice(dumps, func(i, j int) bool { return dumps[i].timestamp > dumps[j].timestamp })
 
 	if *listOnly {
-		fmt.Fprintf(os.Stdout, "%-20s\t%-10s\t%s\n", "TIMESTAMP", "SIZE", "PATH")
+		_, _ = fmt.Fprintf(os.Stdout, "%-20s\t%-10s\t%s\n", "TIMESTAMP", "SIZE", "PATH")
 		for _, d := range dumps {
-			fmt.Fprintf(os.Stdout, "%-20s\t%-10d\t%s\n", d.timestamp, d.size, d.path)
+			_, _ = fmt.Fprintf(os.Stdout, "%-20s\t%-10d\t%s\n", d.timestamp, d.size, d.path)
 		}
 		return
 	}
@@ -132,7 +132,7 @@ func main() {
 	if err != nil {
 		die("get %s: %v", pick.path, err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	plain, err := dec.Wrap(rc)
 	if err != nil {
@@ -151,7 +151,7 @@ func main() {
 		if err != nil {
 			die("gunzip: %v", err)
 		}
-		defer gz.Close()
+		defer func() { _ = gz.Close() }()
 		srcReader = gz
 	}
 

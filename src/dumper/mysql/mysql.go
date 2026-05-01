@@ -62,7 +62,7 @@ func (d *mysqlDumper) CollectStats(ctx context.Context) (*dumper.Stats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	if err := db.PingContext(ctx); err != nil {
 		return nil, fmt.Errorf("ping: %w", err)
@@ -134,7 +134,7 @@ ORDER BY name`
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []dumper.TableStats
 	for rows.Next() {
@@ -162,7 +162,7 @@ ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION`
 	if err != nil {
 		return "", err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	h := sha256.New()
 	for rows.Next() {
@@ -170,7 +170,7 @@ ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION`
 		if err := rows.Scan(&schema, &table, &column, &colType, &nullable, &def, &key); err != nil {
 			return "", err
 		}
-		fmt.Fprintf(h, "%s|%s|%s|%s|%s|%s|%s\n",
+		_, _ = fmt.Fprintf(h, "%s|%s|%s|%s|%s|%s|%s\n",
 			schema, table, column, colType, nullable, def, key)
 	}
 	if err := rows.Err(); err != nil {

@@ -140,7 +140,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		p.recordFailure(ctx, dests, src, timestamp, "dump", err, log)
 		return fmt.Errorf("dump: %w", err)
 	}
-	defer os.Remove(dumpFile)
+	defer func() { _ = os.Remove(dumpFile) }()
 
 	metrics.SetDumpSize(src.TargetName, encryptedSize)
 
@@ -222,7 +222,7 @@ func (p *Pipeline) dumpToFile(ctx context.Context, d dumper.Dumper, dumpFile str
 	if err != nil {
 		return 0, fmt.Errorf("create temp dump: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	enc, err := p.encryptor.Wrap(f)
 	if err != nil {
@@ -299,7 +299,7 @@ func (p *Pipeline) uploadOne(
 	if err != nil {
 		return fmt.Errorf("open dump: %w", err)
 	}
-	defer dump.Close()
+	defer func() { _ = dump.Close() }()
 
 	info, err := dump.Stat()
 	if err != nil {

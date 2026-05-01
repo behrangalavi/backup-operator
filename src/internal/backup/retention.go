@@ -61,7 +61,7 @@ func (p *Pipeline) applyRetention(
 				metrics.IncRetentionFailure(target, dest.Name)
 				continue
 			}
-			defer closer()
+			defer func() { _ = closer() }()
 			active = sess
 		}
 

@@ -108,7 +108,7 @@ func buildHostKeyCallback(name string, knownHostsData []byte, logger logr.Logger
 	if err != nil {
 		return nil, fmt.Errorf("known-hosts temp file: %w", err)
 	}
-	defer os.Remove(f.Name())
+	defer func() { _ = os.Remove(f.Name()) }()
 
 	if _, err := f.Write(knownHostsData); err != nil {
 		_ = f.Close()
@@ -172,8 +172,8 @@ func (s *sftpStorage) Upload(ctx context.Context, p string, r io.Reader) error {
 	if err != nil {
 		return err
 	}
-	defer ssh.Close()
-	defer sc.Close()
+	defer func() { _ = ssh.Close() }()
+	defer func() { _ = sc.Close() }()
 
 	full := s.full(p)
 	if err := sc.MkdirAll(path.Dir(full)); err != nil {
@@ -183,7 +183,7 @@ func (s *sftpStorage) Upload(ctx context.Context, p string, r io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("create %s: %w", full, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := io.Copy(f, r); err != nil {
 		return fmt.Errorf("write %s: %w", full, err)
 	}
@@ -221,8 +221,8 @@ func (s *sftpStorage) List(ctx context.Context, prefix string) ([]storage.Object
 	if err != nil {
 		return nil, err
 	}
-	defer ssh.Close()
-	defer sc.Close()
+	defer func() { _ = ssh.Close() }()
+	defer func() { _ = sc.Close() }()
 
 	return walkList(ctx, sc, s.full(prefix), s.stripPrefix)
 }
@@ -259,8 +259,8 @@ func (s *sftpStorage) Delete(ctx context.Context, p string) error {
 	if err != nil {
 		return err
 	}
-	defer ssh.Close()
-	defer sc.Close()
+	defer func() { _ = ssh.Close() }()
+	defer func() { _ = sc.Close() }()
 	if err := sc.Remove(s.full(p)); err != nil {
 		return fmt.Errorf("remove %s: %w", p, err)
 	}
@@ -300,7 +300,7 @@ func (s *sftpSession) Upload(_ context.Context, p string, r io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("create %s: %w", full, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := io.Copy(f, r); err != nil {
 		return fmt.Errorf("write %s: %w", full, err)
 	}

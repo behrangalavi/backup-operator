@@ -26,6 +26,7 @@ type dataSource interface {
 // targetSummary is what the index page needs per source.
 type targetSummary struct {
 	Name         string
+	SecretName   string
 	DBType       string
 	Schedule     string
 	Destinations []string
@@ -98,6 +99,7 @@ func (d *k8sData) listTargets(ctx context.Context) ([]targetSummary, error) {
 	for _, src := range sources {
 		summary := targetSummary{
 			Name:         src.TargetName,
+			SecretName:   src.SecretName,
 			DBType:       src.DBType,
 			Schedule:     src.Schedule,
 			Destinations: destinationsAllowedFor(src, dests),

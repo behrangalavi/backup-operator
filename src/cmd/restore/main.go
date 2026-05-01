@@ -23,6 +23,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"time"
 
 	"backup-operator/crypto"
 	"backup-operator/internal/secrets"
@@ -54,14 +55,17 @@ func main() {
 		listOnly      = flag.Bool("list", false, "list available dumps for the target instead of downloading")
 		output        = flag.String("o", "-", "output file; '-' = stdout")
 		decompress    = flag.Bool("decompress", false, "gunzip the decrypted stream before writing to output")
+		purge         = flag.Bool("purge", false, "delete all dumps for the target (use --before to limit)")
+		before        = flag.String("before", "", "only purge dumps older than this date (YYYY-MM-DD or 20060102T150405Z)")
+		dryRun        = flag.Bool("dry-run", false, "show what --purge would delete without actually deleting")
 	)
 	flag.Parse()
 
 	if *storageSecret == "" || *target == "" {
 		die("flags --storage-secret and --target are required")
 	}
-	if !*listOnly && *ageKeyFile == "" {
-		die("flag --age-key is required (omit only with --list)")
+	if !*listOnly && !*purge && *ageKeyFile == "" {
+		die("flag --age-key is required (omit only with --list or --purge)")
 	}
 
 	log := newStderrLogger()
@@ -101,6 +105,11 @@ func main() {
 		for _, d := range dumps {
 			_, _ = fmt.Fprintf(os.Stdout, "%-20s\t%-10d\t%s\n", d.timestamp, d.size, d.path)
 		}
+		return
+	}
+
+	if *purge {
+		runPurge(ctx, st, objs, *target, *before, *dryRun, log)
 		return
 	}
 
@@ -214,4 +223,77 @@ func newStderrLogger() logr.Logger {
 func die(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "error: "+format+"\n", args...)
 	os.Exit(1)
+}
+
+// runPurge deletes all artifacts (dump + meta) for a target, optionally
+// filtered by --before. Supports DSGVO Art. 17 right-to-erasure workflows.
+func runPurge(ctx context.Context, st storage.Storage, objs []storage.Object, target, before string, dryRun bool, log logr.Logger) {
+	var cutoff time.Time
+	if before != "" {
+		var err error
+		cutoff, err = parseCutoff(before)
+		if err != nil {
+			die("invalid --before value %q: %v (expected YYYY-MM-DD or 20060102T150405Z)", before, err)
+		}
+	}
+
+	var toDelete []storage.Object
+	for _, o := range objs {
+		ts := extractTimestamp(o.Path)
+		if ts.IsZero() {
+			continue
+		}
+		if !cutoff.IsZero() && !ts.Before(cutoff) {
+			continue
+		}
+		toDelete = append(toDelete, o)
+	}
+
+	if len(toDelete) == 0 {
+		fmt.Fprintln(os.Stderr, "no matching artifacts to purge")
+		return
+	}
+
+	verb := "deleting"
+	if dryRun {
+		verb = "would delete (dry-run)"
+	}
+
+	for _, o := range toDelete {
+		fmt.Fprintf(os.Stderr, "%s: %s (%d bytes)\n", verb, o.Path, o.Size)
+		if !dryRun {
+			if err := st.Delete(ctx, o.Path); err != nil {
+				log.Error(err, "delete failed", "path", o.Path)
+			}
+		}
+	}
+	if dryRun {
+		fmt.Fprintf(os.Stderr, "\ndry-run: %d artifact(s) would be deleted\n", len(toDelete))
+	} else {
+		fmt.Fprintf(os.Stderr, "\npurged %d artifact(s) for target %q\n", len(toDelete), target)
+	}
+}
+
+func parseCutoff(s string) (time.Time, error) {
+	if t, err := time.Parse("20060102T150405Z", s); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("unsupported format")
+}
+
+func extractTimestamp(p string) time.Time {
+	base := path.Base(p)
+	if !strings.HasPrefix(base, "dump-") {
+		return time.Time{}
+	}
+	// dump-20260429T020000Z.sql.gz.age or dump-20260429T020000Z.meta.json
+	ts := base[len("dump-"):]
+	if idx := strings.IndexByte(ts, '.'); idx > 0 {
+		ts = ts[:idx]
+	}
+	t, _ := time.Parse("20060102T150405Z", ts)
+	return t
 }

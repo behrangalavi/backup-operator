@@ -240,7 +240,7 @@ func (r *CronJobReconciler) workerVolumeMounts() []corev1.VolumeMount {
 	mounts := []corev1.VolumeMount{
 		{Name: "temp", MountPath: r.Worker.TempDir},
 	}
-	if !strings.HasPrefix(r.Worker.TempDir, "/tmp") {
+	if r.Worker.TempDir != "/tmp" && !strings.HasPrefix(r.Worker.TempDir, "/tmp/") {
 		mounts = append(mounts, corev1.VolumeMount{Name: "tmp", MountPath: "/tmp"})
 	}
 	return mounts
@@ -248,7 +248,7 @@ func (r *CronJobReconciler) workerVolumeMounts() []corev1.VolumeMount {
 
 func (r *CronJobReconciler) workerVolumes(tempVolume corev1.Volume) []corev1.Volume {
 	vols := []corev1.Volume{tempVolume}
-	if !strings.HasPrefix(r.Worker.TempDir, "/tmp") {
+	if r.Worker.TempDir != "/tmp" && !strings.HasPrefix(r.Worker.TempDir, "/tmp/") {
 		vols = append(vols, corev1.Volume{
 			Name: "tmp",
 			VolumeSource: corev1.VolumeSource{

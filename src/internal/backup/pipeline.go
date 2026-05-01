@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -194,7 +195,7 @@ func (p *Pipeline) recordFailure(
 				log.V(1).Info("failure-meta: init storage failed", "destination", d.Name, "err", err.Error())
 				return
 			}
-			if err := st.Upload(ctx, metaPath, bytesReader(body)); err != nil {
+			if err := st.Upload(ctx, metaPath, bytes.NewReader(body)); err != nil {
 				log.V(1).Info("failure-meta: upload failed", "destination", d.Name, "err", err.Error())
 				return
 			}
@@ -293,7 +294,7 @@ func (p *Pipeline) uploadOne(
 	}
 	metrics.ObserveUploadDuration(target, d.Name, d.StorageType, time.Since(start))
 
-	if err := st.Upload(ctx, metaPath, bytesReader(meta)); err != nil {
+	if err := st.Upload(ctx, metaPath, bytes.NewReader(meta)); err != nil {
 		return fmt.Errorf("upload meta: %w", err)
 	}
 	return nil
@@ -418,19 +419,6 @@ func buildObjectPath(target, timestamp, ext string) string {
 		fmt.Sprintf("dump-%s.%s", timestamp, ext),
 	)
 }
-
-type byteReader struct{ b []byte }
-
-func (r *byteReader) Read(p []byte) (int, error) {
-	if len(r.b) == 0 {
-		return 0, io.EOF
-	}
-	n := copy(p, r.b)
-	r.b = r.b[n:]
-	return n, nil
-}
-
-func bytesReader(b []byte) io.Reader { return &byteReader{b: b} }
 
 // filterDestinations applies the source's optional destination allow-list.
 // An empty allow-list means fan out to every discovered destination.

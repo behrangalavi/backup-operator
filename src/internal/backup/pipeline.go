@@ -143,7 +143,8 @@ func (p *Pipeline) analyzerForSource(src *secrets.Source) analyzer.Analyzer {
 // failure-meta upload errors are logged but never alter the returned error.
 func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	log := p.logger.WithValues("target", src.TargetName, "db_type", src.DBType)
-	timestamp := time.Now().UTC().Format("20060102T150405Z")
+	runStart := time.Now()
+	timestamp := runStart.UTC().Format("20060102T150405Z")
 
 	p.events.Emit("Normal", "BackupStarted",
 		fmt.Sprintf("Backup started for target %s (db=%s)", src.TargetName, src.DBType))
@@ -197,13 +198,28 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	}
 	defer func() { _ = os.Remove(dumpFile) }()
 
+	if encryptedSize == 0 {
+		metrics.SetLastRunStatus(src.TargetName, false)
+		emptyErr := errors.New("dump produced zero bytes")
+		p.events.Emit("Warning", "BackupFailed",
+			fmt.Sprintf("Backup failed for target %s: dump produced zero bytes (possible empty database or dump tool misconfiguration)", src.TargetName))
+		p.recordFailure(ctx, dests, src, timestamp, "dump-empty", emptyErr, log)
+		return emptyErr
+	}
+
 	metrics.SetDumpSize(src.TargetName, encryptedSize)
 
 	if len(dests) == 0 {
 		metrics.SetLastRunStatus(src.TargetName, false)
-		// No destinations to write a failure-meta to; only logs/metrics
-		// will record this.
 		return errors.New("no destinations configured")
+	}
+
+	if err := ctx.Err(); err != nil {
+		metrics.SetLastRunStatus(src.TargetName, false)
+		p.events.Emit("Warning", "BackupFailed",
+			fmt.Sprintf("Backup cancelled for target %s after dump phase: %v", src.TargetName, err))
+		p.recordFailure(ctx, dests, src, timestamp, "cancelled", err, log)
+		return fmt.Errorf("cancelled after dump: %w", err)
 	}
 
 	objectPath := buildObjectPath(src.TargetName, timestamp, "sql.gz.age")
@@ -246,6 +262,8 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	// Retention runs after a successful upload so old artifacts are pruned
 	// only once a fresh one is in place. Errors here do not fail the run.
 	p.applyRetention(ctx, dests, src.TargetName, p.resolvePolicy(src), time.Now(), log)
+
+	metrics.ObserveRunDuration(src.TargetName, src.DBType, time.Since(runStart))
 	return nil
 }
 
@@ -272,6 +290,7 @@ func (p *Pipeline) recordFailure(
 		wg.Add(1)
 		go func(d *secrets.Destination) {
 			defer wg.Done()
+			defer recoverGoroutine(log, "failure-meta", d.Name)
 			st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, log)
 			if err != nil {
 				log.V(1).Info("failure-meta: init storage failed", "destination", d.Name, "err", err.Error())
@@ -316,6 +335,10 @@ func (p *Pipeline) dumpToFile(ctx context.Context, d dumper.Dumper, dumpFile str
 		return 0, "", fmt.Errorf("age close: %w", err)
 	}
 
+	if err := f.Sync(); err != nil {
+		return 0, "", fmt.Errorf("fsync dump: %w", err)
+	}
+
 	info, err := f.Stat()
 	if err != nil {
 		return 0, "", err
@@ -346,6 +369,7 @@ func (p *Pipeline) fanOut(
 		wg.Add(1)
 		go func(d *secrets.Destination) {
 			defer wg.Done()
+			defer recoverGoroutine(log, "upload", d.Name)
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			err := p.uploadWithRetry(ctx, d, target, dumpFile, objectPath, metaPath, meta, log)
@@ -455,7 +479,10 @@ func verifyUploadSize(ctx context.Context, st storage.Storage, objectPath string
 	for _, o := range objs {
 		if o.Path == objectPath || strings.HasSuffix(o.Path, "/"+path.Base(objectPath)) {
 			if o.Size != expected {
-				return fmt.Errorf("upload verify: size mismatch for %s: local=%d remote=%d", objectPath, expected, o.Size)
+				return &RetryableError{
+					Op:  "upload verify",
+					Err: fmt.Errorf("size mismatch for %s: local=%d remote=%d", objectPath, expected, o.Size),
+				}
 			}
 			log.V(1).Info("post-upload verify passed", "path", objectPath, "size", expected)
 			return nil
@@ -630,6 +657,15 @@ func anonymizeReport(r *analyzer.Report) *analyzer.Report {
 		}
 	}
 	return anon
+}
+
+// recoverGoroutine catches panics in pipeline goroutines so a single
+// destination failure doesn't crash the entire worker process.
+func recoverGoroutine(log logr.Logger, phase, dest string) {
+	if r := recover(); r != nil {
+		log.Error(fmt.Errorf("panic: %v", r), "goroutine recovered",
+			"phase", phase, "destination", dest)
+	}
 }
 
 func buildObjectPath(target, timestamp, ext string) string {

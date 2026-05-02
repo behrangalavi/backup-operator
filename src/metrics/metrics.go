@@ -27,6 +27,15 @@ var (
 		[]string{"target", "destination", "storage_type"},
 	)
 
+	runDurationSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "backup_operator_run_duration_seconds",
+			Help:    "Total end-to-end backup run time including dump, upload, and retention",
+			Buckets: []float64{5, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200},
+		},
+		[]string{"target", "db_type"},
+	)
+
 	dumpSizeBytes = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "backup_operator_dump_size_bytes",
@@ -124,6 +133,7 @@ var (
 
 func Register(registry prometheus.Registerer) {
 	registry.MustRegister(
+		runDurationSeconds,
 		dumpDurationSeconds,
 		uploadDurationSeconds,
 		dumpSizeBytes,
@@ -146,6 +156,10 @@ func IncRetentionDeleted(target, destination, kind string) {
 
 func IncRetentionFailure(target, destination string) {
 	retentionFailedTotal.WithLabelValues(target, destination).Inc()
+}
+
+func ObserveRunDuration(target, dbType string, d time.Duration) {
+	runDurationSeconds.WithLabelValues(target, dbType).Observe(d.Seconds())
 }
 
 func ObserveDumpDuration(target, dbType string, d time.Duration) {

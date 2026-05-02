@@ -799,6 +799,7 @@ const settingsSteps = [
   { id: 'review', title: 'Review & Apply', icon: '&#10003;' }
 ];
 
+window.renderSettings = renderSettings;
 async function renderSettings(loading = true) {
   if (loading) showLoading();
   let settings = null;

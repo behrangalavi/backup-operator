@@ -56,6 +56,14 @@ jobs:
   plan:
     runs-on: ubuntu-latest
     needs: test
+    # semantic-release runs verifyConditions even in dry-run, which checks
+    # that the GITHUB_TOKEN has the scopes needed for the real publish
+    # (contents/issues/pull-requests write). Without these the dry-run
+    # fails before producing outputs. Dry-run itself never writes.
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
     outputs:
       published: ${{ steps.dryrun.outputs.new_release_published }}
       version: ${{ steps.dryrun.outputs.new_release_version }}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"backup-operator/internal/secrets"
 	storageFactory "backup-operator/storage/factory"
 )
 
@@ -128,11 +129,26 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Try destinations in order; first one that yields the object wins.
-	// This mirrors the fan-out semantics — every destination should hold
-	// the artifact, but tolerating one being temporarily unavailable
-	// matches the pipeline's resilience design.
-	for _, dest := range detail.Destinations {
+	// If ?destination= is specified, download from that specific destination.
+	// Otherwise, try destinations in order; first one that yields the object wins.
+	wantDest := r.URL.Query().Get("destination")
+	destsToTry := detail.Destinations
+	if wantDest != "" {
+		var found *secrets.Destination
+		for _, d := range detail.Destinations {
+			if d.Name == wantDest {
+				found = d
+				break
+			}
+		}
+		if found == nil {
+			renderError(w, http.StatusBadRequest, "destination not found: "+wantDest)
+			return
+		}
+		destsToTry = []*secrets.Destination{found}
+	}
+
+	for _, dest := range destsToTry {
 		st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, s.cfg.Logger.WithName("download"))
 		if err != nil {
 			continue
@@ -145,6 +161,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, filename))
+		w.Header().Set("X-Source-Destination", dest.Name)
 		if _, err := io.Copy(w, rc); err != nil {
 			s.cfg.Logger.Error(err, "stream download", "target", target, "kind", kind)
 		}

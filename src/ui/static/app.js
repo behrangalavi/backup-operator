@@ -119,9 +119,92 @@ function escHTML(s) {
   d.textContent = s || '';
   return d.innerHTML;
 }
+// Render a Failed badge with phase suffix and full error in tooltip.
+// Matches the legacy templates' "✗ failed (phase)" + title=error pattern.
+function failedBadge(m) {
+  const phase = m && m.phase ? ' (' + escHTML(m.phase) + ')' : '';
+  const tip = m && (m.error || m.phase) ? escHTML((m.phase ? m.phase + ': ' : '') + (m.error || '')) : '';
+  return `<span class="badge badge-failed"${tip ? ' title="' + tip + '"' : ''}>Failed${phase}</span>`;
+}
+function truncate(s, n) {
+  if (!s) return '';
+  return s.length > n ? s.slice(0, n) + '…' : s;
+}
 
 function showLoading() {
   content.innerHTML = '<div class="empty-state"><div class="spinner"></div></div>';
+}
+
+// --- Sort state per list ---
+// Default direction is "desc" because most lists naturally answer
+// "what happened most recently?" — newest first.
+const sortState = {
+  dashboard:    { col: 'lastRun',   dir: 'desc' },
+  sources:      { col: 'createdAt', dir: 'desc' },
+  destinations: { col: 'createdAt', dir: 'desc' },
+  jobs:         { col: 'startTime', dir: 'desc' },
+  runs:         { col: 'timestamp', dir: 'desc' },
+};
+function cmp(a, b) {
+  if (a == null && b == null) return 0;
+  if (a == null) return 1;   // nulls last regardless of direction
+  if (b == null) return -1;
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  return String(a).localeCompare(String(b));
+}
+function sortBy(arr, getter, dir) {
+  const sorted = arr.slice();
+  sorted.sort((x, y) => {
+    const r = cmp(getter(x), getter(y));
+    return dir === 'asc' ? r : -r;
+  });
+  return sorted;
+}
+function parseTsCompact(ts) {
+  // 20060102T150405Z → epoch ms; null if not parseable
+  if (!ts) return null;
+  const m = String(ts).match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/);
+  if (!m) {
+    const t = Date.parse(ts);
+    return isNaN(t) ? null : t;
+  }
+  return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+}
+function parseTsRFC(ts) { const t = ts ? Date.parse(ts) : NaN; return isNaN(t) ? null : t; }
+function sortIndicator(list, col) {
+  const s = sortState[list];
+  if (!s || s.col !== col) return '<span class="sort-ind"></span>';
+  return '<span class="sort-ind active">' + (s.dir === 'asc' ? '▲' : '▼') + '</span>';
+}
+window.toggleSort = function(list, col) {
+  const s = sortState[list];
+  if (s.col === col) {
+    s.dir = s.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    s.col = col;
+    s.dir = 'desc';
+  }
+  renderPage(currentPage(), false);
+};
+window.setSort = function(list, col, dir) {
+  sortState[list] = { col, dir: dir || sortState[list].dir };
+  renderPage(currentPage(), false);
+};
+window.flipSortDir = function(list) {
+  const s = sortState[list];
+  s.dir = s.dir === 'asc' ? 'desc' : 'asc';
+  renderPage(currentPage(), false);
+};
+function renderSortControl(list, options) {
+  const s = sortState[list];
+  const opts = options.map(([k, lbl]) =>
+    `<option value="${k}" ${s.col === k ? 'selected' : ''}>${lbl}</option>`).join('');
+  const arrow = s.dir === 'asc' ? '▲' : '▼';
+  return `<div class="sort-control">
+    <span class="sort-label">Sort:</span>
+    <select onchange="setSort('${list}', this.value)">${opts}</select>
+    <button class="btn btn-ghost btn-sm sort-dir" onclick="flipSortDir('${list}')" title="Toggle direction">${arrow}</button>
+  </div>`;
 }
 
 // --- Dashboard ---
@@ -137,6 +220,18 @@ async function renderDashboard(loading = true) {
   const ok = targets.filter(t => t.Latest && !t.Latest.status?.includes('fail')).length;
   const failed = targets.filter(t => t.Latest?.status === 'failed').length;
   const running = jobs.filter(j => j.status === 'running').length;
+
+  const dashGetters = {
+    name:     t => (t.Name || '').toLowerCase(),
+    dbType:   t => t.DBType || '',
+    schedule: t => t.Schedule || '',
+    status:   t => !t.Latest ? 2 : (t.Latest.status === 'failed' ? 0 : 1), // failed first asc, ok mid, none last
+    lastRun:  t => parseTsCompact(t.Latest && t.Latest.timestamp),
+    size:     t => (t.Latest && !t.Latest.status?.includes('fail')) ? (t.Latest.encryptedSizeBytes || 0) : null,
+    createdAt: t => parseTsRFC(t.CreatedAt),
+  };
+  const ds = sortState.dashboard;
+  const sortedTargets = sortBy(targets, dashGetters[ds.col] || dashGetters.lastRun, ds.dir);
 
   content.innerHTML = `
     <div class="page-header">
@@ -157,19 +252,26 @@ async function renderDashboard(loading = true) {
       ${targets.length === 0 ? '<div class="empty-state"><h3>No backup sources</h3><p>Create a source to start backing up your databases.</p></div>' : `
       <table>
         <thead><tr>
-          <th>Target</th><th>Type</th><th>Schedule</th><th>Status</th>
-          <th>Last Run</th><th class="num">Size</th><th>Destinations</th><th></th>
+          <th class="sortable" onclick="toggleSort('dashboard','name')">Target${sortIndicator('dashboard','name')}</th>
+          <th class="sortable" onclick="toggleSort('dashboard','dbType')">Type${sortIndicator('dashboard','dbType')}</th>
+          <th class="sortable" onclick="toggleSort('dashboard','schedule')">Schedule${sortIndicator('dashboard','schedule')}</th>
+          <th class="sortable" onclick="toggleSort('dashboard','status')">Status${sortIndicator('dashboard','status')}</th>
+          <th class="sortable" onclick="toggleSort('dashboard','lastRun')">Last Run${sortIndicator('dashboard','lastRun')}</th>
+          <th class="num sortable" onclick="toggleSort('dashboard','size')">Size${sortIndicator('dashboard','size')}</th>
+          <th class="sortable" onclick="toggleSort('dashboard','createdAt')">Created${sortIndicator('dashboard','createdAt')}</th>
+          <th>Destinations</th><th></th>
         </tr></thead>
-        <tbody>${targets.map(t => `<tr>
+        <tbody>${sortedTargets.map(t => `<tr>
           <td><a href="#/target/${escHTML(t.Name)}" style="color:var(--accent);font-weight:600">${escHTML(t.Name)}</a></td>
           <td><span class="badge badge-${t.DBType}">${t.DBType}</span></td>
           <td><code style="font-size:12px;background:var(--bg-input);padding:2px 6px;border-radius:4px">${escHTML(t.Schedule)}</code></td>
           <td>${t.Latest ? (t.Latest.status === 'failed'
-            ? '<span class="badge badge-failed">Failed</span>'
+            ? failedBadge(t.Latest)
             : '<span class="badge badge-ok">OK</span>')
             : '<span class="badge badge-pending">No runs</span>'}</td>
           <td style="color:var(--text-muted);font-size:12px">${t.Latest ? timeAgo(t.Latest.timestamp) : 'never'}</td>
           <td class="num" style="font-size:12px">${t.Latest && !t.Latest.status?.includes('fail') ? humanBytes(t.Latest.encryptedSizeBytes) : '—'}</td>
+          <td style="color:var(--text-muted);font-size:12px">${t.CreatedAt ? timeAgo(t.CreatedAt) : '—'}</td>
           <td>${(t.Destinations || []).map(d => `<span class="badge badge-sftp" style="margin:1px">${escHTML(d)}</span>`).join('')}</td>
           <td style="white-space:nowrap">
             <button class="btn btn-ghost btn-sm" onclick="triggerBackup('${escHTML(t.Name)}')" title="Run now">&#9654;</button>
@@ -187,10 +289,24 @@ async function renderSources(loading = true) {
   let targets = [];
   try { targets = await api('/api/targets'); } catch(e) { toast(e.message, 'error'); }
 
+  const srcGetters = {
+    createdAt: t => parseTsRFC(t.CreatedAt),
+    name:      t => (t.Name || '').toLowerCase(),
+    lastRun:   t => parseTsCompact(t.Latest && t.Latest.timestamp),
+    dbType:    t => t.DBType || '',
+  };
+  const ss = sortState.sources;
+  const sortedTargets = sortBy(targets, srcGetters[ss.col] || srcGetters.createdAt, ss.dir);
+
   content.innerHTML = `
     <div class="page-header">
       <div><h1>Sources</h1><div class="subtitle">Database backup sources</div></div>
-      <button class="btn btn-primary" onclick="openSourceForm()">+ Add Source</button>
+      <div style="display:flex;gap:8px;align-items:center">
+        ${targets.length > 0 ? renderSortControl('sources', [
+          ['createdAt','Created'],['name','Name'],['lastRun','Last Run'],['dbType','Type'],
+        ]) : ''}
+        <button class="btn btn-primary" onclick="openSourceForm()">+ Add Source</button>
+      </div>
     </div>
     ${targets.length === 0 ? `
     <div class="empty-state">
@@ -200,7 +316,7 @@ async function renderSources(loading = true) {
       <button class="btn btn-primary" onclick="openSourceForm()">+ Add Source</button>
     </div>` : `
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px">
-      ${targets.map(t => `
+      ${sortedTargets.map(t => `
       <div class="detail-card" style="cursor:pointer" onclick="location.hash='#/target/${escHTML(t.Name)}'">
         <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:12px">
           <div>
@@ -208,12 +324,15 @@ async function renderSources(loading = true) {
             <span class="badge badge-${t.DBType}" style="margin-top:6px">${t.DBType}</span>
           </div>
           ${t.Latest ? (t.Latest.status === 'failed'
-            ? '<span class="badge badge-failed">Failed</span>'
+            ? failedBadge(t.Latest)
             : '<span class="badge badge-ok">OK</span>')
             : '<span class="badge badge-pending">No runs</span>'}
         </div>
         <div class="detail-row"><span class="key">Schedule</span><code class="val">${escHTML(t.Schedule)}</code></div>
         <div class="detail-row"><span class="key">Last run</span><span class="val">${t.Latest ? timeAgo(t.Latest.timestamp) : 'never'}</span></div>
+        ${t.Latest && t.Latest.status === 'failed' && t.Latest.error ? `
+        <div class="detail-row" style="align-items:flex-start"><span class="key">Error</span><span class="val" style="color:var(--danger);font-size:12px;word-break:break-word" title="${escHTML(t.Latest.error)}">${escHTML(truncate(t.Latest.error, 140))}</span></div>` : ''}
+        <div class="detail-row"><span class="key">Created</span><span class="val">${t.CreatedAt ? timeAgo(t.CreatedAt) : '—'}</span></div>
         <div class="detail-row"><span class="key">Destinations</span><span class="val">${(t.Destinations||[]).join(', ') || 'all'}</span></div>
         <div style="display:flex;gap:6px;margin-top:12px;justify-content:flex-end">
           <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();triggerBackup('${escHTML(t.Name)}')" title="Run now">&#9654; Run</button>
@@ -351,10 +470,23 @@ async function renderDestinations(loading = true) {
   let dests = [];
   try { dests = await api('/api/destinations'); } catch(e) { toast(e.message, 'error'); }
 
+  const destGetters = {
+    createdAt:   d => parseTsRFC(d.createdAt),
+    name:        d => (d.name || '').toLowerCase(),
+    storageType: d => d.storageType || '',
+  };
+  const dst = sortState.destinations;
+  const sortedDests = sortBy(dests, destGetters[dst.col] || destGetters.createdAt, dst.dir);
+
   content.innerHTML = `
     <div class="page-header">
       <div><h1>Destinations</h1><div class="subtitle">Storage backends for backup uploads</div></div>
-      <button class="btn btn-primary" onclick="openDestForm()">+ Add Destination</button>
+      <div style="display:flex;gap:8px;align-items:center">
+        ${dests.length > 0 ? renderSortControl('destinations', [
+          ['createdAt','Created'],['name','Name'],['storageType','Type'],
+        ]) : ''}
+        <button class="btn btn-primary" onclick="openDestForm()">+ Add Destination</button>
+      </div>
     </div>
     ${dests.length === 0 ? `
     <div class="empty-state">
@@ -364,7 +496,7 @@ async function renderDestinations(loading = true) {
       <button class="btn btn-primary" onclick="openDestForm()">+ Add Destination</button>
     </div>` : `
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px">
-      ${dests.map(d => `
+      ${sortedDests.map(d => `
       <div class="detail-card">
         <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:12px">
           <div>
@@ -375,6 +507,7 @@ async function renderDestinations(loading = true) {
         <div class="detail-row"><span class="key">Secret</span><code class="val">${escHTML(d.secretName)}</code></div>
         <div class="detail-row"><span class="key">Host</span><span class="val">${escHTML(d.host || '—')}</span></div>
         <div class="detail-row"><span class="key">Path Prefix</span><span class="val">${escHTML(d.pathPrefix || '/')}</span></div>
+        <div class="detail-row"><span class="key">Created</span><span class="val">${d.createdAt ? timeAgo(d.createdAt) : '—'}</span></div>
         <div style="display:flex;gap:6px;margin-top:12px;justify-content:flex-end">
           <button class="btn btn-ghost btn-sm" onclick="openDestForm('${escHTML(d.secretName)}')">Edit</button>
           <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteDest('${escHTML(d.secretName)}','${escHTML(d.name)}')">Delete</button>
@@ -503,6 +636,16 @@ async function renderJobs(loading = true) {
   let jobs = [];
   try { jobs = await api('/api/jobs'); } catch(e) { toast(e.message, 'error'); }
 
+  const jobGetters = {
+    name:      j => j.name || '',
+    target:    j => (j.target || '').toLowerCase(),
+    status:    j => j.status || '',
+    startTime: j => parseTsRFC(j.startTime),
+    duration:  j => parseDurationSec(j.duration),
+  };
+  const js = sortState.jobs;
+  const sortedJobs = sortBy(jobs, jobGetters[js.col] || jobGetters.startTime, js.dir);
+
   content.innerHTML = `
     <div class="page-header">
       <div><h1>Jobs</h1><div class="subtitle">Backup job execution history</div></div>
@@ -510,8 +653,14 @@ async function renderJobs(loading = true) {
     <div class="table-card">
       ${jobs.length === 0 ? '<div class="empty-state"><h3>No jobs yet</h3><p>Jobs appear when backups run — either on schedule or triggered manually.</p></div>' : `
       <table>
-        <thead><tr><th>Job</th><th>Target</th><th>Status</th><th>Started</th><th>Duration</th></tr></thead>
-        <tbody>${jobs.map(j => `<tr>
+        <thead><tr>
+          <th class="sortable" onclick="toggleSort('jobs','name')">Job${sortIndicator('jobs','name')}</th>
+          <th class="sortable" onclick="toggleSort('jobs','target')">Target${sortIndicator('jobs','target')}</th>
+          <th class="sortable" onclick="toggleSort('jobs','status')">Status${sortIndicator('jobs','status')}</th>
+          <th class="sortable" onclick="toggleSort('jobs','startTime')">Started${sortIndicator('jobs','startTime')}</th>
+          <th class="sortable" onclick="toggleSort('jobs','duration')">Duration${sortIndicator('jobs','duration')}</th>
+        </tr></thead>
+        <tbody>${sortedJobs.map(j => `<tr>
           <td style="font-family:ui-monospace,monospace;font-size:12px">${escHTML(j.name)}</td>
           <td><strong>${escHTML(j.target || '—')}</strong></td>
           <td><span class="badge badge-${j.status}">${j.status}</span></td>
@@ -520,6 +669,33 @@ async function renderJobs(loading = true) {
         </tr>`).join('')}</tbody>
       </table>`}
     </div>`;
+}
+
+function sortRuns(runs) {
+  const g = {
+    timestamp: r => parseTsCompact(r.timestamp),
+    status:    r => r.status || '',
+    size:      r => r.status !== 'failed' ? (r.encryptedSizeBytes || 0) : null,
+    schema:    r => r.report ? (r.report.schemaChanged ? 1 : 0) : null,
+    tables:    r => (r.stats && r.stats.tables) ? r.stats.tables.length : null,
+    anomalies: r => (r.report && r.report.anomalies) ? r.report.anomalies.length : 0,
+  };
+  const s = sortState.runs;
+  return sortBy(runs, g[s.col] || g.timestamp, s.dir);
+}
+
+// Go's time.Duration String form: e.g. "1h2m3s", "45s", "0s". Best-effort.
+function parseDurationSec(s) {
+  if (!s) return null;
+  let total = 0, m;
+  const re = /(\d+)([hms])/g;
+  while ((m = re.exec(s)) !== null) {
+    const n = +m[1];
+    if (m[2] === 'h') total += n * 3600;
+    else if (m[2] === 'm') total += n * 60;
+    else total += n;
+  }
+  return total || null;
 }
 
 // --- Target detail ---
@@ -559,31 +735,45 @@ async function renderTargetDetail(name, loading = true) {
         <div class="detail-row"><span class="key">Destinations</span><span class="val">${(target.Destinations||[]).join(', ') || 'all'}</span></div>
         <div class="detail-row"><span class="key">Status</span>
           ${target.Latest ? (target.Latest.status === 'failed'
-            ? '<span class="badge badge-failed">Failed</span>'
+            ? failedBadge(target.Latest)
             : '<span class="badge badge-ok">OK</span>')
             : '<span class="badge badge-pending">No runs</span>'}</div>
       </div>
       <div class="detail-card">
         <h3>Latest Run</h3>
-        ${target.Latest ? `
+        ${target.Latest ? (target.Latest.status === 'failed' ? `
+        <div class="detail-row"><span class="key">Time</span><span class="val">${timeAgo(target.Latest.timestamp)}</span></div>
+        <div class="detail-row"><span class="key">Phase</span><span class="val">${escHTML(target.Latest.phase || '—')}</span></div>
+        <div class="detail-row" style="align-items:flex-start"><span class="key">Error</span><pre class="val" style="color:var(--danger);font-size:12px;white-space:pre-wrap;word-break:break-word;margin:0;background:var(--bg-input);padding:8px;border-radius:4px;max-height:160px;overflow:auto">${escHTML(target.Latest.error || '(no message)')}</pre></div>
+        ` : `
         <div class="detail-row"><span class="key">Time</span><span class="val">${timeAgo(target.Latest.timestamp)}</span></div>
         <div class="detail-row"><span class="key">Size</span><span class="val">${humanBytes(target.Latest.encryptedSizeBytes)}</span></div>
         <div class="detail-row"><span class="key">SHA256</span><code class="val" style="font-size:11px">${escHTML((target.Latest.sha256 || '—').substring(0, 16))}${target.Latest.sha256 ? '...' : ''}</code></div>
-        ` : '<div style="color:var(--text-muted);padding:12px 0">No runs recorded</div>'}
+        `) : '<div style="color:var(--text-muted);padding:12px 0">No runs recorded</div>'}
       </div>
     </div>
     <div class="table-card">
       <div class="table-card-header"><h2>Run History</h2></div>
       ${runs.length === 0 ? '<div class="empty-state"><p>No runs recorded for this target.</p></div>' : `
       <table>
-        <thead><tr><th>Timestamp</th><th>Status</th><th class="num">Size</th><th>Schema</th><th class="num">Tables</th><th class="num">Anomalies</th><th>Download</th></tr></thead>
-        <tbody>${runs.map(r => `<tr>
+        <thead><tr>
+          <th class="sortable" onclick="toggleSort('runs','timestamp')">Timestamp${sortIndicator('runs','timestamp')}</th>
+          <th class="sortable" onclick="toggleSort('runs','status')">Status${sortIndicator('runs','status')}</th>
+          <th class="num sortable" onclick="toggleSort('runs','size')">Size${sortIndicator('runs','size')}</th>
+          <th class="sortable" onclick="toggleSort('runs','schema')">Schema${sortIndicator('runs','schema')}</th>
+          <th class="num sortable" onclick="toggleSort('runs','tables')">Tables${sortIndicator('runs','tables')}</th>
+          <th class="sortable" onclick="toggleSort('runs','anomalies')">Anomalies / Error${sortIndicator('runs','anomalies')}</th>
+          <th>Download</th>
+        </tr></thead>
+        <tbody>${sortRuns(runs).map(r => `<tr>
           <td style="font-size:12px">${r.timestamp ? new Date(r.timestamp.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/,'$1-$2-$3T$4:$5:$6Z')).toLocaleString() : '—'}</td>
-          <td>${r.status === 'failed' ? '<span class="badge badge-failed">Failed</span>' : '<span class="badge badge-ok">OK</span>'}</td>
+          <td>${r.status === 'failed' ? failedBadge(r) : '<span class="badge badge-ok">OK</span>'}</td>
           <td class="num" style="font-size:12px">${r.status !== 'failed' ? humanBytes(r.encryptedSizeBytes) : '—'}</td>
           <td>${r.report ? (r.report.schemaChanged ? '<span class="badge badge-failed">Changed</span>' : '<span class="badge badge-ok">Stable</span>') : '—'}</td>
           <td class="num" style="font-size:12px">${r.stats && r.stats.tables ? r.stats.tables.length : '—'}</td>
-          <td class="num">${r.report && r.report.anomalies ? '<span style="color:var(--danger)">' + r.report.anomalies.length + '</span>' : '0'}</td>
+          <td>${r.status === 'failed'
+            ? `<span style="color:var(--danger);font-size:12px;word-break:break-word" title="${escHTML(r.error || '')}">${escHTML(truncate(r.error, 120) || '(no message)')}</span>`
+            : (r.report && r.report.anomalies ? `<span class="num" style="color:var(--danger)">${r.report.anomalies.length}</span>` : '<span class="num">0</span>')}</td>
           <td>${r.status !== 'failed' ? `
             <a href="/download/${escHTML(name)}/${escHTML(r.timestamp)}/meta" class="btn btn-ghost btn-sm" style="font-size:11px">.json</a>
             <a href="/download/${escHTML(name)}/${escHTML(r.timestamp)}/dump" class="btn btn-ghost btn-sm" style="font-size:11px">.age</a>` : '—'}</td>

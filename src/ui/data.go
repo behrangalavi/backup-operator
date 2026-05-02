@@ -30,6 +30,7 @@ type targetSummary struct {
 	DBType       string
 	Schedule     string
 	Destinations []string
+	CreatedAt    time.Time      // Secret CreationTimestamp; read off raw corev1 at access time
 	Latest       *meta.MetaFile // nil if no runs yet
 }
 
@@ -63,7 +64,7 @@ func newK8sData(c client.Client, namespace string, log logr.Logger) *k8sData {
 }
 
 func (d *k8sData) listTargets(ctx context.Context) ([]targetSummary, error) {
-	sources, err := d.listSourceSecrets(ctx)
+	sources, createdAt, err := d.listSourceSecretsWithMeta(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -103,6 +104,7 @@ func (d *k8sData) listTargets(ctx context.Context) ([]targetSummary, error) {
 			DBType:       src.DBType,
 			Schedule:     src.Schedule,
 			Destinations: destinationsAllowedFor(src, dests),
+			CreatedAt:    createdAt[src.SecretName],
 			Latest:       latestByTarget[src.TargetName],
 		}
 		out = append(out, summary)
@@ -159,6 +161,29 @@ func (d *k8sData) target(ctx context.Context, name string) (*targetDetail, error
 
 func (d *k8sData) listSourceSecrets(ctx context.Context) ([]*secrets.Source, error) {
 	return d.listParsedSecrets(ctx, labels.RoleSource)
+}
+
+// listSourceSecretsWithMeta returns parsed sources alongside a secretName→creationTimestamp
+// map so UI callers can sort by creation time without bloating secrets.Source itself.
+func (d *k8sData) listSourceSecretsWithMeta(ctx context.Context) ([]*secrets.Source, map[string]time.Time, error) {
+	var list corev1.SecretList
+	if err := d.client.List(ctx, &list, client.InNamespace(d.namespace), client.MatchingLabels{
+		labels.LabelRole: labels.RoleSource,
+	}); err != nil {
+		return nil, nil, err
+	}
+	out := make([]*secrets.Source, 0, len(list.Items))
+	createdAt := make(map[string]time.Time, len(list.Items))
+	for i := range list.Items {
+		src, err := secrets.ParseSource(&list.Items[i], "")
+		if err != nil {
+			d.log.V(1).Info("skipping invalid source", "secret", list.Items[i].Name, "err", err.Error())
+			continue
+		}
+		out = append(out, src)
+		createdAt[list.Items[i].Name] = list.Items[i].CreationTimestamp.Time
+	}
+	return out, createdAt, nil
 }
 
 func (d *k8sData) listDestinationSecrets(ctx context.Context) ([]*secrets.Destination, error) {

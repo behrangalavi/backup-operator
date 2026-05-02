@@ -189,6 +189,7 @@ func (s *Server) handleAPIListDestinations(w http.ResponseWriter, r *http.Reques
 		StorageType string `json:"storageType"`
 		PathPrefix  string `json:"pathPrefix"`
 		Host        string `json:"host"`
+		CreatedAt   string `json:"createdAt,omitempty"`
 	}
 	out := make([]destInfo, 0, len(list.Items))
 	for _, sec := range list.Items {
@@ -196,12 +197,17 @@ func (s *Server) handleAPIListDestinations(w http.ResponseWriter, r *http.Reques
 		if name == "" {
 			name = sec.Name
 		}
+		var createdAt string
+		if !sec.CreationTimestamp.IsZero() {
+			createdAt = sec.CreationTimestamp.UTC().Format(time.RFC3339)
+		}
 		out = append(out, destInfo{
 			SecretName:  sec.Name,
 			Name:        name,
 			StorageType: sec.Labels[labels.LabelStorageType],
 			PathPrefix:  sec.Annotations[labels.AnnotationPathPrefix],
 			Host:        string(sec.Data["host"]),
+			CreatedAt:   createdAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

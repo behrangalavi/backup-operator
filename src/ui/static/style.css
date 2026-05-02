@@ -117,6 +117,32 @@ tbody td {
 tbody tr:hover td { background: var(--bg-card-hover); }
 tbody tr:last-child td { border-bottom: none; }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
+thead th.sortable {
+  cursor: pointer; user-select: none; transition: color 0.1s;
+}
+thead th.sortable:hover { color: var(--text); }
+.sort-ind {
+  display: inline-block; width: 12px; margin-left: 4px;
+  font-size: 10px; color: var(--text-muted); opacity: 0.4;
+}
+.sort-ind.active { color: var(--accent); opacity: 1; }
+
+/* Sort control (for card grids) */
+.sort-control {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 8px; background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.sort-control .sort-label {
+  font-size: 11px; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+.sort-control select {
+  background: var(--bg-input); border: 1px solid var(--border);
+  color: var(--text); padding: 4px 8px; border-radius: var(--radius-sm);
+  font-size: 12px; cursor: pointer;
+}
+.sort-control .sort-dir { padding: 4px 8px; font-size: 11px; }
 
 /* Badges / pills */
 .badge {

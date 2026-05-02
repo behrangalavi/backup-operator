@@ -6,6 +6,15 @@ const $ = (sel, ctx) => (ctx || document).querySelector(sel);
 const $$ = (sel, ctx) => [...(ctx || document).querySelectorAll(sel)];
 const content = $('#content');
 
+function humanBytes(n) {
+  if (!n || n === 0) return '0 B';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return (i === 0 ? v : v.toFixed(1)) + ' ' + units[i];
+}
+
 // --- API helpers ---
 async function api(path, opts = {}) {
   const resp = await fetch(path, {
@@ -210,10 +219,12 @@ function renderSortControl(list, options) {
 // --- Dashboard ---
 async function renderDashboard(loading = true) {
   if (loading) showLoading();
-  let targets = [], dests = [], jobs = [];
+  let targets = [], dests = [], jobs = [], healthEntries = [], consistencyIssues = [];
   try {
-    [targets, dests, jobs] = await Promise.all([
-      api('/api/targets'), api('/api/destinations'), api('/api/jobs')
+    [targets, dests, jobs, healthEntries, consistencyIssues] = await Promise.all([
+      api('/api/targets'), api('/api/destinations'), api('/api/jobs'),
+      api('/api/destination-health').catch(() => []),
+      api('/api/consistency-check').catch(() => []),
     ]);
   } catch(e) { /* partial data is ok */ }
 
@@ -280,7 +291,50 @@ async function renderDashboard(loading = true) {
           </td>
         </tr>`).join('')}</tbody>
       </table>`}
-    </div>`;
+    </div>
+    ${consistencyIssues.length > 0 ? `
+    <div class="table-card" style="border-left:3px solid var(--danger)">
+      <div class="table-card-header"><h2 style="color:var(--danger)">Consistency Warnings</h2></div>
+      <p style="padding:0 16px;color:var(--text-muted);font-size:13px;margin:0 0 8px">Backups found in some destinations but missing from others.</p>
+      <table>
+        <thead><tr><th>Target</th><th>Timestamp</th><th>Present In</th><th>Missing From</th></tr></thead>
+        <tbody>${consistencyIssues.slice(0, 20).map(ci => `<tr>
+          <td><strong>${escHTML(ci.target)}</strong></td>
+          <td style="font-size:12px">${escHTML(ci.timestamp)}</td>
+          <td>${(ci.presentIn||[]).map(d => `<span class="badge badge-ok" style="margin:1px">${escHTML(d)}</span>`).join('')}</td>
+          <td>${(ci.missingFrom||[]).map(d => `<span class="badge badge-failed" style="margin:1px">${escHTML(d)}</span>`).join('')}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+      ${consistencyIssues.length > 20 ? `<p style="padding:8px 16px;color:var(--text-muted);font-size:12px">...and ${consistencyIssues.length - 20} more</p>` : ''}
+    </div>` : ''}
+    ${healthEntries.length > 0 && dests.length > 1 ? `
+    <div class="table-card">
+      <div class="table-card-header"><h2>Destination Health Matrix</h2></div>
+      <table>
+        <thead><tr>
+          <th>Target</th>
+          ${[...new Set(healthEntries.map(h => h.destination))].map(d => `<th style="text-align:center">${escHTML(d)}</th>`).join('')}
+        </tr></thead>
+        <tbody>${(() => {
+          const destNames = [...new Set(healthEntries.map(h => h.destination))];
+          const targetNames = [...new Set(healthEntries.map(h => h.target))];
+          const lookup = {};
+          healthEntries.forEach(h => { lookup[h.target + '@' + h.destination] = h; });
+          return targetNames.map(t => `<tr>
+            <td><a href="#/target/${escHTML(t)}" style="color:var(--accent);font-weight:600">${escHTML(t)}</a></td>
+            ${destNames.map(d => {
+              const h = lookup[t + '@' + d];
+              if (!h) return '<td style="text-align:center"><span class="badge" style="background:var(--bg-input);color:var(--text-muted)">N/A</span></td>';
+              const badge = h.status === 'ok' ? 'badge-ok' : h.status === 'failed' ? 'badge-failed' : h.status === 'missing' ? 'badge-pending' : 'badge-failed';
+              const label = h.status === 'ok' ? 'OK' : h.status === 'failed' ? 'Failed' : h.status === 'missing' ? 'No data' : 'Unreachable';
+              const tip = h.error ? ' title="' + escHTML(h.error) + '"' : '';
+              return '<td style="text-align:center"><span class="badge ' + badge + '"' + tip + '>' + label + '</span>' +
+                (h.latestRun ? '<div style="font-size:10px;color:var(--text-muted)">' + timeAgo(h.latestRun) + '</div>' : '') + '</td>';
+            }).join('')}
+          </tr>`).join('');
+        })()}</tbody>
+      </table>
+    </div>` : ''}`;
 }
 
 // --- Sources ---
@@ -467,8 +521,15 @@ window.confirmDeleteSource = async function(secretName) {
 // --- Destinations ---
 async function renderDestinations(loading = true) {
   if (loading) showLoading();
-  let dests = [];
-  try { dests = await api('/api/destinations'); } catch(e) { toast(e.message, 'error'); }
+  let dests = [], stats = [];
+  try {
+    [dests, stats] = await Promise.all([
+      api('/api/destinations'),
+      api('/api/destination-stats').catch(() => []),
+    ]);
+  } catch(e) { toast(e.message, 'error'); }
+  const statsByName = {};
+  stats.forEach(s => { statsByName[s.name] = s; });
 
   const destGetters = {
     createdAt:   d => parseTsRFC(d.createdAt),
@@ -495,24 +556,39 @@ async function renderDestinations(loading = true) {
       <p>Add a destination to define where backups are stored. Destinations are Kubernetes Secrets with storage labels.</p>
       <button class="btn btn-primary" onclick="openDestForm()">+ Add Destination</button>
     </div>` : `
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px">
-      ${sortedDests.map(d => `
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px">
+      ${sortedDests.map(d => {
+        const st = statsByName[d.name];
+        return `
       <div class="detail-card">
         <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:12px">
           <div>
             <div style="font-weight:600;font-size:15px;color:var(--text-heading)">${escHTML(d.name)}</div>
             <span class="badge badge-${d.storageType}" style="margin-top:6px">${d.storageType}</span>
           </div>
+          <span class="dest-status" id="dest-status-${escHTML(d.secretName)}"></span>
         </div>
         <div class="detail-row"><span class="key">Secret</span><code class="val">${escHTML(d.secretName)}</code></div>
         <div class="detail-row"><span class="key">Host</span><span class="val">${escHTML(d.host || '—')}</span></div>
         <div class="detail-row"><span class="key">Path Prefix</span><span class="val">${escHTML(d.pathPrefix || '/')}</span></div>
         <div class="detail-row"><span class="key">Created</span><span class="val">${d.createdAt ? timeAgo(d.createdAt) : '—'}</span></div>
+        ${st && !st.error ? `
+        <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+          <div class="detail-row"><span class="key">Backups</span><span class="val">${st.backupCount}</span></div>
+          <div class="detail-row"><span class="key">Total Size</span><span class="val">${humanBytes(st.totalSizeBytes)}</span></div>
+          <div class="detail-row"><span class="key">Oldest</span><span class="val">${st.oldestBackup ? timeAgo(st.oldestBackup) : '—'}</span></div>
+          <div class="detail-row"><span class="key">Newest</span><span class="val">${st.newestBackup ? timeAgo(st.newestBackup) : '—'}</span></div>
+        </div>` : st && st.error ? `
+        <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);color:var(--danger);font-size:12px">
+          Storage unreachable: ${escHTML(st.error)}
+        </div>` : ''}
         <div style="display:flex;gap:6px;margin-top:12px;justify-content:flex-end">
+          <button class="btn btn-ghost btn-sm" onclick="testDestConnection('${escHTML(d.secretName)}','${escHTML(d.name)}')" title="Test connectivity">&#128268; Test</button>
           <button class="btn btn-ghost btn-sm" onclick="openDestForm('${escHTML(d.secretName)}')">Edit</button>
           <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteDest('${escHTML(d.secretName)}','${escHTML(d.name)}')">Delete</button>
         </div>
-      </div>`).join('')}
+      </div>`;
+      }).join('')}
     </div>`}`;
 }
 
@@ -609,6 +685,24 @@ window.submitDestForm = async function(e, secretName) {
     closeModal();
     renderPage(currentPage());
   } catch(e) { toast(e.message, 'error'); }
+};
+
+window.testDestConnection = async function(secretName, displayName) {
+  const el = document.getElementById('dest-status-' + secretName);
+  if (el) { el.innerHTML = '<span class="badge badge-pending">Testing...</span>'; }
+  try {
+    const result = await api('/api/destinations/' + secretName + '/test', { method: 'POST' });
+    if (result.ok) {
+      if (el) el.innerHTML = '<span class="badge badge-ok">Connected</span>';
+      toast(displayName + ': connection OK', 'success');
+    } else {
+      if (el) el.innerHTML = '<span class="badge badge-failed" title="' + escHTML(result.error || '') + '">Failed</span>';
+      toast(displayName + ': ' + (result.error || 'connection failed'), 'error');
+    }
+  } catch(e) {
+    if (el) el.innerHTML = '<span class="badge badge-failed">Error</span>';
+    toast('Test failed: ' + e.message, 'error');
+  }
 };
 
 window.deleteDest = function(secretName, displayName) {
@@ -760,6 +854,7 @@ async function renderTargetDetail(name, loading = true) {
           <th class="sortable" onclick="toggleSort('runs','timestamp')">Timestamp${sortIndicator('runs','timestamp')}</th>
           <th class="sortable" onclick="toggleSort('runs','status')">Status${sortIndicator('runs','status')}</th>
           <th class="num sortable" onclick="toggleSort('runs','size')">Size${sortIndicator('runs','size')}</th>
+          <th>Destinations</th>
           <th class="sortable" onclick="toggleSort('runs','schema')">Schema${sortIndicator('runs','schema')}</th>
           <th class="num sortable" onclick="toggleSort('runs','tables')">Tables${sortIndicator('runs','tables')}</th>
           <th class="sortable" onclick="toggleSort('runs','anomalies')">Anomalies / Error${sortIndicator('runs','anomalies')}</th>
@@ -769,17 +864,47 @@ async function renderTargetDetail(name, loading = true) {
           <td style="font-size:12px">${r.timestamp ? new Date(r.timestamp.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/,'$1-$2-$3T$4:$5:$6Z')).toLocaleString() : '—'}</td>
           <td>${r.status === 'failed' ? failedBadge(r) : '<span class="badge badge-ok">OK</span>'}</td>
           <td class="num" style="font-size:12px">${r.status !== 'failed' ? humanBytes(r.encryptedSizeBytes) : '—'}</td>
+          <td style="font-size:11px">${r.destinations && r.destinations.length > 0
+            ? r.destinations.map(d => {
+                const cls = d.status === 'success' ? 'badge-ok' : 'badge-failed';
+                const tip = d.error ? ' title="' + escHTML(d.error) + '"' : '';
+                return '<span class="badge ' + cls + '" style="margin:1px;font-size:10px"' + tip + '>' + escHTML(d.name) + '</span>';
+              }).join('')
+            : '<span style="color:var(--text-muted)">—</span>'}</td>
           <td>${r.report ? (r.report.schemaChanged ? '<span class="badge badge-failed">Changed</span>' : '<span class="badge badge-ok">Stable</span>') : '—'}</td>
           <td class="num" style="font-size:12px">${r.stats && r.stats.tables ? r.stats.tables.length : '—'}</td>
           <td>${r.status === 'failed'
             ? `<span style="color:var(--danger);font-size:12px;word-break:break-word" title="${escHTML(r.error || '')}">${escHTML(truncate(r.error, 120) || '(no message)')}</span>`
             : (r.report && r.report.anomalies ? `<span class="num" style="color:var(--danger)">${r.report.anomalies.length}</span>` : '<span class="num">0</span>')}</td>
-          <td>${r.status !== 'failed' ? `
-            <a href="/download/${escHTML(name)}/${escHTML(r.timestamp)}/meta" class="btn btn-ghost btn-sm" style="font-size:11px">.json</a>
-            <a href="/download/${escHTML(name)}/${escHTML(r.timestamp)}/dump" class="btn btn-ghost btn-sm" style="font-size:11px">.age</a>` : '—'}</td>
+          <td>${r.status !== 'failed' ? renderDownloadLinks(name, r, target.Destinations) : '—'}</td>
         </tr>`).join('')}</tbody>
       </table>`}
     </div>`;
+}
+
+function renderDownloadLinks(targetName, run, destNames) {
+  const ts = escHTML(run.timestamp);
+  const successDests = run.destinations ? run.destinations.filter(d => d.status === 'success') : [];
+  if (successDests.length <= 1) {
+    const destParam = successDests.length === 1 ? '?destination=' + encodeURIComponent(successDests[0].name) : '';
+    return `<a href="/download/${escHTML(targetName)}/${ts}/meta${destParam}" class="btn btn-ghost btn-sm" style="font-size:11px">.json</a>
+      <a href="/download/${escHTML(targetName)}/${ts}/dump${destParam}" class="btn btn-ghost btn-sm" style="font-size:11px">.age</a>`;
+  }
+  return `<div class="dropdown" style="display:inline-block">
+    <button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="this.nextElementSibling.classList.toggle('open')">Download &#9662;</button>
+    <div class="dropdown-menu">${successDests.map(d =>
+      `<a href="/download/${escHTML(targetName)}/${ts}/dump?destination=${encodeURIComponent(d.name)}" class="dropdown-item" style="font-size:12px">
+        ${escHTML(d.name)} <span style="opacity:0.6;font-size:10px">(${d.storageType})</span>
+      </a>`
+    ).join('')}
+    <hr style="margin:4px 0;border:none;border-top:1px solid var(--border)">
+    ${successDests.map(d =>
+      `<a href="/download/${escHTML(targetName)}/${ts}/meta?destination=${encodeURIComponent(d.name)}" class="dropdown-item" style="font-size:11px;opacity:0.7">
+        meta: ${escHTML(d.name)}
+      </a>`
+    ).join('')}
+    </div>
+  </div>`;
 }
 
 // --- Trigger ---
@@ -1035,6 +1160,13 @@ window.exportSettings = async function() {
     toast('values.yaml exported', 'success');
   } catch(e) { toast('Export failed: ' + e.message, 'error'); }
 };
+
+// --- Close dropdowns on outside click ---
+document.addEventListener('click', function(e) {
+  if (!e.target.closest('.dropdown')) {
+    $$('.dropdown-menu.open').forEach(m => m.classList.remove('open'));
+  }
+});
 
 // --- Init ---
 connectSSE();

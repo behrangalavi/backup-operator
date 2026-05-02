@@ -94,6 +94,11 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/settings", s.routeSettings)
 	mux.HandleFunc("/api/settings/export", s.handleSettingsExport)
 
+	// Multi-storage enterprise endpoints
+	mux.HandleFunc("/api/destination-health", s.handleAPIDestinationHealth)
+	mux.HandleFunc("/api/destination-stats", s.handleAPIDestinationStats)
+	mux.HandleFunc("/api/consistency-check", s.handleAPIConsistencyCheck)
+
 	// SSE live updates
 	mux.HandleFunc("/api/events", s.handleSSE)
 
@@ -189,6 +194,11 @@ func (s *Server) routeSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) routeDestinationByMethod(w http.ResponseWriter, r *http.Request) {
+	rest := trimPrefixPath(r.URL.Path, "/api/destinations/")
+	if strings.HasSuffix(rest, "/test") {
+		s.handleAPITestDestination(w, r)
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		s.handleAPIGetDestination(w, r)

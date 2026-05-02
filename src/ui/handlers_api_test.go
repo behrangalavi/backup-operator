@@ -1,6 +1,8 @@
 package ui
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestValidateK8sName(t *testing.T) {
 	cases := []struct {
@@ -75,6 +77,26 @@ func TestValidateCronSchedule(t *testing.T) {
 		}
 		if !c.ok && msg == "" {
 			t.Errorf("validateCronSchedule(%q) expected error", c.schedule)
+		}
+	}
+}
+
+func TestExtractTimestamp(t *testing.T) {
+	cases := []struct {
+		path string
+		want string
+	}{
+		{"prod-db/2026/05/01/dump-20260501T020000Z.meta.json", "20260501T020000Z"},
+		{"dump-20260501T020000Z.meta.json", "20260501T020000Z"},
+		{"some/deep/path/dump-20260101T000000Z.meta.json", "20260101T000000Z"},
+		{"not-a-meta.json", ""},
+		{"", ""},
+		{"dump-short.meta.json", ""},
+	}
+	for _, c := range cases {
+		got := extractTimestamp(c.path)
+		if got != c.want {
+			t.Errorf("extractTimestamp(%q) = %q, want %q", c.path, got, c.want)
 		}
 	}
 }

@@ -28,9 +28,11 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
   # Operator — reads/writes the settings ConfigMap for the UI wizard.
+  # list/watch are required by controller-runtime's cached client to keep
+  # its informer in sync; without them every Get blocks until timeout.
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "update", "patch"]
+    verbs: ["get", "list", "watch", "update", "patch"]
 
   # Operator — MetricsRefresher and UI may emit events in future.
   - apiGroups: [""]

@@ -125,6 +125,46 @@ func TestParseSource_ThresholdTypoFallsBack(t *testing.T) {
 	}
 }
 
+func TestParsePort_Range(t *testing.T) {
+	cases := []struct {
+		input string
+		def   int
+		want  int
+		err   bool
+	}{
+		{"5432", 0, 5432, false},
+		{"", 5432, 5432, false},
+		{"0", 0, 0, true},
+		{"-1", 0, 0, true},
+		{"65536", 0, 0, true},
+		{"99999", 0, 0, true},
+		{"1", 0, 1, false},
+		{"65535", 0, 65535, false},
+		{"abc", 0, 0, true},
+	}
+	for _, c := range cases {
+		got, err := parsePort(c.input, c.def)
+		if c.err && err == nil {
+			t.Errorf("parsePort(%q, %d) expected error", c.input, c.def)
+		}
+		if !c.err && err != nil {
+			t.Errorf("parsePort(%q, %d) unexpected error: %v", c.input, c.def, err)
+		}
+		if !c.err && got != c.want {
+			t.Errorf("parsePort(%q, %d) = %d, want %d", c.input, c.def, got, c.want)
+		}
+	}
+}
+
+func TestParseSource_InvalidPort(t *testing.T) {
+	sec := newSourceSecret(nil)
+	sec.Data["port"] = []byte("99999")
+	_, err := ParseSource(sec, "0 2 * * *")
+	if err == nil {
+		t.Error("expected error for out-of-range port")
+	}
+}
+
 func TestSource_AllowsDestination(t *testing.T) {
 	cases := []struct {
 		allow []string

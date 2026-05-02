@@ -626,6 +626,7 @@ The histograms (`dump_duration_seconds`, `upload_duration_seconds`) are kept in 
 |---|---|---|---|
 | `backup_operator_dump_duration_seconds` | Histogram | `target`, `db_type` | Worker-only; not visible to Prometheus (see note above) |
 | `backup_operator_upload_duration_seconds` | Histogram | `target`, `destination`, `storage_type` | Worker-only; not visible to Prometheus (see note above) |
+| `backup_operator_run_duration_seconds` | Histogram | `target`, `db_type` | Total end-to-end backup run time including dump, upload, and retention. Observed via deferred call so both success and failure paths are captured. Worker-only; not visible to Prometheus (see note above) |
 | `backup_operator_dump_size_bytes` | Gauge | `target` | Encrypted size of the most recent meta.json's dump |
 | `backup_operator_dump_size_change_ratio` | Gauge | `target` | current / previous size from the latest meta.json's report; <0.5 = suspicious shrinkage |
 | `backup_operator_table_count` | Gauge | `target` | Tables/collections in the most recent run's stats |

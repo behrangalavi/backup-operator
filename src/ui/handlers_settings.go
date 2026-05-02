@@ -157,9 +157,16 @@ func validateSettings(s settingsPayload) error {
 	if s.DefaultSchedule == "" {
 		return fmt.Errorf("defaultSchedule is required")
 	}
+	if s.DefaultSchedule != "" {
+		fields := strings.Fields(s.DefaultSchedule)
+		if len(fields) != 5 {
+			return fmt.Errorf("defaultSchedule must have exactly 5 cron fields")
+		}
+	}
 	if s.RunTimeoutSeconds != "" {
-		if n, err := strconv.Atoi(s.RunTimeoutSeconds); err != nil || n < 0 {
-			return fmt.Errorf("runTimeoutSeconds must be a non-negative integer")
+		n, err := strconv.Atoi(s.RunTimeoutSeconds)
+		if err != nil || n < 1 {
+			return fmt.Errorf("runTimeoutSeconds must be a positive integer (>= 1)")
 		}
 	}
 	if s.DefaultRetentionDays != "" {

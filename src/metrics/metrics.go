@@ -228,4 +228,7 @@ func DeleteTargetMetrics(target string) {
 	destinationFailed.DeletePartialMatch(prometheus.Labels{"target": target})
 	lastRunStatus.DeleteLabelValues(target)
 	lastRunAnomalies.DeleteLabelValues(target)
+	runDurationSeconds.DeletePartialMatch(prometheus.Labels{"target": target})
+	dumpDurationSeconds.DeletePartialMatch(prometheus.Labels{"target": target})
+	uploadDurationSeconds.DeletePartialMatch(prometheus.Labels{"target": target})
 }

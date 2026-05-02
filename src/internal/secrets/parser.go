@@ -165,6 +165,9 @@ func parsePort(s string, def int) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("invalid port %q: %w", s, err)
 	}
+	if p < 1 || p > 65535 {
+		return 0, fmt.Errorf("port %d out of range (1-65535)", p)
+	}
 	return p, nil
 }
 

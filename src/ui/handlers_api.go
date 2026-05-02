@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -70,6 +72,22 @@ func (s *Server) handleAPICreateSource(w http.ResponseWriter, r *http.Request) {
 	if req.DBType != "postgres" && req.DBType != "mysql" && req.DBType != "mongo" {
 		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "dbType must be postgres, mysql, or mongo"})
 		return
+	}
+	if msg := validateK8sName(req.Name); msg != "" {
+		writeJSON(w, http.StatusBadRequest, apiResponse{Message: msg})
+		return
+	}
+	if req.Port != "" {
+		if msg := validatePort(req.Port); msg != "" {
+			writeJSON(w, http.StatusBadRequest, apiResponse{Message: msg})
+			return
+		}
+	}
+	if req.Schedule != "" {
+		if msg := validateCronSchedule(req.Schedule); msg != "" {
+			writeJSON(w, http.StatusBadRequest, apiResponse{Message: msg})
+			return
+		}
 	}
 
 	secretName := "backup-src-" + sanitizeName(req.Name)
@@ -229,6 +247,10 @@ func (s *Server) handleAPICreateDestination(w http.ResponseWriter, r *http.Reque
 	}
 	if req.StorageType != "sftp" && req.StorageType != "hetzner-sftp" && req.StorageType != "s3" {
 		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "storageType must be sftp, hetzner-sftp, or s3"})
+		return
+	}
+	if msg := validateK8sName(req.Name); msg != "" {
+		writeJSON(w, http.StatusBadRequest, apiResponse{Message: msg})
 		return
 	}
 
@@ -801,6 +823,41 @@ func (s *Server) handleAPIGetDestination(w http.ResponseWriter, r *http.Request)
 		PathPrefix:  sec.Annotations[labels.AnnotationPathPrefix],
 		Data:        safeData,
 	})
+}
+
+// --- Input validation helpers ---
+
+var k8sNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`)
+
+func validateK8sName(name string) string {
+	if len(name) > 253 {
+		return "name must be at most 253 characters"
+	}
+	if !k8sNameRe.MatchString(name) {
+		return "name must consist of lowercase alphanumeric characters, '-' or '.', and start/end with alphanumeric"
+	}
+	return ""
+}
+
+func validatePort(port string) string {
+	p, err := strconv.Atoi(strings.TrimSpace(port))
+	if err != nil {
+		return "port must be a number"
+	}
+	if p < 1 || p > 65535 {
+		return "port must be between 1 and 65535"
+	}
+	return ""
+}
+
+// validateCronSchedule does basic structural validation of a cron expression.
+// Accepts standard 5-field cron (minute hour dom month dow).
+func validateCronSchedule(schedule string) string {
+	fields := strings.Fields(schedule)
+	if len(fields) != 5 {
+		return "schedule must have exactly 5 fields (minute hour day-of-month month day-of-week)"
+	}
+	return ""
 }
 
 // periodicRefresh polls Kubernetes for state changes and broadcasts SSE events.

@@ -144,6 +144,7 @@ func (p *Pipeline) analyzerForSource(src *secrets.Source) analyzer.Analyzer {
 func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	log := p.logger.WithValues("target", src.TargetName, "db_type", src.DBType)
 	runStart := time.Now()
+	defer func() { metrics.ObserveRunDuration(src.TargetName, src.DBType, time.Since(runStart)) }()
 	timestamp := runStart.UTC().Format("20060102T150405Z")
 
 	p.events.Emit("Normal", "BackupStarted",
@@ -263,7 +264,6 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	// only once a fresh one is in place. Errors here do not fail the run.
 	p.applyRetention(ctx, dests, src.TargetName, p.resolvePolicy(src), time.Now(), log)
 
-	metrics.ObserveRunDuration(src.TargetName, src.DBType, time.Since(runStart))
 	return nil
 }
 
@@ -282,6 +282,13 @@ func (p *Pipeline) recordFailure(
 	if len(dests) == 0 {
 		return
 	}
+
+	// Use a detached context with a short timeout: the parent ctx may already
+	// be cancelled (e.g. after a context-deadline exceeded), but we still want
+	// to persist the failure-meta so the UI surfaces the failed run.
+	uploadCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	body := failureMetaJSON(src, timestamp, phase, runErr)
 	metaPath := buildObjectPath(src.TargetName, timestamp, "meta.json")
 
@@ -296,7 +303,7 @@ func (p *Pipeline) recordFailure(
 				log.V(1).Info("failure-meta: init storage failed", "destination", d.Name, "err", err.Error())
 				return
 			}
-			if err := st.Upload(ctx, metaPath, bytes.NewReader(body)); err != nil {
+			if err := st.Upload(uploadCtx, metaPath, bytes.NewReader(body)); err != nil {
 				log.V(1).Info("failure-meta: upload failed", "destination", d.Name, "err", err.Error())
 				return
 			}

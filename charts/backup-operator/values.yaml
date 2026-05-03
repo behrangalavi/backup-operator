@@ -72,6 +72,16 @@ service:
 ui:
   enabled: false
   port: 8081
+  # Defense-in-depth gates on top of the (optional) external auth proxy.
+  # readOnly=true disables every mutating endpoint (source/destination
+  # CRUD, manual triggers, settings, age keys) — useful if the UI is
+  # exposed to a wider audience for read-only audit.
+  readOnly: false
+  # Age recipient (public key) management is the most security-critical
+  # mutation in the UI: adding a hostile key silently widens future
+  # backup decryption to the attacker. Stays opt-in even when the rest
+  # of the UI is read-write.
+  allowKeyMutation: false
 
 # Conditional on Prometheus Operator presence — see _helpers.
 serviceMonitor:

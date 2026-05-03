@@ -36,7 +36,7 @@ function connectSSE() {
   });
   ['source_created','source_updated','source_deleted',
    'destination_created','destination_updated','destination_deleted',
-   'backup_triggered','settings_updated'].forEach(ev => {
+   'backup_triggered','settings_updated','age_keys_updated'].forEach(ev => {
     eventSource.addEventListener(ev, () => renderPage(currentPage(), false));
   });
   eventSource.onerror = () => {
@@ -68,6 +68,7 @@ function renderPage(page, loading = true) {
     case 'destinations': renderDestinations(loading); break;
     case 'jobs': renderJobs(loading); break;
     case 'target': renderTargetDetail(currentParam(), loading); break;
+    case 'audit': renderAudit(loading); break;
     case 'settings': renderSettings(loading); break;
     default: renderDashboard(loading);
   }
@@ -766,6 +767,79 @@ async function renderJobs(loading = true) {
     </div>`;
 }
 
+// --- Audit log ---
+let auditFilter = 'all';
+async function renderAudit(loading = true) {
+  if (loading) showLoading();
+  let data = { entries: [], total: 0, limit: 200 };
+  try {
+    const url = '/api/audit-log' + (auditFilter !== 'all' ? '?category=' + encodeURIComponent(auditFilter) : '');
+    data = (await api(url)) || data;
+  } catch(e) { toast(e.message, 'error'); }
+
+  const entries = data.entries || [];
+  const truncated = data.total > entries.length;
+
+  const categories = [
+    ['all',       'All',           'Show every audit event'],
+    ['backup',    'Backup runs',   'BackupStarted / BackupCompleted / BackupFailed'],
+    ['retention', 'Retention',     'Old dumps deleted by retention policy'],
+    ['keys',      'Age keys',      'Age recipient additions, removals, refusals'],
+    ['config',    'Config',        'Source / destination / settings changes'],
+    ['other',     'Other',         'Anything emitted by our components that does not fit above'],
+  ];
+
+  content.innerHTML = `
+    <div class="page-header">
+      <div><h1>Audit</h1><div class="subtitle">Kubernetes Events emitted by the backup operator and worker</div></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span style="color:var(--text-muted);font-size:12px">${entries.length}${truncated ? ' of ' + data.total : ''} events</span>
+        <button class="btn btn-secondary btn-sm" onclick="renderAudit(true)" title="Re-fetch the events list from Kubernetes">&#8635; Refresh</button>
+      </div>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px">
+      ${categories.map(([cat, label, tip]) => `
+        <button class="btn btn-${auditFilter === cat ? 'primary' : 'ghost'} btn-sm"
+          onclick="setAuditFilter('${cat}')" title="${escHTML(tip)}">${label}</button>
+      `).join('')}
+    </div>
+    <div class="table-card">
+      ${entries.length === 0 ? `
+      <div class="empty-state">
+        <h3>No audit events</h3>
+        <p>${auditFilter === 'all'
+          ? 'No backup runs, retention actions, or configuration changes have been recorded yet. Events appear here as soon as a backup runs or you change a source/destination/age key.'
+          : 'No events in this category. Try All to see everything that has been emitted.'}</p>
+      </div>` : `
+      <table>
+        <thead><tr>
+          <th class="num row-num">#</th>
+          <th>Time</th>
+          <th>Severity</th>
+          <th>Reason</th>
+          <th>Object</th>
+          <th>Component</th>
+          <th>Message</th>
+        </tr></thead>
+        <tbody>${entries.map((e, i) => `<tr>
+          <td class="num row-num">${i + 1}</td>
+          <td style="font-size:12px;white-space:nowrap" title="${escHTML(e.timestamp)}">${e.timestamp ? new Date(e.timestamp).toLocaleString() : '—'}</td>
+          <td><span class="badge badge-${e.type === 'Warning' ? 'failed' : 'ok'}">${escHTML(e.type)}</span></td>
+          <td><code style="font-size:11px">${escHTML(e.reason)}</code></td>
+          <td style="font-size:12px"><code>${escHTML(e.object)}</code></td>
+          <td style="font-size:11px;color:var(--text-muted)">${escHTML(e.component)}</td>
+          <td style="font-size:12px;word-break:break-word">${escHTML(e.message)}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+      ${truncated ? `<p style="padding:8px 16px;color:var(--text-muted);font-size:12px">Showing the most recent ${entries.length} of ${data.total} events. Older events: <code>kubectl -n &lt;ns&gt; get events --sort-by=.lastTimestamp</code></p>` : ''}`}
+    </div>`;
+}
+
+window.setAuditFilter = function(cat) {
+  auditFilter = cat;
+  renderAudit(true);
+};
+
 function sortRuns(runs) {
   const g = {
     timestamp: r => parseTsCompact(r.timestamp),
@@ -1109,8 +1183,112 @@ function renderSettingsPage(settings) {
           </div>
         </div>
       </form>
-    </div>`;
+    </div>
+    <div id="age-keys-section" class="table-card" style="margin-top:24px"></div>`;
+  // Age-keys section is loaded async — keeps the rest of the page
+  // responsive even if the operator is slow to read the Secret.
+  loadAgeKeysSection();
 }
+
+// --- Age recipient (public key) management ---
+async function loadAgeKeysSection() {
+  const host = $('#age-keys-section');
+  if (!host) return;
+  host.innerHTML = '<div class="table-card-header"><h2>Encryption Recipients (age public keys)</h2></div><div class="empty-state"><div class="spinner"></div></div>';
+  let resp;
+  try {
+    resp = await fetch('/api/age-keys').then(r => r.json());
+  } catch(e) {
+    host.innerHTML = `<div class="table-card-header"><h2>Encryption Recipients</h2></div>
+      <div class="empty-state"><p style="color:var(--danger)">Failed to load: ${escHTML(e.message)}</p></div>`;
+    return;
+  }
+  if (!resp.ok && resp.message) {
+    host.innerHTML = `<div class="table-card-header"><h2>Encryption Recipients</h2></div>
+      <div class="empty-state"><p>${escHTML(resp.message)}</p></div>`;
+    return;
+  }
+  const keys = resp.keys || [];
+  const canMutate = !!resp.canMutate;
+  host.innerHTML = `
+    <div class="table-card-header">
+      <h2>Encryption Recipients (age public keys)</h2>
+      <span style="color:var(--text-muted);font-size:12px">${keys.length} recipient${keys.length === 1 ? '' : 's'} · Secret: <code>${escHTML(resp.secretName || '—')}</code></span>
+    </div>
+    <p style="padding:0 16px;color:var(--text-muted);font-size:13px;margin:0 0 12px">
+      Future backups encrypt to <strong>every</strong> listed recipient — any of their private-key holders can restore.
+      Existing dumps in storage are not re-encrypted when this list changes.
+      ${canMutate ? '' : '<br><span style="color:var(--warning,#d97706)">Add/remove disabled — set <code>UI_ALLOW_KEY_MUTATION=true</code> on the operator (and ensure <code>UI_READ_ONLY=false</code>) to enable.</span>'}
+    </p>
+    ${keys.length === 0 ? '<div class="empty-state"><p>No recipients configured — the worker will refuse to start until at least one is added.</p></div>' : `
+    <table>
+      <thead><tr>
+        <th class="num row-num">#</th>
+        <th>Fingerprint</th>
+        <th>Recipient</th>
+        ${canMutate ? '<th style="width:1%"></th>' : ''}
+      </tr></thead>
+      <tbody>${keys.map((k, i) => `<tr>
+        <td class="num row-num">${i + 1}</td>
+        <td><code style="font-size:12px;background:var(--bg-input);padding:2px 6px;border-radius:4px">${escHTML(k.hash)}</code></td>
+        <td><code style="font-size:11px;word-break:break-all">${escHTML(k.recipient)}</code></td>
+        ${canMutate ? `<td style="white-space:nowrap">
+          <button class="btn btn-ghost btn-sm" style="color:var(--danger)"
+            onclick="removeAgeKey('${escHTML(k.recipient)}','${escHTML(k.hash)}')"
+            title="Remove this public key. Future backups will no longer encrypt to it. The last recipient cannot be removed.">&#10005; Remove</button>
+        </td>` : ''}
+      </tr>`).join('')}</tbody>
+    </table>`}
+    ${canMutate ? `
+    <div style="padding:16px;border-top:1px solid var(--border)">
+      <h3 style="font-size:13px;margin:0 0 8px">Add new recipient</h3>
+      <form onsubmit="addAgeKey(event)">
+        <div style="display:flex;gap:8px">
+          <input type="text" name="recipient" required pattern="age1[0-9a-z]+"
+            placeholder="age1qx0...your-recipient..."
+            style="flex:1;font-family:ui-monospace,monospace;font-size:12px"
+            title="An age X25519 recipient — starts with 'age1' followed by base32 characters. Generate with 'age-keygen' offline; paste only the public line here.">
+          <button type="submit" class="btn btn-primary btn-sm"
+            title="Add this recipient. Future backup runs will encrypt to it in addition to the existing recipients. Validation rejects malformed strings before saving.">+ Add Recipient</button>
+        </div>
+        <div class="hint">Paste the <code>age1...</code> public line from <code>age-keygen</code>. The private key must stay offline — never paste it here.</div>
+      </form>
+    </div>` : ''}`;
+}
+
+window.addAgeKey = async function(ev) {
+  ev.preventDefault();
+  const form = ev.target;
+  const recipient = form.recipient.value.trim();
+  if (!recipient) return;
+  try {
+    const resp = await api('/api/age-keys', { method: 'POST', body: JSON.stringify({ recipient }) });
+    toast(resp.message || 'Recipient added', 'success');
+    form.reset();
+    loadAgeKeysSection();
+  } catch(e) {
+    toast('Add failed: ' + e.message, 'error');
+  }
+};
+
+window.removeAgeKey = async function(recipient, hash) {
+  const ok = confirm(
+    'Remove this age recipient?\n\n' +
+    'Fingerprint: ' + hash + '\n\n' +
+    'Future backups will no longer encrypt to this recipient. ' +
+    'Make sure you still hold a private key for one of the other listed recipients — ' +
+    'otherwise future backups become un-decryptable.\n\n' +
+    'Existing dumps in storage are not affected.'
+  );
+  if (!ok) return;
+  try {
+    const resp = await api('/api/age-keys/' + encodeURIComponent(recipient), { method: 'DELETE' });
+    toast(resp.message || 'Recipient removed', 'success');
+    loadAgeKeysSection();
+  } catch(e) {
+    toast('Remove failed: ' + e.message, 'error');
+  }
+};
 
 function renderSettingsStepContent(step, s) {
   switch(step) {

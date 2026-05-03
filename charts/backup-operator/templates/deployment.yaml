@@ -84,6 +84,10 @@ spec:
               value: ":{{ .Values.ui.port }}"
             - name: SETTINGS_CONFIGMAP
               value: {{ include "backup-operator.fullname" . }}-settings
+            - name: UI_READ_ONLY
+              value: {{ .Values.ui.readOnly | default false | quote }}
+            - name: UI_ALLOW_KEY_MUTATION
+              value: {{ .Values.ui.allowKeyMutation | default false | quote }}
             {{- end }}
           ports:
             - name: metrics

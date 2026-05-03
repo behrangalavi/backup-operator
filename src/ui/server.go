@@ -36,8 +36,12 @@ type Config struct {
 	Addr              string // ":8081" by default — kept off the metrics port to keep concerns separate
 	Namespace         string
 	Client            client.Client
+	APIReader         client.Reader // uncached reads (events list, where caching would force a watch on a noisy resource)
 	Logger            logr.Logger
 	SettingsConfigMap string // name of the ConfigMap for runtime-configurable settings (empty = disabled)
+	AgeSecretName     string // name of the Secret holding AGE_PUBLIC_KEYS (empty = key listing/mutation disabled)
+	ReadOnly          bool   // when true, all mutation endpoints return 403
+	AllowKeyMutation  bool   // when true, age-key add/remove endpoints are exposed (read-only listing always available)
 }
 
 // Server is constructed once at process start and run by Start.
@@ -93,6 +97,15 @@ func (s *Server) Start(ctx context.Context) error {
 	// Settings API
 	mux.HandleFunc("/api/settings", s.routeSettings)
 	mux.HandleFunc("/api/settings/export", s.handleSettingsExport)
+
+	// Age recipient (public key) management — listing always available;
+	// add/remove gated behind UI_READ_ONLY=false + UI_ALLOW_KEY_MUTATION=true.
+	mux.HandleFunc("/api/age-keys", s.routeAgeKeys)
+	mux.HandleFunc("/api/age-keys/", s.routeAgeKeyByRecipient)
+
+	// Audit log — reads Events emitted by our own components (worker,
+	// reconciler, UI). Read-only.
+	mux.HandleFunc("/api/audit-log", s.handleAuditLog)
 
 	// Multi-storage enterprise endpoints
 	mux.HandleFunc("/api/destination-health", s.handleAPIDestinationHealth)

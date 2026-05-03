@@ -83,6 +83,15 @@ func main() {
 		{Key: "UI_ENABLED", Optional: true, Default: "false"},
 		{Key: "UI_ADDR", Optional: true, Default: ":8081"},
 		{Key: "SETTINGS_CONFIGMAP", Optional: true},
+		// UI mutation gates — defense in depth on top of the (optional)
+		// auth proxy. UI_READ_ONLY=true disables every mutating endpoint.
+		// UI_ALLOW_KEY_MUTATION specifically gates the age-key add/remove
+		// endpoints — that's the most security-critical mutation in the
+		// UI (a hostile add silently widens future-backup decryption to
+		// the attacker's private key), so it stays opt-in even when the
+		// rest of the UI is read-write.
+		{Key: "UI_READ_ONLY", Optional: true, Default: "false"},
+		{Key: "UI_ALLOW_KEY_MUTATION", Optional: true, Default: "false"},
 	})
 	assert.NoError(err, "failed to initialize config module")
 
@@ -154,8 +163,12 @@ func main() {
 			Addr:               config.GetValue("UI_ADDR"),
 			Namespace:          namespaceForUI(watchNs),
 			Client:             mgr.GetClient(),
+			APIReader:          mgr.GetAPIReader(),
 			Logger:             ctrl.Log.WithName("ui"),
 			SettingsConfigMap:  config.GetValue("SETTINGS_CONFIGMAP"),
+			AgeSecretName:      config.GetValue("AGE_SECRET_NAME"),
+			ReadOnly:           config.GetValue("UI_READ_ONLY") == "true",
+			AllowKeyMutation:   config.GetValue("UI_ALLOW_KEY_MUTATION") == "true",
 		})
 		assert.NoError(err, "failed to construct UI server")
 		// Register before manager start so the cache and HTTP listener share

@@ -173,7 +173,7 @@ function parseTsCompact(ts) {
 function parseTsRFC(ts) { const t = ts ? Date.parse(ts) : NaN; return isNaN(t) ? null : t; }
 function sortIndicator(list, col) {
   const s = sortState[list];
-  if (!s || s.col !== col) return '<span class="sort-ind"></span>';
+  if (!s || s.col !== col) return '<span class="sort-ind">↕</span>';
   return '<span class="sort-ind active">' + (s.dir === 'asc' ? '▲' : '▼') + '</span>';
 }
 window.toggleSort = function(list, col) {
@@ -212,11 +212,13 @@ async function renderDashboard(loading = true) {
   if (loading) showLoading();
   let targets = [], dests = [], jobs = [], healthEntries = [], consistencyIssues = [];
   try {
-    [targets, dests, jobs, healthEntries, consistencyIssues] = await Promise.all([
+    // Map every result through `|| []` because Go marshals nil slices as
+    // JSON null; without this, .filter / .length crashes on first paint.
+    [targets, dests, jobs, healthEntries, consistencyIssues] = (await Promise.all([
       api('/api/targets'), api('/api/destinations'), api('/api/jobs'),
       api('/api/destination-health').catch(() => []),
       api('/api/consistency-check').catch(() => []),
-    ]);
+    ])).map(x => x || []);
   } catch(e) { /* partial data is ok */ }
 
   const ok = targets.filter(t => t.Latest && !t.Latest.status?.includes('fail')).length;
@@ -332,7 +334,7 @@ async function renderDashboard(loading = true) {
 async function renderSources(loading = true) {
   if (loading) showLoading();
   let targets = [];
-  try { targets = await api('/api/targets'); } catch(e) { toast(e.message, 'error'); }
+  try { targets = (await api('/api/targets')) || []; } catch(e) { toast(e.message, 'error'); }
 
   const srcGetters = {
     createdAt: t => parseTsRFC(t.CreatedAt),
@@ -514,10 +516,10 @@ async function renderDestinations(loading = true) {
   if (loading) showLoading();
   let dests = [], stats = [];
   try {
-    [dests, stats] = await Promise.all([
+    [dests, stats] = (await Promise.all([
       api('/api/destinations'),
       api('/api/destination-stats').catch(() => []),
-    ]);
+    ])).map(x => x || []);
   } catch(e) { toast(e.message, 'error'); }
   const statsByName = {};
   stats.forEach(s => { statsByName[s.name] = s; });
@@ -719,7 +721,7 @@ window.confirmDeleteDest = async function(secretName) {
 async function renderJobs(loading = true) {
   if (loading) showLoading();
   let jobs = [];
-  try { jobs = await api('/api/jobs'); } catch(e) { toast(e.message, 'error'); }
+  try { jobs = (await api('/api/jobs')) || []; } catch(e) { toast(e.message, 'error'); }
 
   const jobGetters = {
     name:      j => j.name || '',
@@ -790,7 +792,7 @@ async function renderTargetDetail(name, loading = true) {
   if (loading) showLoading();
   let targets = [], runs = [], dests = [];
   try {
-    [targets, dests] = await Promise.all([api('/api/targets'), api('/api/destinations')]);
+    [targets, dests] = (await Promise.all([api('/api/targets'), api('/api/destinations')])).map(x => x || []);
   } catch(e) { toast(e.message, 'error'); }
 
   const target = targets.find(t => t.Name === name);

@@ -6,15 +6,6 @@ const $ = (sel, ctx) => (ctx || document).querySelector(sel);
 const $$ = (sel, ctx) => [...(ctx || document).querySelectorAll(sel)];
 const content = $('#content');
 
-function humanBytes(n) {
-  if (!n || n === 0) return '0 B';
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
-  let i = 0;
-  let v = n;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-  return (i === 0 ? v : v.toFixed(1)) + ' ' + units[i];
-}
-
 // --- API helpers ---
 async function api(path, opts = {}) {
   const resp = await fetch(path, {

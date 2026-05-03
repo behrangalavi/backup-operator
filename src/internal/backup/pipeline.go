@@ -408,8 +408,8 @@ func (p *Pipeline) fanOutDumps(
 }
 
 // uploadMeta uploads the meta.json sidecar to all destinations that had a
-// successful dump upload. Best-effort: meta upload failures are logged but
-// do not change the overall run result.
+// successful dump upload. Retries up to 3 times with exponential backoff
+// to avoid "phantom backups" (dump exists but meta.json is missing).
 func (p *Pipeline) uploadMeta(
 	ctx context.Context,
 	dests []*secrets.Destination,
@@ -429,12 +429,26 @@ func (p *Pipeline) uploadMeta(
 			defer recoverGoroutine(log, "meta-upload", d.Name)
 			st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, p.logger)
 			if err != nil {
-				log.V(1).Info("meta upload: init storage failed", "destination", d.Name, "err", err.Error())
+				log.Info("meta upload: init storage failed", "destination", d.Name, "err", err.Error())
 				return
 			}
-			if err := st.Upload(ctx, metaPath, bytes.NewReader(metaBytes)); err != nil {
-				log.V(1).Info("meta upload failed", "destination", d.Name, "err", err.Error())
-				return
+			const maxRetries = 3
+			backoff := 2 * time.Second
+			for attempt := 1; attempt <= maxRetries; attempt++ {
+				if err := st.Upload(ctx, metaPath, bytes.NewReader(metaBytes)); err != nil {
+					log.Info("meta upload failed", "destination", d.Name, "attempt", attempt, "err", err.Error())
+					if attempt < maxRetries {
+						select {
+						case <-ctx.Done():
+							return
+						case <-time.After(backoff):
+							backoff *= 2
+						}
+						continue
+					}
+					return
+				}
+				break
 			}
 		}(dest)
 	}

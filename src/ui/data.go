@@ -93,7 +93,7 @@ func (d *k8sData) listTargets(ctx context.Context) ([]targetSummary, error) {
 			existing, exists := latestByTarget[tgt]
 			if !exists {
 				latestByTarget[tgt] = m
-			} else if existing.IsFailure() && !m.IsFailure() {
+			} else if existing.IsFailure() && !m.IsFailure() && m.Timestamp >= existing.Timestamp {
 				latestByTarget[tgt] = m
 			} else if m.Timestamp > existing.Timestamp {
 				latestByTarget[tgt] = m

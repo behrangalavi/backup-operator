@@ -190,7 +190,7 @@ func TestSortedMetaPaths_NoMetas(t *testing.T) {
 
 func TestMetaJSON_SuccessStatus(t *testing.T) {
 	src := testSource("prod-db", "postgres")
-	m := metaJSON(src, nil, nil, 42000, "abc123", "20260501T020000Z", nil)
+	m := metaJSON(src, nil, nil, nil, 42000, "abc123", "20260501T020000Z", nil)
 	if !bytes.Contains(m, []byte(`"status": "success"`)) {
 		t.Error("meta should contain status=success")
 	}
@@ -205,7 +205,7 @@ func TestMetaJSON_WithDestinations(t *testing.T) {
 		{Name: "hetzner", StorageType: "sftp", Status: meta.StatusSuccess},
 		{Name: "aws-s3", StorageType: "s3", Status: meta.StatusFailed, Error: "connection refused"},
 	}
-	m := metaJSON(src, nil, nil, 42000, "abc123", "20260501T020000Z", drs)
+	m := metaJSON(src, nil, nil, nil, 42000, "abc123", "20260501T020000Z", drs)
 	if !bytes.Contains(m, []byte(`"destinations"`)) {
 		t.Error("meta should contain destinations array")
 	}
@@ -228,6 +228,27 @@ func TestFailureMetaJSON_FailedStatus(t *testing.T) {
 	}
 	if !bytes.Contains(meta, []byte(`pg_dump failed`)) {
 		t.Error("failure meta should contain error message")
+	}
+}
+
+func TestMetaJSON_WithVerification(t *testing.T) {
+	src := testSource("prod-db", "postgres")
+	v := &meta.DumpVerification{
+		Verdict: meta.VerificationMatch,
+		Summary: "all 3 tables verified",
+		Tables: []meta.TableVerification{
+			{Name: "users", PreDumpRows: 100, PostDumpRows: 100, DumpRows: 100, Verdict: "match"},
+		},
+	}
+	m := metaJSON(src, nil, nil, v, 42000, "abc123", "20260501T020000Z", nil)
+	if !bytes.Contains(m, []byte(`"verification"`)) {
+		t.Error("meta should contain verification")
+	}
+	if !bytes.Contains(m, []byte(`"match"`)) {
+		t.Error("meta should contain match verdict")
+	}
+	if !bytes.Contains(m, []byte(`"all 3 tables verified"`)) {
+		t.Error("meta should contain verification summary")
 	}
 }
 

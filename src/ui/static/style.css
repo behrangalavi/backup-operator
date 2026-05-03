@@ -158,6 +158,7 @@ thead th.sortable:hover { color: var(--text); }
 .badge-s3 { background: rgba(249,115,22,0.2); color: #f97316; }
 .badge-ok { background: var(--success-bg); color: var(--success); }
 .badge-failed { background: var(--danger-bg); color: var(--danger); }
+.badge-warn { background: var(--warning-bg); color: var(--warning); }
 .badge-running { background: rgba(91,110,239,0.15); color: var(--accent); }
 .badge-pending { background: rgba(113,113,122,0.15); color: var(--text-muted); }
 .badge-succeeded { background: var(--success-bg); color: var(--success); }
@@ -372,6 +373,12 @@ thead th.sortable:hover { color: var(--text); }
 .badge-pending { background: var(--warning-bg); color: var(--warning); }
 
 /* Responsive */
+/* Verification card */
+.verification-card { margin-bottom: 24px; }
+.verification-card .table-card-header { display: flex; align-items: center; gap: 12px; }
+.verification-summary { padding: 8px 20px 12px; font-size: 13px; color: var(--text-muted); }
+.verification-card table { font-size: 13px; }
+
 @media (max-width: 768px) {
   #sidebar { width: 60px; }
   .logo span, .nav-link span:not(.status-dot), .nav-footer .status-text { display: none; }

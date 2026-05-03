@@ -843,9 +843,11 @@ async function renderTargetDetail(name, loading = true) {
         <div class="detail-row"><span class="key">Time</span><span class="val">${timeAgo(target.Latest.timestamp)}</span></div>
         <div class="detail-row"><span class="key">Size</span><span class="val">${humanBytes(target.Latest.encryptedSizeBytes)}</span></div>
         <div class="detail-row"><span class="key">SHA256</span><code class="val" style="font-size:11px">${escHTML((target.Latest.sha256 || '—').substring(0, 16))}${target.Latest.sha256 ? '...' : ''}</code></div>
+        <div class="detail-row"><span class="key">Verification</span><span class="val">${renderVerificationBadge(target.Latest.verification)}</span></div>
         `) : '<div style="color:var(--text-muted);padding:12px 0">No runs recorded</div>'}
       </div>
     </div>
+    ${renderVerificationDetail(target.Latest)}
     <div class="table-card">
       <div class="table-card-header"><h2>Run History</h2></div>
       ${runs.length === 0 ? '<div class="empty-state"><p>No runs recorded for this target.</p></div>' : `
@@ -855,6 +857,7 @@ async function renderTargetDetail(name, loading = true) {
           <th class="sortable" onclick="toggleSort('runs','status')">Status${sortIndicator('runs','status')}</th>
           <th class="num sortable" onclick="toggleSort('runs','size')">Size${sortIndicator('runs','size')}</th>
           <th>Destinations</th>
+          <th class="sortable" onclick="toggleSort('runs','verification')">Verification${sortIndicator('runs','verification')}</th>
           <th class="sortable" onclick="toggleSort('runs','schema')">Schema${sortIndicator('runs','schema')}</th>
           <th class="num sortable" onclick="toggleSort('runs','tables')">Tables${sortIndicator('runs','tables')}</th>
           <th class="sortable" onclick="toggleSort('runs','anomalies')">Anomalies / Error${sortIndicator('runs','anomalies')}</th>
@@ -871,6 +874,7 @@ async function renderTargetDetail(name, loading = true) {
                 return '<span class="badge ' + cls + '" style="margin:1px;font-size:10px"' + tip + '>' + escHTML(d.name) + '</span>';
               }).join('')
             : '<span style="color:var(--text-muted)">—</span>'}</td>
+          <td>${renderVerificationBadge(r.verification)}</td>
           <td>${r.report ? (r.report.schemaChanged ? '<span class="badge badge-failed">Changed</span>' : '<span class="badge badge-ok">Stable</span>') : '—'}</td>
           <td class="num" style="font-size:12px">${r.stats && r.stats.tables ? r.stats.tables.length : '—'}</td>
           <td>${r.status === 'failed'
@@ -905,6 +909,56 @@ function renderDownloadLinks(targetName, run, destNames) {
     ).join('')}
     </div>
   </div>`;
+}
+
+// --- Verification ---
+function renderVerificationBadge(v) {
+  if (!v) return '<span style="color:var(--text-muted)">—</span>';
+  const verdictMap = {
+    'match': { cls: 'badge-ok', label: 'Verified' },
+    'mismatch': { cls: 'badge-failed', label: 'Mismatch' },
+    'partial': { cls: 'badge-warn', label: 'Partial' },
+    'skipped': { cls: 'badge-pending', label: 'Skipped' }
+  };
+  const info = verdictMap[v.verdict] || { cls: 'badge-pending', label: v.verdict };
+  const tip = v.summary ? ' title="' + escHTML(v.summary) + '"' : '';
+  return `<span class="badge ${info.cls}"${tip}>${info.label}</span>`;
+}
+
+function renderVerificationDetail(run) {
+  if (!run || !run.verification || run.status === 'failed') return '';
+  const v = run.verification;
+  if (!v.tables || v.tables.length === 0) return '';
+
+  const verdictIcon = { 'match': '&#10003;', 'mismatch': '&#10007;', 'partial': '&#9888;', 'skipped': '—' };
+  const verdictCls = { 'match': 'badge-ok', 'mismatch': 'badge-failed', 'partial': 'badge-warn', 'skipped': 'badge-pending' };
+
+  return `
+    <div class="table-card verification-card">
+      <div class="table-card-header">
+        <h2>Dump Integrity Verification</h2>
+        ${renderVerificationBadge(v)}
+      </div>
+      <div class="verification-summary">${escHTML(v.summary || '')}</div>
+      <table>
+        <thead><tr>
+          <th>Table</th>
+          <th class="num">Pre-Dump Rows</th>
+          <th class="num">Post-Dump Rows</th>
+          <th class="num">Dump Rows</th>
+          <th>Verdict</th>
+          <th>Detail</th>
+        </tr></thead>
+        <tbody>${v.tables.map(t => `<tr>
+          <td style="font-size:12px;font-family:var(--font-mono,monospace)">${escHTML(t.name)}</td>
+          <td class="num" style="font-size:12px">${t.preDumpRows != null ? t.preDumpRows.toLocaleString() : '—'}</td>
+          <td class="num" style="font-size:12px">${t.postDumpRows != null ? t.postDumpRows.toLocaleString() : '—'}</td>
+          <td class="num" style="font-size:12px">${t.dumpRows != null ? t.dumpRows.toLocaleString() : '—'}</td>
+          <td><span class="badge ${verdictCls[t.verdict] || 'badge-pending'}">${verdictIcon[t.verdict] || '?'} ${escHTML(t.verdict)}</span></td>
+          <td style="font-size:11px;color:var(--text-muted)">${escHTML(t.detail || '')}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>`;
 }
 
 // --- Trigger ---

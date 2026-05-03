@@ -294,7 +294,9 @@ The pipeline performs (in order):
 1. `CollectStats(ctx)` — only if `analyzer-enabled` is true. Failure here is non-fatal; the analyzer simply skips comparison this run.
 2. **Dump → gzip → age → temp file.** The age recipient public key is the only key the worker has access to. The pipeline is a tee of `io.Reader`s; the temp file is the only on-disk materialisation.
 3. Load previous run's `meta.json` from any destination → analyzer comparison → metrics.
-4. **Fan-out:** `sync.WaitGroup` over destinations, each goroutine opens the temp file independently and uploads. Per-destination errors are logged + metrified, never aborting peers.
+4. **Two-phase fan-out:**
+   - **Phase 1 (`fanOutDumps`):** `sync.WaitGroup` over destinations, each goroutine opens the temp file independently and uploads the dump. Per-destination errors are logged + metrified, never aborting peers. Returns `[]DestinationResult` with per-destination outcome (name, storageType, status, error).
+   - **Phase 2 (`uploadMeta`):** Builds `meta.json` including the `destinations` results array, then uploads to all destinations that had a successful dump upload. Retries up to 3 times with exponential backoff to avoid "phantom backups" (dump exists but meta.json missing).
 5. **Retention** (best-effort, never fails the run): list dumps, sort by timestamp, protect `MinKeep` newest, delete those older than `RetentionDays`.
 
 ### 5.3 Restore (`cmd/restore/main.go` → `backup-restore`)
@@ -608,7 +610,7 @@ Every dump produces **two** objects per run:
 | Object | Contents | Why this format |
 |---|---|---|
 | `dump-<ts>.sql.gz.age` | gzipped DB dump, age-encrypted | The actual backup payload |
-| `dump-<ts>.meta.json` | target name, db-type, encrypted size, full Stats, full analyzer Report | Lets the next run compute diffs without restoring; lets humans audit without the private key |
+| `dump-<ts>.meta.json` | target name, db-type, encrypted size, full Stats, full analyzer Report, per-destination upload results (`destinations` array with name, storageType, status, error) | Lets the next run compute diffs without restoring; lets humans audit without the private key; per-destination results enable multi-storage health monitoring |
 
 **Timestamp format:** `20060102T150405Z` (Go reference time, ISO-like, lexically sortable).
 
@@ -992,6 +994,12 @@ The notable ones, with the reasoning that future readers should preserve.
 - **Settings ConfigMap as runtime override layer.** Helm values are the master configuration source — they initialize the `{fullname}-settings` ConfigMap at install time. The UI Settings Wizard reads and writes this ConfigMap via the Kubernetes API (`GET/PUT /api/settings`), allowing live configuration changes without `helm upgrade`. An "Export values.yaml" button generates a downloadable values file so changes can be committed to Git for reproducible `helm upgrade` deployments. This gives operators the best of both worlds: interactive UI for quick tuning and declarative GitOps for controlled rollouts.
 
 - **CRUD role verification on all Secret endpoints.** All GET, UPDATE, and DELETE handlers for sources and destinations verify the target Secret carries the expected `backup.mogenius.io/role` label before proceeding. This prevents the operator's expanded RBAC (full Secret CRUD) from being used to access or delete non-backup Secrets in the namespace.
+
+- **Two-phase fan-out with per-destination result tracking.** The pipeline splits upload into Phase 1 (`fanOutDumps` — dump upload with retry) and Phase 2 (`uploadMeta` — meta upload with retry). Phase 1 collects `[]DestinationResult` (name, storageType, status, error per destination). Phase 2 builds `meta.json` including these results, then uploads to successful destinations only. This enables per-destination health monitoring in the UI without architecture changes to the storage layer. Previously, meta was uploaded alongside the dump in a single `uploadOne` call, so meta could not contain per-destination outcomes.
+
+- **Run history merged from ALL destinations.** The UI data layer iterates through all destinations (not just first-available) and deduplicates runs by timestamp, preferring successful over failed runs only when timestamps match. This prevents hidden backups when one destination is offline and avoids the stale-success bug where an older successful run from destination B would mask a newer failure from destination A.
+
+- **Multi-storage enterprise API endpoints.** Four new API endpoints support enterprise multi-destination monitoring: connectivity test (`POST /api/destinations/:name/test`), storage stats (`GET /api/destination-stats`), health matrix (`GET /api/destination-health`), and consistency check (`GET /api/consistency-check`). All use 4-goroutine semaphores for parallel storage queries, matching existing concurrency patterns.
 
 ---
 

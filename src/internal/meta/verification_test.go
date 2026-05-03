@@ -126,3 +126,31 @@ func TestBuildVerification_WithinTolerance(t *testing.T) {
 		t.Errorf("verdict: want %q, got %q (%s)", VerificationMatch, v.Verdict, v.Summary)
 	}
 }
+
+func TestBuildVerification_MySQLUnqualifiedNames(t *testing.T) {
+	pre := &dumper.Stats{
+		Tables: []dumper.TableStats{
+			{Name: "mydb.users", RowCount: 100},
+			{Name: "mydb.orders", RowCount: 200},
+		},
+		GeneratedAt: time.Now(),
+	}
+	// mysqldump produces unqualified names
+	dumpCounts := map[string]int64{
+		"users":  100,
+		"orders": 200,
+	}
+
+	v := BuildVerification(pre, nil, dumpCounts, "mysql")
+	if v.Verdict != VerificationMatch {
+		t.Errorf("verdict: want %q, got %q (%s)", VerificationMatch, v.Verdict, v.Summary)
+	}
+	if len(v.Tables) != 2 {
+		t.Fatalf("expected 2 tables, got %d", len(v.Tables))
+	}
+	for _, tv := range v.Tables {
+		if tv.Verdict != VerificationMatch {
+			t.Errorf("table %s: want match, got %s", tv.Name, tv.Verdict)
+		}
+	}
+}

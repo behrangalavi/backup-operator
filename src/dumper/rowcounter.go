@@ -89,8 +89,9 @@ func (rc *RowCounter) TotalRows() int64 {
 
 func (rc *RowCounter) scan() {
 	defer close(rc.done)
+	defer rc.pr.Close() // unblock pending pw.Write if scanner stops early (e.g. token too long)
 	scanner := bufio.NewScanner(rc.pr)
-	scanner.Buffer(make([]byte, 256*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 256*1024), 10*1024*1024) // 10 MB max line for extended-insert
 
 	switch rc.dbType {
 	case "postgres":

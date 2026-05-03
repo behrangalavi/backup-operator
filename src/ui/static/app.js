@@ -96,7 +96,7 @@ $('#modal-overlay').addEventListener('click', e => {
 });
 
 // --- Helpers ---
-function fmtCount(n) { return (n != null && n > 0) ? n.toLocaleString() : '—'; }
+function fmtCount(n) { return (n != null) ? n.toLocaleString() : '—'; }
 function humanBytes(n) {
   if (!n || n === 0) return '0 B';
   const units = ['B','KiB','MiB','GiB','TiB'];

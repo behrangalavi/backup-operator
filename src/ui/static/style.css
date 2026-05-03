@@ -184,7 +184,9 @@ thead th.sortable:hover { color: var(--text); }
 }
 .badge-postgres { background: rgba(51,103,145,0.2); color: #6ea8d9; }
 .badge-mysql { background: rgba(0,117,143,0.2); color: #4cc1d9; }
+.badge-mariadb { background: rgba(112,80,151,0.2); color: #c08fee; }
 .badge-mongo { background: rgba(19,170,82,0.2); color: #5cd68a; }
+.badge-redis { background: rgba(220,53,53,0.2); color: #ff6b6b; }
 .badge-sftp, .badge-hetzner-sftp { background: rgba(234,179,8,0.2); color: #eab308; }
 .badge-s3 { background: rgba(249,115,22,0.2); color: #f97316; }
 .badge-ok { background: var(--success-bg); color: var(--success); }

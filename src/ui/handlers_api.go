@@ -68,12 +68,18 @@ func (s *Server) handleAPICreateSource(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "invalid JSON: " + err.Error()})
 		return
 	}
-	if req.Name == "" || req.DBType == "" || req.Host == "" || req.Username == "" {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "name, dbType, host, username are required"})
+	if req.Name == "" || req.DBType == "" || req.Host == "" {
+		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "name, dbType, host are required"})
 		return
 	}
-	if req.DBType != "postgres" && req.DBType != "mysql" && req.DBType != "mongo" {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "dbType must be postgres, mysql, or mongo"})
+	// Redis can run with password-only AUTH (no username); every other DB
+	// type still requires a username.
+	if req.Username == "" && req.DBType != "redis" {
+		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "username is required for " + req.DBType})
+		return
+	}
+	if !isSupportedDBType(req.DBType) {
+		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "dbType must be postgres, mysql, mariadb, mongo, or redis"})
 		return
 	}
 	if msg := validateK8sName(req.Name); msg != "" {
@@ -1289,6 +1295,17 @@ func validatePort(port string) string {
 		return "port must be between 1 and 65535"
 	}
 	return ""
+}
+
+// isSupportedDBType is the single allow-list checked at the API edge. The
+// dumper factory is the only other place that knows about DB types; the UI
+// must stay in sync with it.
+func isSupportedDBType(t string) bool {
+	switch t {
+	case "postgres", "mysql", "mariadb", "mongo", "redis":
+		return true
+	}
+	return false
 }
 
 // validateCronSchedule does basic structural validation of a cron expression.

@@ -82,7 +82,9 @@ func ParseSource(s *corev1.Secret, defaultSchedule string) (*Source, error) {
 		return nil, fmt.Errorf("secret %s/%s: missing data key %q", s.Namespace, s.Name, "host")
 	}
 	user := strings.TrimSpace(string(s.Data["username"]))
-	if user == "" {
+	// Redis pre-6 uses password-only AUTH; ACL usernames came in 6.0. Allow
+	// empty username for redis sources only — every other DB requires it.
+	if user == "" && dbType != "redis" {
 		return nil, fmt.Errorf("secret %s/%s: missing data key %q", s.Namespace, s.Name, "username")
 	}
 
@@ -175,10 +177,12 @@ func defaultPortFor(dbType string) int {
 	switch dbType {
 	case "postgres":
 		return 5432
-	case "mysql":
+	case "mysql", "mariadb":
 		return 3306
 	case "mongo":
 		return 27017
+	case "redis":
+		return 6379
 	}
 	return 0
 }

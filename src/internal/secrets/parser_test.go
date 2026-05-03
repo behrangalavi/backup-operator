@@ -165,6 +165,46 @@ func TestParseSource_InvalidPort(t *testing.T) {
 	}
 }
 
+func TestParseSource_RedisAllowsEmptyUsername(t *testing.T) {
+	sec := newSourceSecret(nil)
+	sec.Labels[labels.LabelDBType] = "redis"
+	sec.Data["username"] = []byte("")
+	src, err := ParseSource(sec, "0 2 * * *")
+	if err != nil {
+		t.Fatalf("redis source with empty username should parse: %v", err)
+	}
+	if src.DBType != "redis" {
+		t.Errorf("DBType = %q, want redis", src.DBType)
+	}
+}
+
+func TestParseSource_NonRedisRejectsEmptyUsername(t *testing.T) {
+	for _, dbt := range []string{"postgres", "mysql", "mariadb", "mongo"} {
+		sec := newSourceSecret(nil)
+		sec.Labels[labels.LabelDBType] = dbt
+		sec.Data["username"] = []byte("")
+		if _, err := ParseSource(sec, "0 2 * * *"); err == nil {
+			t.Errorf("%s: expected error for empty username", dbt)
+		}
+	}
+}
+
+func TestDefaultPortFor(t *testing.T) {
+	cases := map[string]int{
+		"postgres": 5432,
+		"mysql":    3306,
+		"mariadb":  3306,
+		"mongo":    27017,
+		"redis":    6379,
+		"unknown":  0,
+	}
+	for dbt, want := range cases {
+		if got := defaultPortFor(dbt); got != want {
+			t.Errorf("defaultPortFor(%q) = %d, want %d", dbt, got, want)
+		}
+	}
+}
+
 func TestSource_AllowsDestination(t *testing.T) {
 	cases := []struct {
 		allow []string

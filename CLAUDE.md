@@ -325,7 +325,7 @@ backup-restore --storage-secret hetzner-sb -n backup --target prod-users \
 | Label | Required | Values |
 |---|---|---|
 | `backup.mogenius.io/role` | **yes** | `source` \| `destination` |
-| `backup.mogenius.io/db-type` | yes (sources only) | `postgres` \| `mysql` \| `mongo` |
+| `backup.mogenius.io/db-type` | yes (sources only) | `postgres` \| `mysql` \| `mariadb` \| `mongo` \| `redis` |
 | `backup.mogenius.io/storage-type` | yes (destinations only) | `sftp` \| `hetzner-sftp` \| `s3` |
 
 ### 6.2 Source Secret annotations
@@ -350,9 +350,9 @@ A typo on a feature-flag annotation falls back to the default rather than reject
 | Key | Required | Notes |
 |---|---|---|
 | `host` | **yes** | DB hostname |
-| `port` | no | Defaults: 5432 (pg), 3306 (mysql), 27017 (mongo) |
-| `database` | (situational) | Postgres/MySQL: required for `pg_dump`/`mysqldump` to scope. Mongo: optional, omitted = all non-system DBs. |
-| `username` | **yes** | |
+| `port` | no | Defaults: 5432 (pg), 3306 (mysql/mariadb), 27017 (mongo), 6379 (redis) |
+| `database` | (situational) | Postgres/MySQL/MariaDB: required for `pg_dump`/`mysqldump` to scope. Mongo: optional, omitted = all non-system DBs. Redis: optional DB index (`0`–`15`) — narrows stats only; the RDB dump is always full-instance. |
+| `username` | **yes** for all except `redis` | Redis pre-6 uses password-only AUTH; ACL usernames came in 6.0 and are optional |
 | `password` | **yes** | |
 
 ### 6.4 Destination Secret annotations
@@ -534,10 +534,12 @@ Avoid restating the code. Avoid comments that reference the current change ("add
    - `Type() string` → return the type-string used in the label
    - `Dump(ctx, w io.Writer) error` → exec the dump tool, stream to `w`
    - `CollectStats(ctx) (*Stats, error)` → query the live DB for table-level rows + size and a schema fingerprint
-2. Register the type-constant in `src/dumper/factory/factory.go`:
+2. Register the type-constant in `src/dumper/factory/factory.go`. If your new
+   type can reuse an existing dumper (e.g. MariaDB shares MySQL's wire
+   protocol and `mysqldump`), share the case rather than duplicating code:
    ```go
-   const TypeMariaDB = "mariadb"
-   case TypeMariaDB: return mariadb.New(cfg, logger.WithName("mariadb")), nil
+   case TypeMySQL, TypeMariaDB:
+       return mysql.New(cfg, logger.WithName(dbType)), nil
    ```
 3. Update the `Dockerfile` to install the matching client tool (`apk add ...`).
 4. Document the type in section 6.1 of this file.

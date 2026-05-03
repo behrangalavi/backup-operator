@@ -411,7 +411,9 @@ window.openSourceForm = function(secretName) {
           <option value="">Select...</option>
           <option value="postgres">PostgreSQL</option>
           <option value="mysql">MySQL</option>
+          <option value="mariadb">MariaDB</option>
           <option value="mongo">MongoDB</option>
+          <option value="redis">Redis</option>
         </select></div>
     </div>
     <div class="form-row">
@@ -425,7 +427,9 @@ window.openSourceForm = function(secretName) {
         <div class="hint">Cron expression (default: 0 2 * * *)</div></div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label>Username *</label><input name="username" required></div>
+      <div class="form-group"><label>Username</label>
+        <input name="username">
+        <div class="hint">Required for all types except Redis (Redis &lt; 6 has no usernames; ACL usernames came in 6.0)</div></div>
       <div class="form-group"><label>Password</label><input name="password" type="password" placeholder="${isEdit ? '(unchanged if empty)' : ''}"></div>
     </div>
     <div class="form-section"><h4>Retention & Analysis</h4>

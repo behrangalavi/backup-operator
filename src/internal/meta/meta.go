@@ -30,6 +30,14 @@ const (
 	StatusFailed  = "failed"
 )
 
+// DestinationResult records the upload outcome for a single destination.
+type DestinationResult struct {
+	Name        string `json:"name"`
+	StorageType string `json:"storageType"`
+	Status      string `json:"status"` // "success" or "failed"
+	Error       string `json:"error,omitempty"`
+}
+
 // MetaFile is the deserialised representation of a `dump-<ts>.meta.json`.
 //
 // A failure run writes a meta file too, with Status="failed" and no dump
@@ -46,10 +54,15 @@ type MetaFile struct {
 	SHA256             string           `json:"sha256,omitempty"`
 	Stats              *dumper.Stats    `json:"stats,omitempty"`
 	Report             *analyzer.Report `json:"report,omitempty"`
+	Destinations       []DestinationResult `json:"destinations,omitempty"`
 
 	// Path within the destination, populated when fetched via List+Get so
 	// callers can deep-link or correlate to the encrypted dump alongside.
 	Path string `json:"-"`
+
+	// SourceDestination is set at read time to indicate which destination
+	// this meta was fetched from. Not persisted in JSON.
+	SourceDestination string `json:"-"`
 }
 
 // IsFailure reports whether the meta represents a failed run. Empty Status
@@ -74,6 +87,7 @@ func List(ctx context.Context, st storage.Storage, target string) ([]*MetaFile, 
 	if err != nil {
 		return nil, fmt.Errorf("list %q: %w", target, err)
 	}
+	destName := st.Name()
 	out := make([]*MetaFile, 0, len(objs))
 	for _, o := range objs {
 		if path.Ext(o.Path) != ".json" || !strings.HasSuffix(o.Path, ".meta.json") {
@@ -83,6 +97,7 @@ func List(ctx context.Context, st storage.Storage, target string) ([]*MetaFile, 
 		if err != nil {
 			continue
 		}
+		m.SourceDestination = destName
 		out = append(out, m)
 	}
 	sort.Slice(out, func(i, j int) bool {

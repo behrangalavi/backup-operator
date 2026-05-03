@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"backup-operator/internal/meta"
 	"backup-operator/internal/secrets"
 	"backup-operator/storage"
 
@@ -189,12 +190,30 @@ func TestSortedMetaPaths_NoMetas(t *testing.T) {
 
 func TestMetaJSON_SuccessStatus(t *testing.T) {
 	src := testSource("prod-db", "postgres")
-	meta := metaJSON(src, nil, nil, 42000, "abc123", "20260501T020000Z")
-	if !bytes.Contains(meta, []byte(`"status": "success"`)) {
+	m := metaJSON(src, nil, nil, 42000, "abc123", "20260501T020000Z", nil)
+	if !bytes.Contains(m, []byte(`"status": "success"`)) {
 		t.Error("meta should contain status=success")
 	}
-	if !bytes.Contains(meta, []byte(`"sha256": "abc123"`)) {
+	if !bytes.Contains(m, []byte(`"sha256": "abc123"`)) {
 		t.Error("meta should contain sha256")
+	}
+}
+
+func TestMetaJSON_WithDestinations(t *testing.T) {
+	src := testSource("prod-db", "postgres")
+	drs := []meta.DestinationResult{
+		{Name: "hetzner", StorageType: "sftp", Status: meta.StatusSuccess},
+		{Name: "aws-s3", StorageType: "s3", Status: meta.StatusFailed, Error: "connection refused"},
+	}
+	m := metaJSON(src, nil, nil, 42000, "abc123", "20260501T020000Z", drs)
+	if !bytes.Contains(m, []byte(`"destinations"`)) {
+		t.Error("meta should contain destinations array")
+	}
+	if !bytes.Contains(m, []byte(`"hetzner"`)) {
+		t.Error("meta should contain hetzner destination")
+	}
+	if !bytes.Contains(m, []byte(`"connection refused"`)) {
+		t.Error("meta should contain error for failed destination")
 	}
 }
 

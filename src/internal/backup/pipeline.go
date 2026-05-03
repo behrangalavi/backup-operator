@@ -244,9 +244,15 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 			metaReport = anonymizeReport(report)
 		}
 	}
-	meta := metaJSON(src, metaStats, metaReport, encryptedSize, sha256sum, timestamp)
 
-	successCount := p.fanOut(ctx, dests, src.TargetName, dumpFile, objectPath, metaPath, meta, log)
+	// Phase 1: fan-out dumps to all destinations, collecting per-destination results.
+	destResults := p.fanOutDumps(ctx, dests, src.TargetName, dumpFile, objectPath, log)
+	successCount := 0
+	for _, dr := range destResults {
+		if dr.Status == meta.StatusSuccess {
+			successCount++
+		}
+	}
 	if successCount == 0 {
 		metrics.SetLastRunStatus(src.TargetName, false)
 		p.events.Emit("Warning", "BackupFailed",
@@ -254,6 +260,11 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		p.recordFailure(ctx, dests, src, timestamp, "upload", errors.New("all destination uploads failed"), log)
 		return errors.New("all destination uploads failed")
 	}
+
+	// Phase 2: build meta with destination results, upload to successful destinations.
+	metaBytes := metaJSON(src, metaStats, metaReport, encryptedSize, sha256sum, timestamp, destResults)
+	p.uploadMeta(ctx, dests, destResults, metaPath, metaBytes, log)
+
 	metrics.SetLastRunStatus(src.TargetName, true)
 	p.events.Emit("Normal", "BackupCompleted",
 		fmt.Sprintf("Backup completed for target %s (%d/%d destinations, %d bytes)",
@@ -359,56 +370,89 @@ const (
 	defaultMaxConcurrency = 4
 )
 
-func (p *Pipeline) fanOut(
+func (p *Pipeline) fanOutDumps(
 	ctx context.Context,
 	dests []*secrets.Destination,
-	target, dumpFile, objectPath, metaPath string,
-	meta []byte,
+	target, dumpFile, objectPath string,
 	log logr.Logger,
-) int {
-	var (
-		wg      sync.WaitGroup
-		mu      sync.Mutex
-		success int
-	)
+) []meta.DestinationResult {
+	results := make([]meta.DestinationResult, len(dests))
+	var wg sync.WaitGroup
 	sem := make(chan struct{}, p.maxConcurrency)
-	for _, dest := range dests {
+	for i, dest := range dests {
+		results[i] = meta.DestinationResult{
+			Name:        dest.Name,
+			StorageType: dest.StorageType,
+			Status:      meta.StatusFailed,
+		}
 		wg.Add(1)
-		go func(d *secrets.Destination) {
+		go func(idx int, d *secrets.Destination) {
 			defer wg.Done()
 			defer recoverGoroutine(log, "upload", d.Name)
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			err := p.uploadWithRetry(ctx, d, target, dumpFile, objectPath, metaPath, meta, log)
+			err := p.uploadDumpWithRetry(ctx, d, target, dumpFile, objectPath, log)
 			if err != nil {
 				log.Error(err, "destination upload failed", "destination", d.Name)
 				metrics.SetDestinationFailed(target, d.Name, true)
+				results[idx].Error = err.Error()
 				return
 			}
 			metrics.SetDestinationFailed(target, d.Name, false)
 			metrics.SetLastSuccess(target, d.Name, time.Now())
-			mu.Lock()
-			success++
-			mu.Unlock()
+			results[idx].Status = meta.StatusSuccess
+		}(i, dest)
+	}
+	wg.Wait()
+	return results
+}
+
+// uploadMeta uploads the meta.json sidecar to all destinations that had a
+// successful dump upload. Best-effort: meta upload failures are logged but
+// do not change the overall run result.
+func (p *Pipeline) uploadMeta(
+	ctx context.Context,
+	dests []*secrets.Destination,
+	results []meta.DestinationResult,
+	metaPath string,
+	metaBytes []byte,
+	log logr.Logger,
+) {
+	var wg sync.WaitGroup
+	for i, dest := range dests {
+		if results[i].Status != meta.StatusSuccess {
+			continue
+		}
+		wg.Add(1)
+		go func(d *secrets.Destination) {
+			defer wg.Done()
+			defer recoverGoroutine(log, "meta-upload", d.Name)
+			st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, p.logger)
+			if err != nil {
+				log.V(1).Info("meta upload: init storage failed", "destination", d.Name, "err", err.Error())
+				return
+			}
+			if err := st.Upload(ctx, metaPath, bytes.NewReader(metaBytes)); err != nil {
+				log.V(1).Info("meta upload failed", "destination", d.Name, "err", err.Error())
+				return
+			}
 		}(dest)
 	}
 	wg.Wait()
-	return success
 }
 
-// uploadWithRetry wraps uploadOne with exponential backoff for transient
-// failures. Only RetryableError triggers a retry; PermanentError and other
-// errors abort immediately.
-func (p *Pipeline) uploadWithRetry(
+// uploadDumpWithRetry wraps uploadDumpOne with exponential backoff for
+// transient failures. Only RetryableError triggers a retry; PermanentError
+// and other errors abort immediately.
+func (p *Pipeline) uploadDumpWithRetry(
 	ctx context.Context,
 	d *secrets.Destination,
-	target, dumpFile, objectPath, metaPath string,
-	meta []byte,
+	target, dumpFile, objectPath string,
 	log logr.Logger,
 ) error {
 	var lastErr error
 	for attempt := 0; attempt < uploadMaxRetries; attempt++ {
-		lastErr = p.uploadOne(ctx, d, target, dumpFile, objectPath, metaPath, meta)
+		lastErr = p.uploadDumpOne(ctx, d, target, dumpFile, objectPath)
 		if lastErr == nil {
 			return nil
 		}
@@ -436,11 +480,10 @@ func (p *Pipeline) uploadWithRetry(
 	return lastErr
 }
 
-func (p *Pipeline) uploadOne(
+func (p *Pipeline) uploadDumpOne(
 	ctx context.Context,
 	d *secrets.Destination,
-	target, dumpFile, objectPath, metaPath string,
-	meta []byte,
+	target, dumpFile, objectPath string,
 ) error {
 	st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, p.logger)
 	if err != nil {
@@ -467,10 +510,6 @@ func (p *Pipeline) uploadOne(
 
 	if err := verifyUploadSize(ctx, st, objectPath, localSize, p.logger); err != nil {
 		return err
-	}
-
-	if err := st.Upload(ctx, metaPath, bytes.NewReader(meta)); err != nil {
-		return &RetryableError{Op: "upload meta", Err: err}
 	}
 	return nil
 }
@@ -554,7 +593,7 @@ func sortedMetaPaths(objs []storage.Object) []string {
 	return out
 }
 
-func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report, size int64, sha256sum, timestamp string) []byte {
+func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report, size int64, sha256sum, timestamp string, destResults []meta.DestinationResult) []byte {
 	m := meta.MetaFile{
 		Target:             src.TargetName,
 		Timestamp:          timestamp,
@@ -564,6 +603,7 @@ func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report,
 		SHA256:             sha256sum,
 		Stats:              stats,
 		Report:             report,
+		Destinations:       destResults,
 	}
 	out, _ := json.MarshalIndent(m, "", "  ")
 	return out

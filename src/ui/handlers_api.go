@@ -12,6 +12,9 @@ import (
 	"time"
 
 	"backup-operator/internal/labels"
+	"backup-operator/internal/meta"
+	"backup-operator/internal/secrets"
+	storageFactory "backup-operator/storage/factory"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -823,6 +826,444 @@ func (s *Server) handleAPIGetDestination(w http.ResponseWriter, r *http.Request)
 		PathPrefix:  sec.Annotations[labels.AnnotationPathPrefix],
 		Data:        safeData,
 	})
+}
+
+// --- Destination connectivity test ---
+
+func (s *Server) handleAPITestDestination(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "POST required"})
+		return
+	}
+	secretName := trimPrefixPath(r.URL.Path, "/api/destinations/")
+	secretName = strings.TrimSuffix(secretName, "/test")
+
+	var sec corev1.Secret
+	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, &sec); err != nil {
+		writeJSON(w, http.StatusNotFound, apiResponse{Message: "destination secret not found"})
+		return
+	}
+	if sec.Labels[labels.LabelRole] != labels.RoleDestination {
+		writeJSON(w, http.StatusForbidden, apiResponse{Message: "not a destination secret"})
+		return
+	}
+
+	dest, err := secrets.ParseDestination(&sec)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "invalid destination config"})
+		return
+	}
+
+	st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, s.cfg.Logger.WithName("test-connection"))
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":    false,
+			"error": "storage init failed: " + err.Error(),
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	_, err = st.List(ctx, "__connectivity_test__/")
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":    false,
+			"error": err.Error(),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// --- Destination storage stats ---
+
+type destStorageStats struct {
+	Name         string `json:"name"`
+	StorageType  string `json:"storageType"`
+	TotalFiles   int    `json:"totalFiles"`
+	TotalSizeBytes int64 `json:"totalSizeBytes"`
+	BackupCount  int    `json:"backupCount"`
+	MetaCount    int    `json:"metaCount"`
+	OldestBackup string `json:"oldestBackup,omitempty"`
+	NewestBackup string `json:"newestBackup,omitempty"`
+	Error        string `json:"error,omitempty"`
+}
+
+func (s *Server) handleAPIDestinationStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "GET required"})
+		return
+	}
+
+	var list corev1.SecretList
+	if err := s.cfg.Client.List(r.Context(), &list, client.InNamespace(s.cfg.Namespace), client.MatchingLabels{
+		labels.LabelRole: labels.RoleDestination,
+	}); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "internal error"})
+		return
+	}
+
+	results := make([]destStorageStats, len(list.Items))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4)
+	for i := range list.Items {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			sec := &list.Items[idx]
+			dest, err := secrets.ParseDestination(sec)
+			if err != nil {
+				results[idx] = destStorageStats{
+					Name:  sec.Annotations[labels.AnnotationName],
+					Error: "invalid config",
+				}
+				return
+			}
+
+			st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, s.cfg.Logger.WithName("stats"))
+			if err != nil {
+				results[idx] = destStorageStats{
+					Name:        dest.Name,
+					StorageType: dest.StorageType,
+					Error:       "storage init failed",
+				}
+				return
+			}
+
+			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+			defer cancel()
+
+			objs, err := st.List(ctx, "")
+			if err != nil {
+				results[idx] = destStorageStats{
+					Name:        dest.Name,
+					StorageType: dest.StorageType,
+					Error:       err.Error(),
+				}
+				return
+			}
+
+			stat := destStorageStats{
+				Name:        dest.Name,
+				StorageType: dest.StorageType,
+				TotalFiles:  len(objs),
+			}
+			for _, o := range objs {
+				stat.TotalSizeBytes += o.Size
+				if strings.HasSuffix(o.Path, ".meta.json") {
+					stat.MetaCount++
+				} else if strings.HasSuffix(o.Path, ".sql.gz.age") || strings.HasSuffix(o.Path, ".archive.gz.age") {
+					stat.BackupCount++
+				}
+			}
+			if stat.MetaCount > 0 {
+				var oldest, newest string
+				for _, o := range objs {
+					if !strings.HasSuffix(o.Path, ".meta.json") {
+						continue
+					}
+					ts := extractTimestamp(o.Path)
+					if ts == "" {
+						continue
+					}
+					if oldest == "" || ts < oldest {
+						oldest = ts
+					}
+					if newest == "" || ts > newest {
+						newest = ts
+					}
+				}
+				stat.OldestBackup = oldest
+				stat.NewestBackup = newest
+			}
+			results[idx] = stat
+		}(i)
+	}
+	wg.Wait()
+	writeJSON(w, http.StatusOK, results)
+}
+
+// extractTimestamp pulls a compact timestamp from a meta path like
+// "target/2026/05/01/dump-20260501T020000Z.meta.json" → "20260501T020000Z"
+func extractTimestamp(p string) string {
+	base := p
+	if idx := strings.LastIndex(p, "/"); idx >= 0 {
+		base = p[idx+1:]
+	}
+	base = strings.TrimPrefix(base, "dump-")
+	base = strings.TrimSuffix(base, ".meta.json")
+	if len(base) == 16 && base[8] == 'T' && base[15] == 'Z' {
+		return base
+	}
+	return ""
+}
+
+// --- Destination health matrix ---
+
+type destHealthEntry struct {
+	Target      string `json:"target"`
+	Destination string `json:"destination"`
+	StorageType string `json:"storageType"`
+	HasBackup   bool   `json:"hasBackup"`
+	LatestRun   string `json:"latestRun,omitempty"`
+	Status      string `json:"status"` // "ok", "failed", "missing", "unreachable"
+	Error       string `json:"error,omitempty"`
+}
+
+func (s *Server) handleAPIDestinationHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "GET required"})
+		return
+	}
+
+	sources, err := s.data.listTargets(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "internal error"})
+		return
+	}
+
+	var destList corev1.SecretList
+	if err := s.cfg.Client.List(r.Context(), &destList, client.InNamespace(s.cfg.Namespace), client.MatchingLabels{
+		labels.LabelRole: labels.RoleDestination,
+	}); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "internal error"})
+		return
+	}
+
+	dests := make([]*secrets.Destination, 0, len(destList.Items))
+	for i := range destList.Items {
+		d, err := secrets.ParseDestination(&destList.Items[i])
+		if err != nil {
+			continue
+		}
+		dests = append(dests, d)
+	}
+
+	type lookupResult struct {
+		latest map[string]*meta.MetaFile
+		err    error
+	}
+	destLatest := make(map[string]lookupResult, len(dests))
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	sem := make(chan struct{}, 4)
+	for _, dest := range dests {
+		wg.Add(1)
+		go func(d *secrets.Destination) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, s.cfg.Logger.WithName("health"))
+			if err != nil {
+				mu.Lock()
+				destLatest[d.Name] = lookupResult{err: err}
+				mu.Unlock()
+				return
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+			defer cancel()
+			latest, err := meta.LatestPerTarget(ctx, st)
+			mu.Lock()
+			destLatest[d.Name] = lookupResult{latest: latest, err: err}
+			mu.Unlock()
+		}(dest)
+	}
+	wg.Wait()
+
+	var entries []destHealthEntry
+	for _, src := range sources {
+		allowedDests := src.Destinations
+		for _, dest := range dests {
+			isAllowed := len(allowedDests) == 0
+			if !isAllowed {
+				for _, ad := range allowedDests {
+					if ad == dest.Name {
+						isAllowed = true
+						break
+					}
+				}
+			}
+			if !isAllowed {
+				continue
+			}
+
+			entry := destHealthEntry{
+				Target:      src.Name,
+				Destination: dest.Name,
+				StorageType: dest.StorageType,
+			}
+
+			lr, ok := destLatest[dest.Name]
+			if !ok || lr.err != nil {
+				entry.Status = "unreachable"
+				if lr.err != nil {
+					entry.Error = lr.err.Error()
+				}
+				entries = append(entries, entry)
+				continue
+			}
+
+			m, exists := lr.latest[src.Name]
+			if !exists {
+				entry.Status = "missing"
+				entries = append(entries, entry)
+				continue
+			}
+
+			entry.HasBackup = true
+			entry.LatestRun = m.Timestamp
+			if m.IsFailure() {
+				entry.Status = "failed"
+				entry.Error = m.Error
+			} else {
+				entry.Status = "ok"
+			}
+			entries = append(entries, entry)
+		}
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
+// --- Backup consistency check ---
+
+type consistencyIssue struct {
+	Target      string   `json:"target"`
+	Timestamp   string   `json:"timestamp"`
+	PresentIn   []string `json:"presentIn"`
+	MissingFrom []string `json:"missingFrom"`
+}
+
+func (s *Server) handleAPIConsistencyCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "GET required"})
+		return
+	}
+
+	sources, err := s.data.listTargets(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "internal error"})
+		return
+	}
+
+	var destList corev1.SecretList
+	if err := s.cfg.Client.List(r.Context(), &destList, client.InNamespace(s.cfg.Namespace), client.MatchingLabels{
+		labels.LabelRole: labels.RoleDestination,
+	}); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "internal error"})
+		return
+	}
+
+	dests := make([]*secrets.Destination, 0, len(destList.Items))
+	for i := range destList.Items {
+		d, err := secrets.ParseDestination(&destList.Items[i])
+		if err != nil {
+			continue
+		}
+		dests = append(dests, d)
+	}
+
+	// Fetch runs per destination
+	type destRuns struct {
+		name      string
+		timestamps map[string]bool
+	}
+	allDestRuns := make([]destRuns, len(dests))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4)
+	for i, dest := range dests {
+		allDestRuns[i].name = dest.Name
+		allDestRuns[i].timestamps = make(map[string]bool)
+		wg.Add(1)
+		go func(idx int, d *secrets.Destination) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, s.cfg.Logger.WithName("consistency"))
+			if err != nil {
+				return
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+			defer cancel()
+			objs, err := st.List(ctx, "")
+			if err != nil {
+				return
+			}
+			for _, o := range objs {
+				if strings.HasSuffix(o.Path, ".meta.json") {
+					parts := strings.SplitN(o.Path, "/", 2)
+					if len(parts) >= 1 {
+						ts := extractTimestamp(o.Path)
+						if ts != "" {
+							allDestRuns[idx].timestamps[parts[0]+"@"+ts] = true
+						}
+					}
+				}
+			}
+		}(i, dest)
+	}
+	wg.Wait()
+
+	var issues []consistencyIssue
+	for _, src := range sources {
+		allowedDests := src.Destinations
+		var relevantDests []destRuns
+		for _, dr := range allDestRuns {
+			isAllowed := len(allowedDests) == 0
+			if !isAllowed {
+				for _, ad := range allowedDests {
+					if ad == dr.name {
+						isAllowed = true
+						break
+					}
+				}
+			}
+			if isAllowed {
+				relevantDests = append(relevantDests, dr)
+			}
+		}
+
+		if len(relevantDests) < 2 {
+			continue
+		}
+
+		// Collect all timestamps for this target across all destinations
+		allTS := map[string]bool{}
+		for _, dr := range relevantDests {
+			for key := range dr.timestamps {
+				if strings.HasPrefix(key, src.Name+"@") {
+					ts := strings.TrimPrefix(key, src.Name+"@")
+					allTS[ts] = true
+				}
+			}
+		}
+
+		for ts := range allTS {
+			var present, missing []string
+			for _, dr := range relevantDests {
+				if dr.timestamps[src.Name+"@"+ts] {
+					present = append(present, dr.name)
+				} else {
+					missing = append(missing, dr.name)
+				}
+			}
+			if len(missing) > 0 {
+				issues = append(issues, consistencyIssue{
+					Target:      src.Name,
+					Timestamp:   ts,
+					PresentIn:   present,
+					MissingFrom: missing,
+				})
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, issues)
 }
 
 // --- Input validation helpers ---

@@ -90,7 +90,12 @@ func (d *k8sData) listTargets(ctx context.Context) ([]targetSummary, error) {
 			continue
 		}
 		for tgt, m := range perDest {
-			if _, exists := latestByTarget[tgt]; !exists {
+			existing, exists := latestByTarget[tgt]
+			if !exists {
+				latestByTarget[tgt] = m
+			} else if existing.IsFailure() && !m.IsFailure() {
+				latestByTarget[tgt] = m
+			} else if m.Timestamp > existing.Timestamp {
 				latestByTarget[tgt] = m
 			}
 		}
@@ -138,10 +143,11 @@ func (d *k8sData) target(ctx context.Context, name string) (*targetDetail, error
 		return &targetDetail{Source: src, Destinations: nil, Runs: nil}, nil
 	}
 
-	// Read history from the first destination that responds. The other
-	// destinations should hold the same artefacts (fan-out preserves
-	// timestamps), so a single read is canonical for display.
-	var runs []*meta.MetaFile
+	// Merge run history from ALL destinations. Each destination may have
+	// runs that others don't (e.g. partial upload failures). Deduplicate
+	// by timestamp, preferring the meta from the destination it was fetched
+	// from so SourceDestination is set for download routing.
+	byTimestamp := map[string]*meta.MetaFile{}
 	for _, dest := range dests {
 		key := name + "@" + dest.Name
 		got, err := d.runsCache.getOrLoad(key, func() ([]*meta.MetaFile, error) {
@@ -151,11 +157,24 @@ func (d *k8sData) target(ctx context.Context, name string) (*targetDetail, error
 			}
 			return meta.List(ctx, st, name)
 		})
-		if err == nil && len(got) > 0 {
-			runs = got
-			break
+		if err != nil {
+			d.log.V(1).Info("destination unreadable for run history", "destination", dest.Name, "err", err.Error())
+			continue
+		}
+		for _, m := range got {
+			existing, ok := byTimestamp[m.Timestamp]
+			if !ok {
+				byTimestamp[m.Timestamp] = m
+			} else if existing.IsFailure() && !m.IsFailure() {
+				byTimestamp[m.Timestamp] = m
+			}
 		}
 	}
+	runs := make([]*meta.MetaFile, 0, len(byTimestamp))
+	for _, m := range byTimestamp {
+		runs = append(runs, m)
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].Timestamp > runs[j].Timestamp })
 	return &targetDetail{Source: src, Destinations: dests, Runs: runs}, nil
 }
 

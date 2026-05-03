@@ -96,6 +96,7 @@ $('#modal-overlay').addEventListener('click', e => {
 });
 
 // --- Helpers ---
+function fmtCount(n) { return (n != null && n > 0) ? n.toLocaleString() : '—'; }
 function humanBytes(n) {
   if (!n || n === 0) return '0 B';
   const units = ['B','KiB','MiB','GiB','TiB'];
@@ -924,6 +925,7 @@ function renderVerificationDetail(run) {
 
   const verdictIcon = { 'match': '&#10003;', 'mismatch': '&#10007;', 'partial': '&#9888;', 'skipped': '—' };
   const verdictCls = { 'match': 'badge-ok', 'mismatch': 'badge-failed', 'partial': 'badge-warn', 'skipped': 'badge-pending' };
+  const hasDumpCounts = v.dumpRowCounts && Object.keys(v.dumpRowCounts).length > 0;
 
   return `
     <div class="table-card verification-card">
@@ -937,15 +939,15 @@ function renderVerificationDetail(run) {
           <th>Table</th>
           <th class="num">Pre-Dump Rows</th>
           <th class="num">Post-Dump Rows</th>
-          <th class="num">Dump Rows</th>
+          ${hasDumpCounts ? '<th class="num">Dump Rows</th>' : ''}
           <th>Verdict</th>
           <th>Detail</th>
         </tr></thead>
         <tbody>${v.tables.map(t => `<tr>
           <td style="font-size:12px;font-family:var(--font-mono,monospace)">${escHTML(t.name)}</td>
-          <td class="num" style="font-size:12px">${t.preDumpRows != null ? t.preDumpRows.toLocaleString() : '—'}</td>
-          <td class="num" style="font-size:12px">${t.postDumpRows != null ? t.postDumpRows.toLocaleString() : '—'}</td>
-          <td class="num" style="font-size:12px">${t.dumpRows != null ? t.dumpRows.toLocaleString() : '—'}</td>
+          <td class="num" style="font-size:12px">${fmtCount(t.preDumpRows)}</td>
+          <td class="num" style="font-size:12px">${fmtCount(t.postDumpRows)}</td>
+          ${hasDumpCounts ? `<td class="num" style="font-size:12px">${fmtCount(t.dumpRows)}</td>` : ''}
           <td><span class="badge ${verdictCls[t.verdict] || 'badge-pending'}">${verdictIcon[t.verdict] || '?'} ${escHTML(t.verdict)}</span></td>
           <td style="font-size:11px;color:var(--text-muted)">${escHTML(t.detail || '')}</td>
         </tr>`).join('')}</tbody>

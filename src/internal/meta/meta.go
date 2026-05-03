@@ -38,6 +38,37 @@ type DestinationResult struct {
 	Error       string `json:"error,omitempty"`
 }
 
+// Verification verdict constants.
+const (
+	VerificationMatch    = "match"
+	VerificationMismatch = "mismatch"
+	VerificationPartial  = "partial"
+	VerificationSkipped  = "skipped"
+)
+
+// DumpVerification records the integrity verification result for a backup run.
+// Pre-dump stats are collected before the dump starts, post-dump stats after
+// it finishes. Dump row counts are parsed from the dump stream itself. The
+// Verdict summarises whether the three sources agree.
+type DumpVerification struct {
+	Verdict  string              `json:"verdict"`
+	Summary  string              `json:"summary"`
+	PreStats *dumper.Stats       `json:"preStats,omitempty"`
+	PostStats *dumper.Stats      `json:"postStats,omitempty"`
+	DumpRowCounts map[string]int64 `json:"dumpRowCounts,omitempty"`
+	Tables   []TableVerification `json:"tables,omitempty"`
+}
+
+// TableVerification records per-table row counts from three sources.
+type TableVerification struct {
+	Name          string `json:"name"`
+	PreDumpRows   int64  `json:"preDumpRows"`
+	PostDumpRows  int64  `json:"postDumpRows"`
+	DumpRows      int64  `json:"dumpRows"`
+	Verdict       string `json:"verdict"`
+	Detail        string `json:"detail,omitempty"`
+}
+
 // MetaFile is the deserialised representation of a `dump-<ts>.meta.json`.
 //
 // A failure run writes a meta file too, with Status="failed" and no dump
@@ -54,6 +85,7 @@ type MetaFile struct {
 	SHA256             string           `json:"sha256,omitempty"`
 	Stats              *dumper.Stats    `json:"stats,omitempty"`
 	Report             *analyzer.Report `json:"report,omitempty"`
+	Verification       *DumpVerification `json:"verification,omitempty"`
 	Destinations       []DestinationResult `json:"destinations,omitempty"`
 
 	// Path within the destination, populated when fetched via List+Get so

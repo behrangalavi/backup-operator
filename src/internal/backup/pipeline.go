@@ -163,13 +163,13 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		return fmt.Errorf("dumper: %w", err)
 	}
 
-	var stats *dumper.Stats
+	var preStats *dumper.Stats
 	if src.AnalyzerEnabled {
 		s, statsErr := d.CollectStats(ctx)
 		if statsErr != nil {
-			log.V(1).Info("stats collection skipped", "reason", statsErr.Error())
+			log.V(1).Info("pre-dump stats collection skipped", "reason", statsErr.Error())
 		} else {
-			stats = s
+			preStats = s
 		}
 	} else {
 		log.V(1).Info("analyzer disabled by annotation; skipping stats collection")
@@ -184,8 +184,9 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	}
 	dumpFile := path.Join(p.tempDir, fmt.Sprintf("%s-%s.sql.gz.age", src.TargetName, timestamp))
 
+	rowCounter := dumper.NewRowCounter(nil, src.DBType) // writer set inside dumpToFile
 	dumpStart := time.Now()
-	encryptedSize, sha256sum, err := p.dumpToFile(ctx, d, dumpFile)
+	encryptedSize, sha256sum, err := p.dumpToFileWithCounter(ctx, d, dumpFile, rowCounter)
 	dumpDuration := time.Since(dumpStart)
 	metrics.ObserveDumpDuration(src.TargetName, src.DBType, dumpDuration)
 
@@ -210,6 +211,27 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 
 	metrics.SetDumpSize(src.TargetName, encryptedSize)
 
+	// Post-dump stats collection for verification
+	var postStats *dumper.Stats
+	if src.AnalyzerEnabled {
+		s, statsErr := d.CollectStats(ctx)
+		if statsErr != nil {
+			log.V(1).Info("post-dump stats collection skipped", "reason", statsErr.Error())
+		} else {
+			postStats = s
+		}
+	}
+
+	// Build dump verification result
+	var dumpCounts map[string]int64
+	if rowCounter.TotalRows() > 0 {
+		dumpCounts = rowCounter.Counts()
+	}
+	verification := meta.BuildVerification(preStats, postStats, dumpCounts, src.DBType)
+	if verification.Verdict == meta.VerificationMismatch {
+		log.Info("dump verification mismatch detected", "summary", verification.Summary)
+	}
+
 	if len(dests) == 0 {
 		metrics.SetLastRunStatus(src.TargetName, false)
 		return errors.New("no destinations configured")
@@ -226,6 +248,8 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	objectPath := buildObjectPath(src.TargetName, timestamp, "sql.gz.age")
 	metaPath := buildObjectPath(src.TargetName, timestamp, "meta.json")
 
+	// Use preStats for analyzer comparison (same as before)
+	stats := preStats
 	var report *analyzer.Report
 	if src.AnalyzerEnabled {
 		prevStats, prevSize := p.loadPreviousStats(ctx, dests, src.TargetName)
@@ -236,6 +260,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 
 	metaStats := stats
 	metaReport := report
+	var metaVerification *meta.DumpVerification
 	if src.AnonymizeTables {
 		if stats != nil {
 			metaStats = anonymizeStats(stats)
@@ -243,6 +268,11 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		if report != nil {
 			metaReport = anonymizeReport(report)
 		}
+		if verification != nil {
+			metaVerification = anonymizeVerification(verification)
+		}
+	} else {
+		metaVerification = verification
 	}
 
 	// Phase 1: fan-out dumps to all destinations, collecting per-destination results.
@@ -262,14 +292,15 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	}
 
 	// Phase 2: build meta with destination results, upload to successful destinations.
-	metaBytes := metaJSON(src, metaStats, metaReport, encryptedSize, sha256sum, timestamp, destResults)
+	metaBytes := metaJSON(src, metaStats, metaReport, metaVerification, encryptedSize, sha256sum, timestamp, destResults)
 	p.uploadMeta(ctx, dests, destResults, metaPath, metaBytes, log)
 
 	metrics.SetLastRunStatus(src.TargetName, true)
 	p.events.Emit("Normal", "BackupCompleted",
-		fmt.Sprintf("Backup completed for target %s (%d/%d destinations, %d bytes)",
-			src.TargetName, successCount, len(dests), encryptedSize))
-	log.Info("backup completed", "destinations_succeeded", successCount, "destinations_total", len(dests))
+		fmt.Sprintf("Backup completed for target %s (%d/%d destinations, %d bytes, verification: %s)",
+			src.TargetName, successCount, len(dests), encryptedSize, verification.Verdict))
+	log.Info("backup completed", "destinations_succeeded", successCount, "destinations_total", len(dests),
+		"verification", verification.Verdict)
 
 	// Retention runs after a successful upload so old artifacts are pruned
 	// only once a fresh one is in place. Errors here do not fail the run.
@@ -325,6 +356,13 @@ func (p *Pipeline) recordFailure(
 }
 
 func (p *Pipeline) dumpToFile(ctx context.Context, d dumper.Dumper, dumpFile string) (int64, string, error) {
+	return p.dumpToFileWithCounter(ctx, d, dumpFile, nil)
+}
+
+// dumpToFileWithCounter dumps the database to a temp file while optionally
+// counting rows via the RowCounter. The counter sits between the dump output
+// and gzip, so it sees raw SQL/BSON before compression and encryption.
+func (p *Pipeline) dumpToFileWithCounter(ctx context.Context, d dumper.Dumper, dumpFile string, rc *dumper.RowCounter) (int64, string, error) {
 	f, err := os.Create(dumpFile)
 	if err != nil {
 		return 0, "", fmt.Errorf("create temp dump: %w", err)
@@ -340,10 +378,23 @@ func (p *Pipeline) dumpToFile(ctx context.Context, d dumper.Dumper, dumpFile str
 	}
 	gz := gzip.NewWriter(enc)
 
-	if err := d.Dump(ctx, gz); err != nil {
+	// The row counter sits before gzip so it sees raw dump output.
+	var dumpWriter io.Writer = gz
+	if rc != nil {
+		rc.SetWriter(gz)
+		dumpWriter = rc
+	}
+
+	if err := d.Dump(ctx, dumpWriter); err != nil {
+		if rc != nil {
+			_ = rc.Close()
+		}
 		_ = gz.Close()
 		_ = enc.Close()
 		return 0, "", err
+	}
+	if rc != nil {
+		_ = rc.Close()
 	}
 	if err := gz.Close(); err != nil {
 		_ = enc.Close()
@@ -607,7 +658,7 @@ func sortedMetaPaths(objs []storage.Object) []string {
 	return out
 }
 
-func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report, size int64, sha256sum, timestamp string, destResults []meta.DestinationResult) []byte {
+func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report, verification *meta.DumpVerification, size int64, sha256sum, timestamp string, destResults []meta.DestinationResult) []byte {
 	m := meta.MetaFile{
 		Target:             src.TargetName,
 		Timestamp:          timestamp,
@@ -617,6 +668,7 @@ func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report,
 		SHA256:             sha256sum,
 		Stats:              stats,
 		Report:             report,
+		Verification:       verification,
 		Destinations:       destResults,
 	}
 	out, _ := json.MarshalIndent(m, "", "  ")
@@ -714,6 +766,39 @@ func anonymizeReport(r *analyzer.Report) *analyzer.Report {
 				PrevRows:       td.PrevRows,
 				CurrRows:       td.CurrRows,
 				RowChangeRatio: td.RowChangeRatio,
+			}
+		}
+	}
+	return anon
+}
+
+func anonymizeVerification(v *meta.DumpVerification) *meta.DumpVerification {
+	anon := &meta.DumpVerification{
+		Verdict: v.Verdict,
+		Summary: v.Summary,
+	}
+	if v.PreStats != nil {
+		anon.PreStats = anonymizeStats(v.PreStats)
+	}
+	if v.PostStats != nil {
+		anon.PostStats = anonymizeStats(v.PostStats)
+	}
+	if len(v.DumpRowCounts) > 0 {
+		anon.DumpRowCounts = make(map[string]int64, len(v.DumpRowCounts))
+		for k, c := range v.DumpRowCounts {
+			anon.DumpRowCounts[hashTableName(k)] = c
+		}
+	}
+	if len(v.Tables) > 0 {
+		anon.Tables = make([]meta.TableVerification, len(v.Tables))
+		for i, t := range v.Tables {
+			anon.Tables[i] = meta.TableVerification{
+				Name:         hashTableName(t.Name),
+				PreDumpRows:  t.PreDumpRows,
+				PostDumpRows: t.PostDumpRows,
+				DumpRows:     t.DumpRows,
+				Verdict:      t.Verdict,
+				Detail:       t.Detail,
 			}
 		}
 	}

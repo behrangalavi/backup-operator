@@ -47,7 +47,7 @@ func (d *redisDumper) Dump(ctx context.Context, w io.Writer) error {
 
 	d.logger.V(1).Info("running redis-cli --rdb", "host", d.cfg.Host)
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("redis-cli --rdb failed: %w: %s", err, stderr.String())
+		return dumper.WrapExecError("redis-cli --rdb", err, stderr.String(), d.cfg.Password)
 	}
 	return nil
 }
@@ -131,7 +131,7 @@ func (d *redisDumper) runInfo(ctx context.Context, section string) (string, erro
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%w: %s", err, stderr.String())
+		return "", dumper.WrapExecError("redis-cli INFO", err, stderr.String(), d.cfg.Password)
 	}
 	return stdout.String(), nil
 }

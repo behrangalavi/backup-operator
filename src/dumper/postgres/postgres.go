@@ -48,7 +48,7 @@ func (d *postgresDumper) Dump(ctx context.Context, w io.Writer) error {
 
 	d.logger.V(1).Info("running pg_dump", "host", d.cfg.Host, "db", d.cfg.Database)
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("pg_dump failed: %w: %s", err, stderr.String())
+		return dumper.WrapExecError("pg_dump", err, stderr.String(), d.cfg.Password)
 	}
 	return nil
 }
@@ -60,7 +60,7 @@ func (d *postgresDumper) Dump(ctx context.Context, w io.Writer) error {
 func (d *postgresDumper) CollectStats(ctx context.Context) (*dumper.Stats, error) {
 	conn, err := pgx.Connect(ctx, d.connString())
 	if err != nil {
-		return nil, fmt.Errorf("connect: %w", err)
+		return nil, dumper.SanitizeError("connect", err, d.cfg.Password)
 	}
 	defer func() { _ = conn.Close(ctx) }()
 

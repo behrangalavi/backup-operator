@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"time"
@@ -34,7 +35,6 @@ func (d *mysqlDumper) Dump(ctx context.Context, w io.Writer) error {
 		"-h", d.cfg.Host,
 		"-P", strconv.Itoa(d.cfg.Port),
 		"-u", d.cfg.Username,
-		fmt.Sprintf("-p%s", d.cfg.Password),
 		"--single-transaction",
 		"--quick",
 		"--routines",
@@ -42,6 +42,12 @@ func (d *mysqlDumper) Dump(ctx context.Context, w io.Writer) error {
 		d.cfg.Database,
 	}
 	cmd := exec.CommandContext(ctx, "mysqldump", args...)
+	// Pass the password via MYSQL_PWD instead of `-p<value>` on the command
+	// line. `-p` would be visible in `ps` output and any process-listing
+	// telemetry; the env var stays inside the worker pod.
+	if d.cfg.Password != "" {
+		cmd.Env = append(os.Environ(), "MYSQL_PWD="+d.cfg.Password)
+	}
 	cmd.Stdout = w
 
 	var stderr bytes.Buffer
@@ -49,7 +55,7 @@ func (d *mysqlDumper) Dump(ctx context.Context, w io.Writer) error {
 
 	d.logger.V(1).Info("running mysqldump", "host", d.cfg.Host, "db", d.cfg.Database)
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("mysqldump failed: %w: %s", err, stderr.String())
+		return dumper.WrapExecError("mysqldump", err, stderr.String(), d.cfg.Password)
 	}
 	return nil
 }
@@ -60,12 +66,12 @@ func (d *mysqlDumper) Dump(ctx context.Context, w io.Writer) error {
 func (d *mysqlDumper) CollectStats(ctx context.Context) (*dumper.Stats, error) {
 	db, err := sql.Open("mysql", d.dsn())
 	if err != nil {
-		return nil, fmt.Errorf("open: %w", err)
+		return nil, dumper.SanitizeError("open", err, d.cfg.Password)
 	}
 	defer func() { _ = db.Close() }()
 
 	if err := db.PingContext(ctx); err != nil {
-		return nil, fmt.Errorf("ping: %w", err)
+		return nil, dumper.SanitizeError("ping", err, d.cfg.Password)
 	}
 
 	tables, err := d.queryTables(ctx, db)

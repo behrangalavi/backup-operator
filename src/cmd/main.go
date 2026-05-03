@@ -92,6 +92,11 @@ func main() {
 		// rest of the UI is read-write.
 		{Key: "UI_READ_ONLY", Optional: true, Default: "false"},
 		{Key: "UI_ALLOW_KEY_MUTATION", Optional: true, Default: "false"},
+		// Hardening knobs against unauthenticated misuse. Defaults are
+		// applied inside ui.New if 0/empty; we still surface them as env
+		// values so operators can tune without rebuilding.
+		{Key: "UI_MAX_BODY_BYTES", Optional: true, Default: "1048576"}, // 1 MiB
+		{Key: "UI_MAX_SSE_CLIENTS", Optional: true, Default: "256"},
 	})
 	assert.NoError(err, "failed to initialize config module")
 
@@ -159,16 +164,20 @@ func main() {
 	assert.NoError(mgr.Add(refresher), "failed to register metrics refresher")
 
 	if config.GetValue("UI_ENABLED") == "true" {
+		maxBody, _ := strconv.ParseInt(config.GetValue("UI_MAX_BODY_BYTES"), 10, 64)
+		maxSSE, _ := strconv.Atoi(config.GetValue("UI_MAX_SSE_CLIENTS"))
 		uiServer, err := ui.New(ui.Config{
-			Addr:               config.GetValue("UI_ADDR"),
-			Namespace:          namespaceForUI(watchNs),
-			Client:             mgr.GetClient(),
-			APIReader:          mgr.GetAPIReader(),
-			Logger:             ctrl.Log.WithName("ui"),
-			SettingsConfigMap:  config.GetValue("SETTINGS_CONFIGMAP"),
-			AgeSecretName:      config.GetValue("AGE_SECRET_NAME"),
-			ReadOnly:           config.GetValue("UI_READ_ONLY") == "true",
-			AllowKeyMutation:   config.GetValue("UI_ALLOW_KEY_MUTATION") == "true",
+			Addr:              config.GetValue("UI_ADDR"),
+			Namespace:         namespaceForUI(watchNs),
+			Client:            mgr.GetClient(),
+			APIReader:         mgr.GetAPIReader(),
+			Logger:            ctrl.Log.WithName("ui"),
+			SettingsConfigMap: config.GetValue("SETTINGS_CONFIGMAP"),
+			AgeSecretName:     config.GetValue("AGE_SECRET_NAME"),
+			ReadOnly:          config.GetValue("UI_READ_ONLY") == "true",
+			AllowKeyMutation:  config.GetValue("UI_ALLOW_KEY_MUTATION") == "true",
+			MaxBodyBytes:      maxBody,
+			MaxSSEClients:     maxSSE,
 		})
 		assert.NoError(err, "failed to construct UI server")
 		// Register before manager start so the cache and HTTP listener share

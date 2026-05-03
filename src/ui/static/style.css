@@ -242,6 +242,109 @@ thead th.sortable:hover { color: var(--text); }
   margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border);
 }
 
+/* Charts (pure SVG, no external lib — keeps the binary self-contained). */
+.chart-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 20px; margin-bottom: 16px;
+}
+.chart-card h3 {
+  font-size: 13px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 12px;
+}
+.chart-svg { width: 100%; height: auto; display: block; max-height: 260px; }
+.chart-grid { stroke: var(--border); stroke-width: 1; stroke-dasharray: 2 3; opacity: 0.6; }
+.chart-axis { stroke: var(--border); stroke-width: 1; }
+.chart-axis-text {
+  fill: var(--text-muted); font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.chart-line { stroke: var(--accent); stroke-width: 2; fill: none; }
+.chart-area { fill: var(--accent); opacity: 0.12; }
+.chart-point {
+  fill: var(--accent); stroke: var(--bg-card); stroke-width: 1.5;
+  cursor: pointer; transition: r 0.1s;
+}
+.chart-point:hover { fill: var(--text-heading); }
+.chart-empty {
+  padding: 28px 20px; text-align: center;
+  color: var(--text-muted); font-size: 13px;
+}
+.chart-grid-2 {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;
+}
+.chart-grid-2 .chart-card { margin-bottom: 0; }
+@media (max-width: 1100px) { .chart-grid-2 { grid-template-columns: 1fr; } }
+
+/* Run-status heatmap (GitHub contributions style). */
+.heatmap-svg { max-height: 180px; }
+rect.hm-cell { transition: filter 0.1s; cursor: pointer; }
+rect.hm-cell:hover { filter: brightness(1.4); }
+rect.hm-empty  { fill: var(--bg-input); }
+rect.hm-ok     { fill: var(--success); }
+rect.hm-mixed  { fill: var(--warning); }
+rect.hm-failed { fill: var(--danger); }
+rect.hm-out    { fill: transparent; pointer-events: none; }
+.hm-legend {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 10px; font-size: 11px; color: var(--text-muted);
+  justify-content: flex-end;
+}
+.hm-legend .hm-dot {
+  display: inline-block; width: 11px; height: 11px; border-radius: 2px;
+}
+.hm-legend .hm-empty  { background: var(--bg-input); }
+.hm-legend .hm-ok     { background: var(--success); }
+.hm-legend .hm-mixed  { background: var(--warning); }
+.hm-legend .hm-failed { background: var(--danger); }
+
+/* Stacked-bar list (Storage by Destination on the dashboard). */
+.chart-card-sub {
+  font-size: 11px; font-weight: 400; color: var(--text-muted);
+  text-transform: none; letter-spacing: 0; margin-left: 8px;
+}
+.stack-bar-list { display: flex; flex-direction: column; gap: 10px; }
+.stack-bar-row {
+  display: grid; grid-template-columns: 140px 1fr auto; gap: 12px;
+  align-items: center;
+}
+.stack-bar-label {
+  font-size: 12px; color: var(--text); text-align: right;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.stack-bar {
+  height: 18px; background: var(--bg-input); border-radius: 4px;
+  overflow: hidden; display: flex; min-width: 4px;
+}
+.stack-segment {
+  height: 100%; transition: filter 0.1s; cursor: pointer; min-width: 1px;
+}
+.stack-segment:hover { filter: brightness(1.25); }
+.stack-bar-total {
+  font-size: 12px; color: var(--text-muted);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+
+/* Compact tables (used inside chart-cards, e.g. the per-table sparklines). */
+.table-scroll { max-height: 360px; overflow: auto; }
+.tbl-compact { font-size: 13px; }
+.tbl-compact thead th {
+  padding: 8px 12px; background: var(--bg-card);
+  position: sticky; top: 0; z-index: 1;
+}
+.tbl-compact tbody td { padding: 6px 12px; font-size: 12px; }
+.cell-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+}
+
+/* Sparklines (per-row row-count trend). */
+.sparkline { width: 80px; height: 20px; display: block; }
+.sparkline path { fill: none; stroke-width: 1.5; }
+.sparkline-flat path { stroke: var(--text-muted); }
+.sparkline-up   path { stroke: var(--success); }
+.sparkline-down path { stroke: var(--danger); }
+.sparkline-point { fill: var(--accent); }
+
 /* Modal */
 .modal-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6);

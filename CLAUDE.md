@@ -415,6 +415,8 @@ The operator and the worker have separate (overlapping) config schemas. All valu
 | `METRICS_REFRESH_INTERVAL_SECONDS` | no | `30` | Tick interval of the `MetricsRefresher`. Floor: 5. Trade off frequency against destination read load. |
 | `UI_ENABLED` | no | `false` | Enable the built-in web dashboard and management API on `UI_ADDR`. |
 | `UI_ADDR` | no | `:8081` | Listen address for the UI HTTP server. |
+| `UI_MAX_BODY_BYTES` | no | `1048576` | Per-request body cap applied via `http.MaxBytesReader` to every UI route. Without this an unauthenticated POST of a multi-GB body OOMs the operator. |
+| `UI_MAX_SSE_CLIENTS` | no | `256` | Concurrent SSE subscribers allowed on `/api/events`. Excess clients receive `503` so they retry instead of pinning operator memory. |
 | `SETTINGS_CONFIGMAP` | no | — | Name of the ConfigMap for runtime-configurable settings via the UI wizard. Set automatically by Helm when `ui.enabled=true`. |
 
 ### Worker (`cmd/worker/main.go`)
@@ -1002,6 +1004,12 @@ The notable ones, with the reasoning that future readers should preserve.
 - **Run history merged from ALL destinations.** The UI data layer iterates through all destinations (not just first-available) and deduplicates runs by timestamp, preferring successful over failed runs only when timestamps match. This prevents hidden backups when one destination is offline and avoids the stale-success bug where an older successful run from destination B would mask a newer failure from destination A.
 
 - **Multi-storage enterprise API endpoints.** Four new API endpoints support enterprise multi-destination monitoring: connectivity test (`POST /api/destinations/:name/test`), storage stats (`GET /api/destination-stats`), health matrix (`GET /api/destination-health`), and consistency check (`GET /api/consistency-check`). All use 4-goroutine semaphores for parallel storage queries, matching existing concurrency patterns.
+
+- **DB credentials never appear on dumper command lines.** `mysqldump` consumes the password through `MYSQL_PWD`, `mongodump` reads it from a 0600 YAML config file, `redis-cli` reads it from `REDISCLI_AUTH`, and `pg_dump` keeps using `PGPASSWORD`. The previous `-pPASSWORD` and `--uri=mongodb://user:pass@…` patterns were visible in `ps`, container telemetry, and any sidecar with PID-namespace access — at the project's intended scale (10k+ daily backups across many tenants) that's a continuous exfiltration vector. The mongo config file is created via `os.CreateTemp` + explicit `Chmod(0600)` and removed via `defer`. Trade-off: an extra file write per Mongo run vs. a credential that may otherwise outlive the process in kernel buffers.
+
+- **Centralised error sanitisation in `dumper.SanitizeStderr` / `WrapExecError`.** Stderr from exec'd dump tools and error strings from in-process drivers are scrubbed before they enter `fmt.Errorf` chains, logs, Kubernetes Events, or UI responses. The scrubber masks: any literal value passed in `secrets...` (typically the password), `scheme://user:pass@host` URI patterns, and `password=`/`passwd=`/`pwd=`/`auth=` key-value pairs. `SanitizeError(prefix, err, secrets...)` deliberately does NOT preserve `errors.Is` chains for driver errors that may echo the connection string back — preserving the chain would also preserve the leak. Adding a new dumper without using these helpers is a review-time blocker.
+
+- **UI body-size cap and SSE client cap.** `limitBodyMiddleware` wraps every request body with `http.MaxBytesReader(MaxBodyBytes)` (default 1 MiB) so a multi-GB POST cannot OOM the operator before any handler runs. `sseBroker.maxClients` (default 256) refuses additional `/api/events` subscribers with `503` instead of letting them block in subscribe queues. Both are global rather than per-route so newly added mutating endpoints inherit the protection automatically. Tunable via `UI_MAX_BODY_BYTES` and `UI_MAX_SSE_CLIENTS`. These are defence-in-depth — they do not replace the auth proxy, they limit the blast radius if the proxy is misconfigured or removed.
 
 ---
 

@@ -42,7 +42,18 @@ type Config struct {
 	AgeSecretName     string // name of the Secret holding AGE_PUBLIC_KEYS (empty = key listing/mutation disabled)
 	ReadOnly          bool   // when true, all mutation endpoints return 403
 	AllowKeyMutation  bool   // when true, age-key add/remove endpoints are exposed (read-only listing always available)
+	MaxBodyBytes      int64  // request body cap; 0 = use defaultMaxBodyBytes
+	MaxSSEClients     int    // concurrent SSE subscribers; 0 = use defaultMaxSSEClients
 }
+
+// Conservative defaults sized for an enterprise deployment with thousands of
+// targets. Body limit is large enough for any realistic source/destination
+// payload (SSH keys, small known-hosts blobs) but blocks GB-scale bodies that
+// would OOM the operator. SSE cap protects against client-side hoarding.
+const (
+	defaultMaxBodyBytes  = 1 << 20 // 1 MiB
+	defaultMaxSSEClients = 256
+)
 
 // Server is constructed once at process start and run by Start.
 type Server struct {
@@ -57,11 +68,19 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
 	}
+	if cfg.MaxBodyBytes <= 0 {
+		cfg.MaxBodyBytes = defaultMaxBodyBytes
+	}
+	if cfg.MaxSSEClients <= 0 {
+		cfg.MaxSSEClients = defaultMaxSSEClients
+	}
+	broker := newSSEBroker()
+	broker.maxClients = cfg.MaxSSEClients
 	return &Server{
 		cfg:  cfg,
 		tpl:  tpl,
 		data: newK8sData(cfg.Client, cfg.Namespace, cfg.Logger.WithName("data")),
-		sse:  newSSEBroker(),
+		sse:  broker,
 	}, nil
 }
 
@@ -127,9 +146,15 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/", s.handleSPA)
 
 	srv := &http.Server{
-		Addr:              s.cfg.Addr,
-		Handler:           mux,
+		Addr: s.cfg.Addr,
+		// Cap request bodies globally. None of our endpoints legitimately
+		// accept large uploads — the worst case is a few KiB of JSON or an
+		// SSH key blob. Without this an unauthenticated POST of a multi-GB
+		// body OOMs the operator.
+		Handler:           limitBodyMiddleware(s.cfg.MaxBodyBytes, mux),
 		ReadHeaderTimeout: 5 * time.Second,
+		// MaxHeaderBytes defaults to 1MB which is fine; lower would require
+		// careful audit of cookies/auth-proxy headers downstream users add.
 	}
 
 	go s.periodicRefresh(ctx)
@@ -167,6 +192,23 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 func noCacheMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// limitBodyMiddleware wraps r.Body with http.MaxBytesReader so any handler
+// that decodes the body sees an EOF after the cap is hit. Requests with no
+// body (GET/SSE/downloads) are unaffected. We deliberately apply this
+// globally rather than per-route so a new mutating endpoint added later
+// inherits the protection without anyone having to remember.
+func limitBodyMiddleware(max int64, next http.Handler) http.Handler {
+	if max <= 0 {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && r.Body != http.NoBody {
+			r.Body = http.MaxBytesReader(w, r.Body, max)
+		}
 		next.ServeHTTP(w, r)
 	})
 }

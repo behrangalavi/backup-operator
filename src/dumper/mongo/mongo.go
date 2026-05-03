@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -42,9 +43,28 @@ func New(cfg dumper.Config, logger logr.Logger) dumper.Dumper {
 func (d *mongoDumper) Type() string { return "mongo" }
 
 func (d *mongoDumper) Dump(ctx context.Context, w io.Writer) error {
-	uri := d.buildURI()
-
+	// Build the URI WITHOUT credentials so the connection string never lands
+	// on the command line where `ps` could read it. mongodump accepts the
+	// password via a 0600 YAML config file (`--config`); username goes via
+	// the (non-sensitive) `--username` flag. Auth source / replica set still
+	// belong in the URI query because mongodump applies them from there.
+	uri := d.buildURI(false)
 	args := []string{"--uri=" + uri, "--archive"}
+	if d.cfg.Username != "" {
+		args = append(args, "--username="+d.cfg.Username)
+	}
+
+	var configPath string
+	if d.cfg.Password != "" {
+		var err error
+		configPath, err = writeMongoPasswordConfig(d.cfg.Password)
+		if err != nil {
+			return fmt.Errorf("write mongo config: %w", err)
+		}
+		defer func() { _ = os.Remove(configPath) }()
+		args = append(args, "--config="+configPath)
+	}
+
 	if d.cfg.Database != "" {
 		args = append(args, "--db="+d.cfg.Database)
 	}
@@ -57,16 +77,51 @@ func (d *mongoDumper) Dump(ctx context.Context, w io.Writer) error {
 
 	d.logger.V(1).Info("running mongodump", "host", d.cfg.Host, "db", d.cfg.Database)
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("mongodump failed: %w: %s", err, stderr.String())
+		return dumper.WrapExecError("mongodump", err, stderr.String(), d.cfg.Password)
 	}
 	return nil
 }
 
-func (d *mongoDumper) buildURI() string {
+// writeMongoPasswordConfig writes a 0600 YAML config file consumable by
+// `mongodump --config`. The file lives in os.TempDir; callers must remove it.
+func writeMongoPasswordConfig(password string) (string, error) {
+	f, err := os.CreateTemp("", "mongodump-*.yaml")
+	if err != nil {
+		return "", err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return "", err
+	}
+	// YAML-quote the password to survive every printable character. mongodump
+	// parses this with a YAML 1.1 reader; double quotes + escaping the few
+	// chars YAML cares about is the safest minimal form.
+	escaped := strings.ReplaceAll(password, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+	if _, err := fmt.Fprintf(f, "password: \"%s\"\n", escaped); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
+}
+
+// buildURI assembles the connection string. With withCreds=false the URI is
+// safe to pass on a command line — credentials are stripped and supplied
+// out-of-band (`--username` flag + `--config` file). With withCreds=true the
+// URI is suitable for the in-process Go driver, where it never leaks via ps.
+func (d *mongoDumper) buildURI(withCreds bool) string {
 	u := url.URL{
 		Scheme: "mongodb",
 		Host:   d.cfg.Host + ":" + strconv.Itoa(d.cfg.Port),
-		User:   url.UserPassword(d.cfg.Username, d.cfg.Password),
+	}
+	if withCreds {
+		u.User = url.UserPassword(d.cfg.Username, d.cfg.Password)
 	}
 	q := u.Query()
 	if authSource := d.cfg.Extra["authSource"]; authSource != "" {
@@ -84,15 +139,15 @@ func (d *mongoDumper) buildURI() string {
 // hash fingerprints collection names + index specs — Mongo is schemaless
 // at the document level, so hashing documents would just produce noise.
 func (d *mongoDumper) CollectStats(ctx context.Context) (*dumper.Stats, error) {
-	clientOpts := options.Client().ApplyURI(d.buildURI())
+	clientOpts := options.Client().ApplyURI(d.buildURI(true))
 	client, err := mongo.Connect(clientOpts)
 	if err != nil {
-		return nil, fmt.Errorf("connect: %w", err)
+		return nil, dumper.SanitizeError("connect", err, d.cfg.Password)
 	}
 	defer func() { _ = client.Disconnect(ctx) }()
 
 	if err := client.Ping(ctx, nil); err != nil {
-		return nil, fmt.Errorf("ping: %w", err)
+		return nil, dumper.SanitizeError("ping", err, d.cfg.Password)
 	}
 
 	dbNames, err := d.listTargetDatabases(ctx, client)

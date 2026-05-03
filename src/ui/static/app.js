@@ -250,6 +250,7 @@ async function renderDashboard(loading = true) {
       <div class="stat-card"><div class="label">Destinations</div><div class="value">${dests.length}</div></div>
       <div class="stat-card"><div class="label">Running Jobs</div><div class="value">${running}</div></div>
     </div>
+    ${renderStorageByDestination(targets, dests)}
     <div class="table-card">
       <div class="table-card-header">
         <h2>Backup Targets</h2>
@@ -873,6 +874,332 @@ function parseDurationSec(s) {
 }
 
 // --- Target detail ---
+// Pure-SVG line chart for the encrypted-dump-size trend on the target detail
+// page. Failed runs are excluded (no size to plot). When fewer than 2
+// successful runs are available, returns an empty-state message instead of
+// a misleading single-point chart.
+function renderSizeChart(runs) {
+  const points = (runs || [])
+    .filter(r => r.status !== 'failed' && r.encryptedSizeBytes > 0)
+    .map(r => ({ ts: parseTsCompact(r.timestamp), size: r.encryptedSizeBytes }))
+    .filter(p => p.ts !== null)
+    .sort((a, b) => a.ts - b.ts);
+
+  if (points.length < 2) {
+    return '<div class="chart-empty">Not enough successful runs yet — at least 2 are needed to draw a trend.</div>';
+  }
+
+  const W = 700, H = 220;
+  const ML = 64, MR = 16, MT = 12, MB = 30;
+  const PW = W - ML - MR, PH = H - MT - MB;
+
+  const xs = points.map(p => p.ts);
+  const ys = points.map(p => p.size);
+  const xMin = xs[0], xMax = xs[xs.length - 1];
+  const xRange = (xMax - xMin) || 1;
+  // niceMax: round yMax up so axis labels are tidy bytes (KiB/MiB step).
+  const yMaxRaw = Math.max(...ys);
+  const yMax = niceCeil(yMaxRaw * 1.1);
+
+  const x = t => ML + ((t - xMin) / xRange) * PW;
+  const y = v => MT + PH - (v / yMax) * PH;
+
+  const nX = Math.min(6, points.length);
+  const xTicks = [];
+  for (let i = 0; i < nX; i++) {
+    const t = xMin + (xRange * i) / (nX - 1);
+    xTicks.push({ x: x(t), label: shortDate(t) });
+  }
+  const yTicks = [];
+  for (let i = 0; i <= 4; i++) {
+    const v = (yMax * i) / 4;
+    yTicks.push({ y: y(v), label: humanBytes(v) });
+  }
+
+  const linePath = points.map((p, i) =>
+    (i === 0 ? 'M' : 'L') + x(p.ts).toFixed(1) + ',' + y(p.size).toFixed(1)
+  ).join(' ');
+  // Area path: line + drop to bottom + close, gives a soft fill below.
+  const areaPath = linePath +
+    ' L' + x(points[points.length - 1].ts).toFixed(1) + ',' + (MT + PH).toFixed(1) +
+    ' L' + x(points[0].ts).toFixed(1) + ',' + (MT + PH).toFixed(1) + ' Z';
+
+  const dots = points.map(p => `<circle cx="${x(p.ts).toFixed(1)}" cy="${y(p.size).toFixed(1)}" r="3" class="chart-point"><title>${escHTML(new Date(p.ts).toLocaleString() + ' — ' + humanBytes(p.size))}</title></circle>`).join('');
+
+  return `<svg viewBox="0 0 ${W} ${H}" class="chart-svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Dump size trend">
+    ${yTicks.map(t => `<line x1="${ML}" y1="${t.y.toFixed(1)}" x2="${W - MR}" y2="${t.y.toFixed(1)}" class="chart-grid"/><text x="${ML - 8}" y="${(t.y + 4).toFixed(1)}" class="chart-axis-text" text-anchor="end">${escHTML(t.label)}</text>`).join('')}
+    ${xTicks.map(t => `<text x="${t.x.toFixed(1)}" y="${(H - MB + 18).toFixed(1)}" class="chart-axis-text" text-anchor="middle">${escHTML(t.label)}</text>`).join('')}
+    <line x1="${ML}" y1="${MT}" x2="${ML}" y2="${H - MB}" class="chart-axis"/>
+    <line x1="${ML}" y1="${H - MB}" x2="${W - MR}" y2="${H - MB}" class="chart-axis"/>
+    <path d="${areaPath}" class="chart-area"/>
+    <path d="${linePath}" class="chart-line" fill="none"/>
+    ${dots}
+  </svg>`;
+}
+
+// niceCeil rounds up to a "human-friendly" number for axis maxes:
+// next 1/2/5 × 10^n. Avoids labels like "1.234 GiB" on the axis.
+function niceCeil(n) {
+  if (n <= 0) return 1;
+  const exp = Math.floor(Math.log10(n));
+  const base = Math.pow(10, exp);
+  const m = n / base;
+  let nice;
+  if (m <= 1)      nice = 1;
+  else if (m <= 2) nice = 2;
+  else if (m <= 5) nice = 5;
+  else             nice = 10;
+  return nice * base;
+}
+function shortDate(ms) {
+  const d = new Date(ms);
+  return (d.getMonth() + 1) + '/' + d.getDate();
+}
+
+// GitHub-style activity heatmap: one cell per day for the last 91 days
+// (13 full weeks). A day is green when every run on that day succeeded,
+// red when every run failed, amber when at least one of each, and dim
+// when no run was recorded. Out-of-window padding cells (the leading
+// days of the first column needed to align Sunday-first) render empty.
+function renderStatusHeatmap(runs) {
+  const days = 91;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const windowStart = new Date(today);
+  windowStart.setDate(windowStart.getDate() - days + 1);
+
+  const byDate = new Map();
+  (runs || []).forEach(r => {
+    const ts = parseTsCompact(r.timestamp);
+    if (ts === null) return;
+    const d = new Date(ts);
+    d.setHours(0, 0, 0, 0);
+    const key = isoDate(d);
+    let b = byDate.get(key);
+    if (!b) { b = { ok: 0, failed: 0 }; byDate.set(key, b); }
+    if (r.status === 'failed') b.failed++; else b.ok++;
+  });
+
+  // Align grid to Sunday before windowStart so weeks line up cleanly.
+  const gridStart = new Date(windowStart);
+  gridStart.setDate(gridStart.getDate() - gridStart.getDay());
+
+  const cells = [];
+  for (let cur = new Date(gridStart); cur <= today; cur.setDate(cur.getDate() + 1)) {
+    const key = isoDate(cur);
+    const b = byDate.get(key);
+    const inWindow = cur >= windowStart;
+    let cls = 'empty';
+    if (b && inWindow) {
+      if (b.failed === 0) cls = 'ok';
+      else if (b.ok === 0) cls = 'failed';
+      else cls = 'mixed';
+    }
+    cells.push({
+      date: new Date(cur), key, cls,
+      ok: b ? b.ok : 0,
+      failed: b ? b.failed : 0,
+      visible: inWindow,
+    });
+  }
+
+  if (cells.filter(c => c.visible && (c.ok + c.failed) > 0).length === 0) {
+    return '<div class="chart-empty">No runs in the last ' + days + ' days.</div>';
+  }
+
+  const size = 12, gap = 3, step = size + gap;
+  const ML = 28, MT = 18;
+  const cols = Math.ceil(cells.length / 7);
+  const W = ML + cols * step;
+  const H = MT + 7 * step;
+
+  const weekdayLabels = { 1: 'Mon', 3: 'Wed', 5: 'Fri' };
+  const monthLabels = [];
+  let lastMonth = -1;
+  for (let c = 0; c < cols; c++) {
+    const cell = cells[c * 7];
+    if (!cell) continue;
+    const m = cell.date.getMonth();
+    if (m !== lastMonth) {
+      monthLabels.push({
+        x: ML + c * step,
+        text: cell.date.toLocaleString('default', { month: 'short' }),
+      });
+      lastMonth = m;
+    }
+  }
+
+  const cellSvg = cells.map((c, i) => {
+    const col = Math.floor(i / 7), row = i % 7;
+    const x = ML + col * step, y = MT + row * step;
+    const total = c.ok + c.failed;
+    const tip = !c.visible ? '' :
+      total === 0 ? c.key + ' — no runs'
+                  : c.key + ' — ' + c.ok + ' ok, ' + c.failed + ' failed';
+    return `<rect x="${x}" y="${y}" width="${size}" height="${size}" rx="2" class="hm-cell hm-${c.cls}${c.visible ? '' : ' hm-out'}"><title>${escHTML(tip)}</title></rect>`;
+  }).join('');
+
+  const wdaySvg = Object.entries(weekdayLabels).map(([row, label]) =>
+    `<text x="0" y="${MT + (+row) * step + size - 2}" class="chart-axis-text">${label}</text>`
+  ).join('');
+
+  const monthSvg = monthLabels.map(m =>
+    `<text x="${m.x}" y="${MT - 6}" class="chart-axis-text">${escHTML(m.text)}</text>`
+  ).join('');
+
+  const legend = `<div class="hm-legend">
+    <span>Less</span>
+    <span class="hm-dot hm-empty"></span>
+    <span class="hm-dot hm-ok"></span>
+    <span class="hm-dot hm-mixed"></span>
+    <span class="hm-dot hm-failed"></span>
+    <span>More</span>
+  </div>`;
+
+  return `<svg viewBox="0 0 ${W} ${H}" class="chart-svg heatmap-svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Run status heatmap">
+    ${wdaySvg}${monthSvg}${cellSvg}
+  </svg>${legend}`;
+}
+
+function isoDate(d) {
+  // Local-date YYYY-MM-DD; we bucket by local day so the heatmap matches
+  // the user's timezone, not UTC.
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + day;
+}
+
+// Approximation: each destination receives every target's most recent
+// successful dump. The bar shows that single snapshot, not historical
+// retention. Good enough to spot "destination A holds 90% of the bytes".
+function renderStorageByDestination(targets, dests) {
+  if (!targets || targets.length === 0 || !dests || dests.length === 0) return '';
+
+  const byDest = new Map();
+  dests.forEach(d => byDest.set(d.name, []));
+  targets.forEach(t => {
+    if (!t.Latest || t.Latest.status === 'failed') return;
+    const size = t.Latest.encryptedSizeBytes || 0;
+    if (size === 0) return;
+    const targetDests = (t.Destinations && t.Destinations.length > 0)
+      ? t.Destinations
+      : dests.map(d => d.name); // unrestricted source fans out everywhere
+    targetDests.forEach(name => {
+      if (!byDest.has(name)) byDest.set(name, []);
+      byDest.get(name).push({ target: t.Name, size });
+    });
+  });
+
+  const rows = [];
+  for (const [name, items] of byDest) {
+    items.sort((a, b) => b.size - a.size);
+    const total = items.reduce((s, i) => s + i.size, 0);
+    rows.push({ name, items, total });
+  }
+  rows.sort((a, b) => b.total - a.total);
+
+  const maxTotal = rows.reduce((m, r) => Math.max(m, r.total), 0);
+  if (maxTotal === 0) return '';
+
+  return `<div class="chart-card" style="margin-bottom:16px">
+    <h3>Storage by Destination <span class="chart-card-sub">latest successful dump per target</span></h3>
+    <div class="stack-bar-list">
+      ${rows.map(r => `
+        <div class="stack-bar-row">
+          <div class="stack-bar-label" title="${escHTML(r.name)}">${escHTML(r.name)}</div>
+          <div class="stack-bar" style="width:${maxTotal > 0 ? (r.total / maxTotal * 100).toFixed(1) : 0}%">
+            ${r.items.map(it => `<div class="stack-segment" style="width:${(it.size / r.total * 100).toFixed(2)}%;background:${colorForTarget(it.target)}" title="${escHTML(it.target + ' — ' + humanBytes(it.size))}"></div>`).join('')}
+          </div>
+          <div class="stack-bar-total">${humanBytes(r.total)}</div>
+        </div>
+      `).join('')}
+    </div>
+  </div>`;
+}
+
+// Stable colour from target name — same target gets the same colour across
+// all bars and across page reloads. djb2-style hash → HSL hue.
+function colorForTarget(name) {
+  let hash = 5381;
+  for (let i = 0; i < name.length; i++) hash = ((hash << 5) + hash + name.charCodeAt(i)) | 0;
+  const hue = Math.abs(hash) % 360;
+  return 'hsl(' + hue + ', 55%, 55%)';
+}
+
+// Per-table row-count trend on the target detail page. Builds a name→history
+// map across all successful runs, then renders the latest run's tables sorted
+// by current row count, with a tiny sparkline showing direction. Tables that
+// only ever appeared in one run still get a single point.
+function renderTablesCard(runs) {
+  const sorted = (runs || [])
+    .filter(r => r.status !== 'failed' && r.stats && Array.isArray(r.stats.tables))
+    .map(r => ({ ts: parseTsCompact(r.timestamp), tables: r.stats.tables }))
+    .filter(r => r.ts !== null)
+    .sort((a, b) => a.ts - b.ts);
+  if (sorted.length === 0) return '';
+
+  const history = new Map();
+  sorted.forEach(r => {
+    r.tables.forEach(t => {
+      if (!history.has(t.name)) history.set(t.name, []);
+      history.get(t.name).push(t.rowCount);
+    });
+  });
+
+  const latest = sorted[sorted.length - 1].tables.slice()
+    .sort((a, b) => (b.rowCount || 0) - (a.rowCount || 0));
+  if (latest.length === 0) return '';
+
+  return `<div class="chart-card">
+    <h3>Tables — Latest Run <span class="chart-card-sub">${latest.length} table${latest.length === 1 ? '' : 's'} · trend across ${sorted.length} run${sorted.length === 1 ? '' : 's'}</span></h3>
+    <div class="table-scroll">
+    <table class="tbl-compact">
+      <thead><tr><th>Table</th><th class="num">Rows</th><th>Trend</th><th class="num">Size</th></tr></thead>
+      <tbody>${latest.map(t => `<tr>
+        <td class="cell-mono">${escHTML(t.name)}</td>
+        <td class="num">${formatNum(t.rowCount)}</td>
+        <td>${renderSparkline(history.get(t.name) || [])}</td>
+        <td class="num">${humanBytes(t.sizeBytes)}</td>
+      </tr>`).join('')}</tbody>
+    </table>
+    </div>
+  </div>`;
+}
+
+// Tiny inline SVG line — width 80, height 20, no axes. Direction-coloured:
+// last value vs first → green if up >5%, red if down >5%, muted otherwise.
+function renderSparkline(values) {
+  if (!values || values.length === 0) return '';
+  if (values.length === 1) {
+    return '<svg viewBox="0 0 80 20" class="sparkline"><circle cx="40" cy="10" r="2" class="sparkline-point"/></svg>';
+  }
+  const W = 80, H = 20, pad = 2;
+  const min = Math.min(...values), max = Math.max(...values);
+  const range = (max - min) || 1;
+  const xStep = (W - 2 * pad) / (values.length - 1);
+  const path = values.map((v, i) => {
+    const x = pad + i * xStep;
+    const y = pad + (H - 2 * pad) - ((v - min) / range) * (H - 2 * pad);
+    return (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1);
+  }).join(' ');
+  const first = values[0], last = values[values.length - 1];
+  let cls = 'sparkline-flat';
+  if (first > 0) {
+    if (last < first * 0.95) cls = 'sparkline-down';
+    else if (last > first * 1.05) cls = 'sparkline-up';
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" class="sparkline ${cls}"><path d="${path}"/></svg>`;
+}
+
+function formatNum(n) {
+  if (n == null) return '—';
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return String(n);
+}
+
 async function renderTargetDetail(name, loading = true) {
   if (!name) { renderDashboard(); return; }
   if (loading) showLoading();
@@ -928,6 +1255,18 @@ async function renderTargetDetail(name, loading = true) {
       </div>
     </div>
     ${renderVerificationDetail(target.Latest)}
+    ${runs.length > 0 ? `
+    <div class="chart-grid-2">
+      <div class="chart-card">
+        <h3>Dump Size Trend</h3>
+        ${renderSizeChart(runs)}
+      </div>
+      <div class="chart-card">
+        <h3>Run Status — Last 91 Days</h3>
+        ${renderStatusHeatmap(runs)}
+      </div>
+    </div>
+    ${renderTablesCard(runs)}` : ''}
     <div class="table-card">
       <div class="table-card-header"><h2>Run History</h2></div>
       ${runs.length === 0 ? '<div class="empty-state"><p>No runs recorded for this target.</p></div>' : `

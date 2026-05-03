@@ -3,6 +3,7 @@ package meta
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"backup-operator/dumper"
 )
@@ -24,14 +25,19 @@ func BuildVerification(
 		}
 	}
 
+	// Normalize dump counts: mysqldump produces unqualified names (e.g.
+	// "users") while CollectStats uses schema-qualified names ("mydb.users").
+	// Map unqualified dump names to their schema-qualified equivalents.
+	normalizedDumpCounts := normalizeDumpCounts(dumpCounts, preStats, postStats)
+
 	v := &DumpVerification{
 		PreStats:      preStats,
 		PostStats:     postStats,
-		DumpRowCounts: dumpCounts,
+		DumpRowCounts: normalizedDumpCounts,
 	}
 
 	// Build per-table verification
-	allTables := collectTableNames(preStats, postStats, dumpCounts)
+	allTables := collectTableNames(preStats, postStats, normalizedDumpCounts)
 	preIndex := indexByName(preStats.Tables)
 	postIndex := make(map[string]int64)
 	if postStats != nil {
@@ -41,7 +47,7 @@ func BuildVerification(
 	}
 
 	var matchCount, mismatchCount, warnCount int
-	hasDumpCounts := len(dumpCounts) > 0
+	hasDumpCounts := len(normalizedDumpCounts) > 0
 
 	for _, name := range allTables {
 		tv := TableVerification{Name: name}
@@ -56,7 +62,7 @@ func BuildVerification(
 			tv.PostDumpRows = post
 		}
 
-		dumpRows, hasDump := dumpCounts[name]
+		dumpRows, hasDump := normalizedDumpCounts[name]
 		if hasDump {
 			tv.DumpRows = dumpRows
 		}
@@ -171,4 +177,52 @@ func indexByName(tables []dumper.TableStats) map[string]int64 {
 		m[t.Name] = t.RowCount
 	}
 	return m
+}
+
+// normalizeDumpCounts resolves name mismatches between dump-parsed table
+// names and stats-collected table names. mysqldump emits unqualified names
+// ("users") while CollectStats uses "schema.table" ("mydb.users"). For
+// each unqualified dump name, if a stats table ends with "."+name, the
+// count is remapped to the qualified name.
+func normalizeDumpCounts(dumpCounts map[string]int64, preStats, postStats *dumper.Stats) map[string]int64 {
+	if len(dumpCounts) == 0 {
+		return dumpCounts
+	}
+
+	// Build a lookup of all known qualified names from stats.
+	qualified := make(map[string]string) // unqualified → qualified
+	addQualified := func(tables []dumper.TableStats) {
+		for _, t := range tables {
+			idx := strings.LastIndexByte(t.Name, '.')
+			if idx > 0 {
+				short := t.Name[idx+1:]
+				qualified[short] = t.Name
+			}
+		}
+	}
+	if preStats != nil {
+		addQualified(preStats.Tables)
+	}
+	if postStats != nil {
+		addQualified(postStats.Tables)
+	}
+
+	if len(qualified) == 0 {
+		return dumpCounts
+	}
+
+	out := make(map[string]int64, len(dumpCounts))
+	for name, count := range dumpCounts {
+		if strings.ContainsRune(name, '.') {
+			// Already qualified
+			out[name] = count
+			continue
+		}
+		if q, ok := qualified[name]; ok {
+			out[q] += count
+		} else {
+			out[name] = count
+		}
+	}
+	return out
 }

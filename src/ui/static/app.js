@@ -764,6 +764,7 @@ function sortRuns(runs) {
     schema:    r => r.report ? (r.report.schemaChanged ? 1 : 0) : null,
     tables:    r => (r.stats && r.stats.tables) ? r.stats.tables.length : null,
     anomalies: r => (r.report && r.report.anomalies) ? r.report.anomalies.length : 0,
+    verification: r => r.verification ? r.verification.verdict : '',
   };
   const s = sortState.runs;
   return sortBy(runs, g[s.col] || g.timestamp, s.dir);

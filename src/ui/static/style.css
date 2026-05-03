@@ -118,6 +118,30 @@ tbody td {
 tbody tr:hover td { background: var(--bg-card-hover); }
 tbody tr:last-child td { border-bottom: none; }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
+/* Row-number column — narrow, dimmed, monospace digits. */
+th.row-num, td.row-num {
+  width: 1%; padding-left: 12px; padding-right: 12px;
+  color: var(--text-muted); font-size: 12px;
+  font-variant-numeric: tabular-nums; text-align: right;
+}
+/* JSON viewer (modal). Monospace, scrollable, dimmed background.
+   Keys/strings/numbers/bools get colour to make scanning easier. */
+.json-viewer {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  font-family: ui-monospace, SFMono-Regular, "Menlo", "Consolas", monospace;
+  font-size: 12px; line-height: 1.55;
+  max-height: 65vh; overflow: auto;
+  white-space: pre; tab-size: 2;
+  color: var(--text);
+}
+.json-viewer .json-key  { color: var(--accent); }
+.json-viewer .json-str  { color: #7ec699; }
+.json-viewer .json-num  { color: #f08d49; }
+.json-viewer .json-bool { color: #cc99cd; }
+.json-viewer .json-null { color: var(--text-muted); font-style: italic; }
 thead th.sortable {
   cursor: pointer; user-select: none; transition: color 0.1s;
   position: relative; padding-right: 28px;

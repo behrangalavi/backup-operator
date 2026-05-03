@@ -252,11 +252,12 @@ async function renderDashboard(loading = true) {
     <div class="table-card">
       <div class="table-card-header">
         <h2>Backup Targets</h2>
-        <button class="btn btn-primary btn-sm" onclick="location.hash='#/sources';openSourceForm()">+ Add Source</button>
+        <button class="btn btn-primary btn-sm" onclick="location.hash='#/sources';openSourceForm()" title="Create a new backup source — opens a form that generates a labelled Kubernetes Secret">+ Add Source</button>
       </div>
       ${targets.length === 0 ? '<div class="empty-state"><h3>No backup sources</h3><p>Create a source to start backing up your databases.</p></div>' : `
       <table>
         <thead><tr>
+          <th class="num row-num">#</th>
           <th class="sortable" onclick="toggleSort('dashboard','name')">Target${sortIndicator('dashboard','name')}</th>
           <th class="sortable" onclick="toggleSort('dashboard','dbType')">Type${sortIndicator('dashboard','dbType')}</th>
           <th class="sortable" onclick="toggleSort('dashboard','schedule')">Schedule${sortIndicator('dashboard','schedule')}</th>
@@ -266,7 +267,8 @@ async function renderDashboard(loading = true) {
           <th class="sortable" onclick="toggleSort('dashboard','createdAt')">Created${sortIndicator('dashboard','createdAt')}</th>
           <th>Destinations</th><th></th>
         </tr></thead>
-        <tbody>${sortedTargets.map(t => `<tr>
+        <tbody>${sortedTargets.map((t, i) => `<tr>
+          <td class="num row-num">${i + 1}</td>
           <td><a href="#/target/${escHTML(t.Name)}" style="color:var(--accent);font-weight:600">${escHTML(t.Name)}</a></td>
           <td><span class="badge badge-${t.DBType}">${t.DBType}</span></td>
           <td><code style="font-size:12px;background:var(--bg-input);padding:2px 6px;border-radius:4px">${escHTML(t.Schedule)}</code></td>
@@ -279,9 +281,9 @@ async function renderDashboard(loading = true) {
           <td style="color:var(--text-muted);font-size:12px">${t.CreatedAt ? timeAgo(t.CreatedAt) : '—'}</td>
           <td>${(t.Destinations || []).map(d => `<span class="badge badge-sftp" style="margin:1px">${escHTML(d)}</span>`).join('')}</td>
           <td style="white-space:nowrap">
-            <button class="btn btn-ghost btn-sm" onclick="triggerBackup('${escHTML(t.Name)}')" title="Run now">&#9654;</button>
-            <button class="btn btn-ghost btn-sm" onclick="openSourceForm('${escHTML(t.SecretName)}')" title="Edit">&#9998;</button>
-            <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteSource('${escHTML(t.SecretName)}','${escHTML(t.Name)}')" title="Delete">&#10005;</button>
+            <button class="btn btn-ghost btn-sm" onclick="triggerBackup('${escHTML(t.Name)}')" title="Trigger a manual backup run now (creates a one-off Job from the CronJob template)">&#9654;</button>
+            <button class="btn btn-ghost btn-sm" onclick="openSourceForm('${escHTML(t.SecretName)}')" title="Edit this source's connection details and schedule">&#9998;</button>
+            <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteSource('${escHTML(t.SecretName)}','${escHTML(t.Name)}')" title="Delete this source — the CronJob is cascaded; existing dumps in storage are kept">&#10005;</button>
           </td>
         </tr>`).join('')}</tbody>
       </table>`}
@@ -291,8 +293,9 @@ async function renderDashboard(loading = true) {
       <div class="table-card-header"><h2 style="color:var(--danger)">Consistency Warnings</h2></div>
       <p style="padding:0 16px;color:var(--text-muted);font-size:13px;margin:0 0 8px">Backups found in some destinations but missing from others.</p>
       <table>
-        <thead><tr><th>Target</th><th>Timestamp</th><th>Present In</th><th>Missing From</th></tr></thead>
-        <tbody>${consistencyIssues.slice(0, 20).map(ci => `<tr>
+        <thead><tr><th class="num row-num">#</th><th>Target</th><th>Timestamp</th><th>Present In</th><th>Missing From</th></tr></thead>
+        <tbody>${consistencyIssues.slice(0, 20).map((ci, i) => `<tr>
+          <td class="num row-num">${i + 1}</td>
           <td><strong>${escHTML(ci.target)}</strong></td>
           <td style="font-size:12px">${escHTML(ci.timestamp)}</td>
           <td>${(ci.presentIn||[]).map(d => `<span class="badge badge-ok" style="margin:1px">${escHTML(d)}</span>`).join('')}</td>
@@ -306,6 +309,7 @@ async function renderDashboard(loading = true) {
       <div class="table-card-header"><h2>Destination Health Matrix</h2></div>
       <table>
         <thead><tr>
+          <th class="num row-num">#</th>
           <th>Target</th>
           ${[...new Set(healthEntries.map(h => h.destination))].map(d => `<th style="text-align:center">${escHTML(d)}</th>`).join('')}
         </tr></thead>
@@ -314,7 +318,8 @@ async function renderDashboard(loading = true) {
           const targetNames = [...new Set(healthEntries.map(h => h.target))];
           const lookup = {};
           healthEntries.forEach(h => { lookup[h.target + '@' + h.destination] = h; });
-          return targetNames.map(t => `<tr>
+          return targetNames.map((t, i) => `<tr>
+            <td class="num row-num">${i + 1}</td>
             <td><a href="#/target/${escHTML(t)}" style="color:var(--accent);font-weight:600">${escHTML(t)}</a></td>
             ${destNames.map(d => {
               const h = lookup[t + '@' + d];
@@ -353,7 +358,7 @@ async function renderSources(loading = true) {
         ${targets.length > 0 ? renderSortControl('sources', [
           ['createdAt','Created'],['name','Name'],['lastRun','Last Run'],['dbType','Type'],
         ]) : ''}
-        <button class="btn btn-primary" onclick="openSourceForm()">+ Add Source</button>
+        <button class="btn btn-primary" onclick="openSourceForm()" title="Create a new backup source — opens a form that generates a labelled Kubernetes Secret">+ Add Source</button>
       </div>
     </div>
     ${targets.length === 0 ? `
@@ -361,7 +366,7 @@ async function renderSources(loading = true) {
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
       <h3>No sources configured</h3>
       <p>Add a database source to start backing up. Sources are Kubernetes Secrets with backup labels.</p>
-      <button class="btn btn-primary" onclick="openSourceForm()">+ Add Source</button>
+      <button class="btn btn-primary" onclick="openSourceForm()" title="Create your first backup source">+ Add Source</button>
     </div>` : `
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px">
       ${sortedTargets.map(t => `
@@ -383,9 +388,9 @@ async function renderSources(loading = true) {
         <div class="detail-row"><span class="key">Created</span><span class="val">${t.CreatedAt ? timeAgo(t.CreatedAt) : '—'}</span></div>
         <div class="detail-row"><span class="key">Destinations</span><span class="val">${(t.Destinations||[]).join(', ') || 'all'}</span></div>
         <div style="display:flex;gap:6px;margin-top:12px;justify-content:flex-end">
-          <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();triggerBackup('${escHTML(t.Name)}')" title="Run now">&#9654; Run</button>
-          <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openSourceForm('${escHTML(t.SecretName)}')">Edit</button>
-          <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="event.stopPropagation();deleteSource('${escHTML(t.SecretName)}','${escHTML(t.Name)}')">Delete</button>
+          <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();triggerBackup('${escHTML(t.Name)}')" title="Trigger a manual backup run now (creates a one-off Job from the CronJob template)">&#9654; Run</button>
+          <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openSourceForm('${escHTML(t.SecretName)}')" title="Edit this source's connection details and schedule">Edit</button>
+          <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="event.stopPropagation();deleteSource('${escHTML(t.SecretName)}','${escHTML(t.Name)}')" title="Delete this source — the managed CronJob is removed via OwnerReference; existing dumps in storage are kept">Delete</button>
         </div>
       </div>`).join('')}
     </div>`}`;
@@ -436,8 +441,8 @@ window.openSourceForm = function(secretName) {
       </div>
     </div>
     <div class="form-actions">
-      <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button type="submit" class="btn btn-primary">${isEdit ? 'Update' : 'Create'} Source</button>
+      <button type="button" class="btn btn-secondary" onclick="closeModal()" title="Discard changes and close this dialog">Cancel</button>
+      <button type="submit" class="btn btn-primary" title="${isEdit ? 'Save the modified source Secret — the operator reconciles changes within seconds' : 'Create the source Secret — the operator generates a CronJob within seconds'}">${isEdit ? 'Update' : 'Create'} Source</button>
     </div>
   </form>`;
 
@@ -498,8 +503,8 @@ window.deleteSource = function(secretName, displayName) {
     <div class="confirm-text">Are you sure you want to delete <span class="confirm-name">${escHTML(displayName)}</span>?
     This will remove the source Secret and its managed CronJob. Existing backups in storage will not be deleted.</div>
     <div class="form-actions">
-      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-danger" onclick="confirmDeleteSource('${secretName}')">Delete Source</button>
+      <button class="btn btn-secondary" onclick="closeModal()" title="Keep this source — close without deleting">Cancel</button>
+      <button class="btn btn-danger" onclick="confirmDeleteSource('${secretName}')" title="Permanently delete the source Secret. The CronJob is cascaded via OwnerReference; existing dumps in storage remain.">Delete Source</button>
     </div>`);
 };
 
@@ -540,7 +545,7 @@ async function renderDestinations(loading = true) {
         ${dests.length > 0 ? renderSortControl('destinations', [
           ['createdAt','Created'],['name','Name'],['storageType','Type'],
         ]) : ''}
-        <button class="btn btn-primary" onclick="openDestForm()">+ Add Destination</button>
+        <button class="btn btn-primary" onclick="openDestForm()" title="Create a new storage destination (SFTP or S3-compatible) for backup uploads">+ Add Destination</button>
       </div>
     </div>
     ${dests.length === 0 ? `
@@ -548,7 +553,7 @@ async function renderDestinations(loading = true) {
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
       <h3>No destinations configured</h3>
       <p>Add a destination to define where backups are stored. Destinations are Kubernetes Secrets with storage labels.</p>
-      <button class="btn btn-primary" onclick="openDestForm()">+ Add Destination</button>
+      <button class="btn btn-primary" onclick="openDestForm()" title="Create your first storage destination">+ Add Destination</button>
     </div>` : `
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px">
       ${sortedDests.map(d => {
@@ -577,9 +582,9 @@ async function renderDestinations(loading = true) {
           Storage unreachable: ${escHTML(st.error)}
         </div>` : ''}
         <div style="display:flex;gap:6px;margin-top:12px;justify-content:flex-end">
-          <button class="btn btn-ghost btn-sm" onclick="testDestConnection('${escHTML(d.secretName)}','${escHTML(d.name)}')" title="Test connectivity">&#128268; Test</button>
-          <button class="btn btn-ghost btn-sm" onclick="openDestForm('${escHTML(d.secretName)}')">Edit</button>
-          <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteDest('${escHTML(d.secretName)}','${escHTML(d.name)}')">Delete</button>
+          <button class="btn btn-ghost btn-sm" onclick="testDestConnection('${escHTML(d.secretName)}','${escHTML(d.name)}')" title="Probe this destination — verifies SSH/SFTP login or S3 bucket access without uploading anything">&#128268; Test</button>
+          <button class="btn btn-ghost btn-sm" onclick="openDestForm('${escHTML(d.secretName)}')" title="Edit this destination's credentials and connection details">Edit</button>
+          <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteDest('${escHTML(d.secretName)}','${escHTML(d.name)}')" title="Delete this destination Secret. Existing dumps stored at this destination remain intact.">Delete</button>
         </div>
       </div>`;
       }).join('')}
@@ -621,8 +626,8 @@ window.openDestForm = function(secretName) {
     <div id="destSFTPTemplate" style="display:none">${sftpFields}</div>
     <div id="destS3Template" style="display:none">${s3Fields}</div>
     <div class="form-actions">
-      <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button type="submit" class="btn btn-primary">${isEdit ? 'Update' : 'Create'} Destination</button>
+      <button type="button" class="btn btn-secondary" onclick="closeModal()" title="Discard changes and close this dialog">Cancel</button>
+      <button type="submit" class="btn btn-primary" title="${isEdit ? 'Save the modified destination Secret — the operator picks up changes on the next run' : 'Create the destination Secret — sources can target it via the destinations annotation or pick it up on next run if the source has no allow-list'}">${isEdit ? 'Update' : 'Create'} Destination</button>
     </div>
   </form>`);
 
@@ -704,8 +709,8 @@ window.deleteDest = function(secretName, displayName) {
     <div class="confirm-text">Are you sure you want to delete destination <span class="confirm-name">${escHTML(displayName)}</span>?
     Existing backups in this storage will not be affected.</div>
     <div class="form-actions">
-      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-danger" onclick="confirmDeleteDest('${secretName}')">Delete Destination</button>
+      <button class="btn btn-secondary" onclick="closeModal()" title="Keep this destination — close without deleting">Cancel</button>
+      <button class="btn btn-danger" onclick="confirmDeleteDest('${secretName}')" title="Permanently delete the destination Secret. Sources will skip it on next run; existing dumps in storage remain.">Delete Destination</button>
     </div>`);
 };
 
@@ -742,13 +747,15 @@ async function renderJobs(loading = true) {
       ${jobs.length === 0 ? '<div class="empty-state"><h3>No jobs yet</h3><p>Jobs appear when backups run — either on schedule or triggered manually.</p></div>' : `
       <table>
         <thead><tr>
+          <th class="num row-num">#</th>
           <th class="sortable" onclick="toggleSort('jobs','name')">Job${sortIndicator('jobs','name')}</th>
           <th class="sortable" onclick="toggleSort('jobs','target')">Target${sortIndicator('jobs','target')}</th>
           <th class="sortable" onclick="toggleSort('jobs','status')">Status${sortIndicator('jobs','status')}</th>
           <th class="sortable" onclick="toggleSort('jobs','startTime')">Started${sortIndicator('jobs','startTime')}</th>
           <th class="sortable" onclick="toggleSort('jobs','duration')">Duration${sortIndicator('jobs','duration')}</th>
         </tr></thead>
-        <tbody>${sortedJobs.map(j => `<tr>
+        <tbody>${sortedJobs.map((j, i) => `<tr>
+          <td class="num row-num">${i + 1}</td>
           <td style="font-family:ui-monospace,monospace;font-size:12px">${escHTML(j.name)}</td>
           <td><strong>${escHTML(j.target || '—')}</strong></td>
           <td><span class="badge badge-${j.status}">${j.status}</span></td>
@@ -799,7 +806,7 @@ async function renderTargetDetail(name, loading = true) {
   const target = targets.find(t => t.Name === name);
   if (!target) {
     content.innerHTML = `<div class="empty-state"><h3>Target not found</h3><p>"${escHTML(name)}" does not exist.</p>
-      <a href="#/" class="btn btn-secondary">Back to Dashboard</a></div>`;
+      <a href="#/" class="btn btn-secondary" title="Return to the Dashboard">Back to Dashboard</a></div>`;
     return;
   }
 
@@ -812,9 +819,9 @@ async function renderTargetDetail(name, loading = true) {
         <h1>${escHTML(name)} <span class="badge badge-${target.DBType}">${target.DBType}</span></h1>
       </div>
       <div style="display:flex;gap:8px">
-        <button class="btn btn-secondary btn-sm" onclick="triggerBackup('${escHTML(name)}')">&#9654; Run Now</button>
-        <button class="btn btn-secondary btn-sm" onclick="openSourceForm('${escHTML(target.SecretName)}')">Edit</button>
-        <button class="btn btn-danger btn-sm" onclick="deleteSource('${escHTML(target.SecretName)}','${escHTML(name)}')">Delete</button>
+        <button class="btn btn-secondary btn-sm" onclick="triggerBackup('${escHTML(name)}')" title="Trigger a manual backup run for this target now — creates a one-off Job from the CronJob template">&#9654; Run Now</button>
+        <button class="btn btn-secondary btn-sm" onclick="openSourceForm('${escHTML(target.SecretName)}')" title="Edit this source's connection details and schedule">Edit</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteSource('${escHTML(target.SecretName)}','${escHTML(name)}')" title="Permanently delete this source. The CronJob is cascaded; existing dumps remain in storage.">Delete</button>
       </div>
     </div>
     <div class="detail-grid">
@@ -848,6 +855,7 @@ async function renderTargetDetail(name, loading = true) {
       ${runs.length === 0 ? '<div class="empty-state"><p>No runs recorded for this target.</p></div>' : `
       <table>
         <thead><tr>
+          <th class="num row-num">#</th>
           <th class="sortable" onclick="toggleSort('runs','timestamp')">Timestamp${sortIndicator('runs','timestamp')}</th>
           <th class="sortable" onclick="toggleSort('runs','status')">Status${sortIndicator('runs','status')}</th>
           <th class="num sortable" onclick="toggleSort('runs','size')">Size${sortIndicator('runs','size')}</th>
@@ -858,7 +866,8 @@ async function renderTargetDetail(name, loading = true) {
           <th class="sortable" onclick="toggleSort('runs','anomalies')">Anomalies / Error${sortIndicator('runs','anomalies')}</th>
           <th>Download</th>
         </tr></thead>
-        <tbody>${sortRuns(runs).map(r => `<tr>
+        <tbody>${sortRuns(runs).map((r, i) => `<tr>
+          <td class="num row-num">${i + 1}</td>
           <td style="font-size:12px">${r.timestamp ? new Date(r.timestamp.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/,'$1-$2-$3T$4:$5:$6Z')).toLocaleString() : '—'}</td>
           <td>${r.status === 'failed' ? failedBadge(r) : '<span class="badge badge-ok">OK</span>'}</td>
           <td class="num" style="font-size:12px">${r.status !== 'failed' ? humanBytes(r.encryptedSizeBytes) : '—'}</td>
@@ -885,26 +894,83 @@ function renderDownloadLinks(targetName, run, destNames) {
   const ts = escHTML(run.timestamp);
   const successDests = run.destinations ? run.destinations.filter(d => d.status === 'success') : [];
   if (successDests.length <= 1) {
-    const destParam = successDests.length === 1 ? '?destination=' + encodeURIComponent(successDests[0].name) : '';
-    return `<a href="/download/${escHTML(targetName)}/${ts}/meta${destParam}" class="btn btn-ghost btn-sm" style="font-size:11px">.json</a>
-      <a href="/download/${escHTML(targetName)}/${ts}/dump${destParam}" class="btn btn-ghost btn-sm" style="font-size:11px">.age</a>`;
+    const destName = successDests.length === 1 ? successDests[0].name : '';
+    const destParam = destName ? '?destination=' + encodeURIComponent(destName) : '';
+    const destArg  = destName ? `'${escHTML(destName)}'` : 'null';
+    return `<button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="viewMeta('${escHTML(targetName)}','${ts}',${destArg})" title="View the unencrypted meta.json sidecar (table stats, schema fingerprint, SHA256) in the browser">&#128065;</button>
+      <a href="/download/${escHTML(targetName)}/${ts}/meta${destParam}" download="${escHTML(targetName)}-${ts}.meta.json" class="btn btn-ghost btn-sm" style="font-size:11px" title="Download the unencrypted meta.json sidecar">.json</a>
+      <a href="/download/${escHTML(targetName)}/${ts}/dump${destParam}" class="btn btn-ghost btn-sm" style="font-size:11px" title="Download the age-encrypted dump (.sql.gz.age). Decrypt locally with backup-restore + your offline private key.">.age</a>`;
   }
   return `<div class="dropdown" style="display:inline-block">
-    <button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="this.nextElementSibling.classList.toggle('open')">Download &#9662;</button>
+    <button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="this.nextElementSibling.classList.toggle('open')" title="This run was uploaded to multiple destinations — pick one to download or view from">Download &#9662;</button>
     <div class="dropdown-menu">${successDests.map(d =>
-      `<a href="/download/${escHTML(targetName)}/${ts}/dump?destination=${encodeURIComponent(d.name)}" class="dropdown-item" style="font-size:12px">
+      `<a href="/download/${escHTML(targetName)}/${ts}/dump?destination=${encodeURIComponent(d.name)}" class="dropdown-item" style="font-size:12px" title="Download the age-encrypted dump from ${escHTML(d.name)}">
         ${escHTML(d.name)} <span style="opacity:0.6;font-size:10px">(${d.storageType})</span>
       </a>`
     ).join('')}
     <hr style="margin:4px 0;border:none;border-top:1px solid var(--border)">
     ${successDests.map(d =>
-      `<a href="/download/${escHTML(targetName)}/${ts}/meta?destination=${encodeURIComponent(d.name)}" class="dropdown-item" style="font-size:11px;opacity:0.7">
+      `<button class="dropdown-item" style="font-size:11px;text-align:left;background:none;border:none;width:100%;cursor:pointer" onclick="viewMeta('${escHTML(targetName)}','${ts}','${escHTML(d.name)}')" title="View the meta.json sidecar from ${escHTML(d.name)} in the browser">
+        &#128065; view: ${escHTML(d.name)}
+      </button>`
+    ).join('')}
+    ${successDests.map(d =>
+      `<a href="/download/${escHTML(targetName)}/${ts}/meta?destination=${encodeURIComponent(d.name)}" download="${escHTML(targetName)}-${ts}.meta.json" class="dropdown-item" style="font-size:11px;opacity:0.7" title="Download the meta.json sidecar from ${escHTML(d.name)}">
         meta: ${escHTML(d.name)}
       </a>`
     ).join('')}
     </div>
   </div>`;
 }
+
+// --- JSON viewer ---
+window.viewMeta = async function(targetName, timestamp, destination) {
+  const url = '/download/' + encodeURIComponent(targetName) + '/' + encodeURIComponent(timestamp) + '/meta' +
+    (destination ? '?destination=' + encodeURIComponent(destination) : '');
+  openModal(targetName + ' — ' + timestamp, '<div class="empty-state"><div class="spinner"></div></div>');
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    const pretty = JSON.stringify(data, null, 2);
+    const fname = `${targetName}-${timestamp}.meta.json`;
+    $('#modal-body').innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:12px;flex-wrap:wrap">
+        <span style="color:var(--text-muted);font-size:12px">${destination ? 'destination: <code>' + escHTML(destination) + '</code>' : ''}</span>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-ghost btn-sm" onclick="copyToClipboard(this, ${JSON.stringify(JSON.stringify(data, null, 2))})" title="Copy the full pretty-printed JSON to clipboard">Copy</button>
+          <a href="${url}" download="${escHTML(fname)}" class="btn btn-secondary btn-sm" title="Save this meta.json as a file">↓ Download</a>
+        </div>
+      </div>
+      <pre class="json-viewer">${jsonHighlight(pretty)}</pre>`;
+  } catch(e) {
+    $('#modal-body').innerHTML = `<div class="empty-state"><h3>Failed to load</h3><p style="color:var(--danger)">${escHTML(e.message)}</p></div>`;
+  }
+};
+
+function jsonHighlight(json) {
+  const escaped = escHTML(json);
+  return escaped.replace(
+    /("(?:\\.|[^"\\])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?)/g,
+    function(match, _g1, colon) {
+      if (match[0] === '"') return colon ? '<span class="json-key">' + match + '</span>' : '<span class="json-str">' + match + '</span>';
+      if (match === 'true' || match === 'false') return '<span class="json-bool">' + match + '</span>';
+      if (match === 'null') return '<span class="json-null">' + match + '</span>';
+      return '<span class="json-num">' + match + '</span>';
+    }
+  );
+}
+
+window.copyToClipboard = async function(btn, text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  } catch(e) {
+    toast('Copy failed: ' + e.message, 'error');
+  }
+};
 
 // --- Verification ---
 function renderVerificationBadge(v) {
@@ -938,6 +1004,7 @@ function renderVerificationDetail(run) {
       <div class="verification-summary">${escHTML(v.summary || '')}</div>
       <table>
         <thead><tr>
+          <th class="num row-num">#</th>
           <th>Table</th>
           <th class="num">Pre-Dump Rows</th>
           <th class="num">Post-Dump Rows</th>
@@ -945,7 +1012,8 @@ function renderVerificationDetail(run) {
           <th>Verdict</th>
           <th>Detail</th>
         </tr></thead>
-        <tbody>${v.tables.map(t => `<tr>
+        <tbody>${v.tables.map((t, i) => `<tr>
+          <td class="num row-num">${i + 1}</td>
           <td style="font-size:12px;font-family:var(--font-mono,monospace)">${escHTML(t.name)}</td>
           <td class="num" style="font-size:12px">${fmtCount(t.preDumpRows)}</td>
           <td class="num" style="font-size:12px">${fmtCount(t.postDumpRows)}</td>
@@ -998,7 +1066,7 @@ async function renderSettings(loading = true) {
         <h3>Settings not available</h3>
         <p>Could not load operator settings.${errorMsg ? ' <strong>Error:</strong> ' + escHTML(errorMsg) : ''}</p>
         <p style="margin-top:8px;font-size:0.9em;opacity:0.7">Ensure the operator is deployed with <code>ui.enabled=true</code> and the Docker image is rebuilt after code changes.</p>
-        <button class="btn btn-primary" onclick="renderSettings(true)" style="margin-top:12px">Retry</button>
+        <button class="btn btn-primary" onclick="renderSettings(true)" style="margin-top:12px" title="Reload the settings ConfigMap from Kubernetes">Retry</button>
       </div>`;
     return;
   }
@@ -1013,7 +1081,7 @@ function renderSettingsPage(settings) {
     <div class="page-header">
       <div><h1>Settings</h1><div class="subtitle">Operator configuration wizard</div></div>
       <div style="display:flex;gap:8px">
-        <button class="btn btn-secondary" onclick="exportSettings()">&#8681; Export values.yaml</button>
+        <button class="btn btn-secondary" onclick="exportSettings()" title="Download a values.yaml snippet matching the current settings — drop into your Helm chart for GitOps-style management">&#8681; Export values.yaml</button>
       </div>
     </div>
     <div class="wizard">
@@ -1032,12 +1100,12 @@ function renderSettingsPage(settings) {
         </div>
         <div class="wizard-footer">
           <div>
-            ${settingsStep > 0 ? '<button type="button" class="btn btn-secondary" onclick="goToStep(' + (settingsStep - 1) + ')">&#8592; Back</button>' : ''}
+            ${settingsStep > 0 ? '<button type="button" class="btn btn-secondary" onclick="goToStep(' + (settingsStep - 1) + ')" title="Return to the previous wizard step (your changes are preserved)">&#8592; Back</button>' : ''}
           </div>
           <div style="display:flex;gap:8px">
             ${settingsStep < settingsSteps.length - 1
-              ? '<button type="button" class="btn btn-primary" onclick="goToStep(' + (settingsStep + 1) + ')">Next &#8594;</button>'
-              : '<button type="submit" class="btn btn-primary">Save Settings</button>'}
+              ? '<button type="button" class="btn btn-primary" onclick="goToStep(' + (settingsStep + 1) + ')" title="Continue to the next wizard step">Next &#8594;</button>'
+              : '<button type="submit" class="btn btn-primary" title="Persist all settings to the operator\'s ConfigMap. Takes effect immediately for new runs.">Save Settings</button>'}
           </div>
         </div>
       </form>

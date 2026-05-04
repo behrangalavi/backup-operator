@@ -106,11 +106,11 @@ spec:
                    from a pre-alerts release). */}}
             {{- with (.Values.alerts).prometheusURL }}
             - name: PROMETHEUS_URL
-              value: {{ . | quote }}
+              value: {{ . | trim | quote }}
             {{- end }}
             {{- with (.Values.alerts).alertmanagerURL }}
             - name: ALERTMANAGER_URL
-              value: {{ . | quote }}
+              value: {{ . | trim | quote }}
             {{- end }}
           ports:
             - name: metrics

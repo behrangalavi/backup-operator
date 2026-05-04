@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -182,8 +183,15 @@ func main() {
 		// fallback over our own metric registry. The chained provider
 		// degrades gracefully when Prometheus is reachable at boot but
 		// briefly unavailable later.
+		//
+		// Trim whitespace defensively — a trailing space in Helm values
+		// (easy to introduce via --set or YAML quoting) would otherwise
+		// land in the URL, fail url.Parse, and surface as a confusing
+		// "unreachable" status with no obvious cause in the logs.
+		promURL := strings.TrimSpace(config.GetValue("PROMETHEUS_URL"))
+		alertmanagerURL := strings.TrimSpace(config.GetValue("ALERTMANAGER_URL"))
 		var alertsProvider alerts.Provider = alerts.NewLocalProvider(metrics.Gatherer())
-		if promURL := config.GetValue("PROMETHEUS_URL"); promURL != "" {
+		if promURL != "" {
 			alertsProvider = chainedProvider{
 				primary:  alerts.NewPrometheusProvider(promURL),
 				fallback: alertsProvider,
@@ -204,8 +212,8 @@ func main() {
 			MaxBodyBytes:      maxBody,
 			MaxSSEClients:     maxSSE,
 			AlertsProvider:    alertsProvider,
-			PrometheusURL:     config.GetValue("PROMETHEUS_URL"),
-			AlertmanagerURL:   config.GetValue("ALERTMANAGER_URL"),
+			PrometheusURL:     promURL,
+			AlertmanagerURL:   alertmanagerURL,
 		})
 		assert.NoError(err, "failed to construct UI server")
 		// Register before manager start so the cache and HTTP listener share

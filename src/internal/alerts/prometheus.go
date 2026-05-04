@@ -23,9 +23,14 @@ type PrometheusProvider struct {
 // NewPrometheusProvider returns a provider with sane defaults; HTTP timeout
 // is short because the UI calls this on every page load and we'd rather show
 // a friendly degraded state than hang the page.
+//
+// We trim whitespace AND trailing slashes from the input. A space in the URL
+// (easy to introduce via Helm --set or copy-paste) would otherwise be
+// preserved by net/url and fail the request with a confusing "invalid
+// character" error far from the misconfiguration source.
 func NewPrometheusProvider(promURL string) *PrometheusProvider {
 	return &PrometheusProvider{
-		URL:    strings.TrimRight(promURL, "/"),
+		URL:    strings.TrimRight(strings.TrimSpace(promURL), "/"),
 		HTTP:   &http.Client{Timeout: 5 * time.Second},
 		Prefix: "Backup",
 	}

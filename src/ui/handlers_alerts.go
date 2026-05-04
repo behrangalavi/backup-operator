@@ -92,11 +92,15 @@ func (s *Server) handleAlertsStatus(w http.ResponseWriter, r *http.Request) {
 
 	client := &http.Client{Timeout: 5 * time.Second}
 
-	// Check Prometheus
-	if s.cfg.PrometheusURL != "" {
+	// Check Prometheus. TrimSpace defends against accidental Helm-values
+	// whitespace (a single trailing space in PROMETHEUS_URL otherwise
+	// turns into a 1-char URL parse error and reports as "unreachable"
+	// even though the cluster path is fine).
+	promURL := strings.TrimSpace(s.cfg.PrometheusURL)
+	if promURL != "" {
 		resp.Prometheus.Configured = true
-		resp.Prometheus.URL = s.cfg.PrometheusURL
-		endpoint := strings.TrimRight(s.cfg.PrometheusURL, "/") + "/api/v1/status/buildinfo"
+		resp.Prometheus.URL = promURL
+		endpoint := strings.TrimRight(promURL, "/") + "/api/v1/status/buildinfo"
 		req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, endpoint, nil)
 		if req != nil {
 			if httpResp, err := client.Do(req); err != nil {
@@ -126,11 +130,12 @@ func (s *Server) handleAlertsStatus(w http.ResponseWriter, r *http.Request) {
 		resp.Mode = "local"
 	}
 
-	// Check Alertmanager
-	if s.cfg.AlertmanagerURL != "" {
+	// Check Alertmanager (same trim discipline as Prometheus above).
+	amURL := strings.TrimSpace(s.cfg.AlertmanagerURL)
+	if amURL != "" {
 		resp.Alertmanager.Configured = true
-		resp.Alertmanager.URL = s.cfg.AlertmanagerURL
-		endpoint := strings.TrimRight(s.cfg.AlertmanagerURL, "/") + "/api/v2/status"
+		resp.Alertmanager.URL = amURL
+		endpoint := strings.TrimRight(amURL, "/") + "/api/v2/status"
 		req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, endpoint, nil)
 		if req != nil {
 			if httpResp, err := client.Do(req); err != nil {
@@ -172,7 +177,8 @@ func (s *Server) handleAlertsTest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, apiResponse{Message: "read-only mode"})
 		return
 	}
-	if s.cfg.AlertmanagerURL == "" {
+	amURL := strings.TrimSpace(s.cfg.AlertmanagerURL)
+	if amURL == "" {
 		writeJSON(w, http.StatusBadRequest, apiResponse{
 			Message: "Alertmanager not configured. Set alerts.alertmanagerURL in Helm values.",
 		})
@@ -197,7 +203,7 @@ func (s *Server) handleAlertsTest(w http.ResponseWriter, r *http.Request) {
 	}}
 
 	body, _ := json.Marshal(testAlerts)
-	endpoint := strings.TrimRight(s.cfg.AlertmanagerURL, "/") + "/api/v2/alerts"
+	endpoint := strings.TrimRight(amURL, "/") + "/api/v2/alerts"
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "failed to build request"})

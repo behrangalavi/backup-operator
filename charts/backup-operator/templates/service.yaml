@@ -16,8 +16,8 @@ spec:
       protocol: TCP
       name: ui
     {{- end }}
-    {{- if .Values.docs.enabled }}
-    - port: {{ .Values.docs.port }}
+    {{- if (.Values.docs).enabled }}
+    - port: {{ .Values.docs.port | default 8083 }}
       targetPort: docs
       protocol: TCP
       name: docs

@@ -99,12 +99,16 @@ spec:
             {{- end }}
             {{- /* Alerts integration: with prometheusURL set, /api/alerts
                    mirrors what Alertmanager will route. Without it the UI
-                   falls back to a local heuristic over our own metrics. */}}
-            {{- with .Values.alerts.prometheusURL }}
+                   falls back to a local heuristic over our own metrics.
+                   Both blocks are optional — Alertmanager isn't required
+                   for this chart. The (deref) form short-circuits to nil
+                   when `alerts:` is absent (e.g. helm upgrade --reuse-values
+                   from a pre-alerts release). */}}
+            {{- with (.Values.alerts).prometheusURL }}
             - name: PROMETHEUS_URL
               value: {{ . | quote }}
             {{- end }}
-            {{- with .Values.alerts.alertmanagerURL }}
+            {{- with (.Values.alerts).alertmanagerURL }}
             - name: ALERTMANAGER_URL
               value: {{ . | quote }}
             {{- end }}

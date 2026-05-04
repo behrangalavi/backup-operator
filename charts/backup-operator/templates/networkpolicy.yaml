@@ -36,14 +36,14 @@ spec:
         - protocol: TCP
           port: 443
     # Metrics scraping (Prometheus pulls, no egress needed)
-    {{- if .Values.alerts.prometheusURL }}
+    {{- if (.Values.alerts).prometheusURL }}
     # Prometheus query API for the UI Alerts page (push direction).
     # Default port for Prometheus Operator's "operated" Service is 9090.
     - ports:
         - protocol: TCP
           port: 9090
     {{- end }}
-    {{- if .Values.alerts.alertmanagerURL }}
+    {{- if (.Values.alerts).alertmanagerURL }}
     # Alertmanager API (currently only used for status info; the UI shows
     # an "open in Alertmanager" link, but a future tab might call it).
     - ports:

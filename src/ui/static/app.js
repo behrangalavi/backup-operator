@@ -68,6 +68,7 @@ function renderPage(page, loading = true) {
     case 'destinations': renderDestinations(loading); break;
     case 'jobs': renderJobs(loading); break;
     case 'target': renderTargetDetail(currentParam(), loading); break;
+    case 'alerts': renderAlerts(loading); break;
     case 'audit': renderAudit(loading); break;
     case 'settings': renderSettings(loading); break;
     default: renderDashboard(loading);
@@ -728,6 +729,96 @@ window.confirmDeleteDest = async function(secretName) {
     renderDestinations();
   } catch(e) { toast(e.message, 'error'); }
 };
+
+// --- Alerts ---
+async function renderAlerts(loading = true) {
+  if (loading) showLoading();
+  let resp = null;
+  let errMsg = '';
+  try {
+    resp = await api('/api/alerts');
+  } catch(e) {
+    errMsg = e.message || 'unknown error';
+  }
+
+  if (!resp) {
+    content.innerHTML = `
+      <div class="page-header">
+        <div><h1>Alerts</h1><div class="subtitle">Currently firing backup alerts</div></div>
+      </div>
+      <div class="empty-state">
+        <h3>Alerts not available</h3>
+        <p>${escHTML(errMsg)}</p>
+        <p style="margin-top:8px;font-size:12px;color:var(--text-muted)">Set <code>PROMETHEUS_URL</code> to point at your Prometheus, or rely on the local heuristic by ensuring metrics are registered.</p>
+      </div>`;
+    return;
+  }
+
+  const items = resp.items || [];
+  const counts = resp.counts || {};
+  const amURL = resp.alertmanagerUrl;
+  updateAlertsPill(counts);
+
+  // Sources mix in mixed deployments — surface the disclaimer when any
+  // alert is local-evaluated rather than from Prometheus, because the
+  // semantics differ ("for:" not honored locally).
+  const localCount = items.filter(a => a.source === 'local').length;
+  const sourceBanner = localCount === items.length && items.length > 0
+    ? '<div class="banner banner-info">Showing locally evaluated alerts. Configure <code>PROMETHEUS_URL</code> for the canonical view used by Alertmanager.</div>'
+    : '';
+
+  content.innerHTML = `
+    <div class="page-header">
+      <div><h1>Alerts</h1><div class="subtitle">Currently firing backup alerts${amURL ? ' — <a href="' + escHTML(amURL) + '" target="_blank">open in Alertmanager</a>' : ''}</div></div>
+      <button class="btn btn-secondary btn-sm" onclick="renderAlerts(false)">↻ Refresh</button>
+    </div>
+    ${sourceBanner}
+    <div class="stats-row">
+      <div class="stat-card"><div class="label">Critical</div><div class="value${counts.critical > 0 ? ' bad' : ''}">${counts.critical || 0}</div></div>
+      <div class="stat-card"><div class="label">Warning</div><div class="value${counts.warning > 0 ? ' bad' : ''}">${counts.warning || 0}</div></div>
+      <div class="stat-card"><div class="label">Info</div><div class="value">${counts.info || 0}</div></div>
+    </div>
+    ${items.length === 0
+      ? '<div class="empty-state"><h3>All clear</h3><p>No backup alerts are currently firing.</p></div>'
+      : `<div class="table-card">
+        <table>
+          <thead><tr>
+            <th>Severity</th><th>Alert</th><th>Target</th><th>Destination</th>
+            <th>Since</th><th>Source</th><th>Summary</th>
+          </tr></thead>
+          <tbody>${items.map(a => `<tr>
+            <td><span class="badge badge-${escHTML(a.severity || 'info')}">${escHTML(a.severity || 'info')}</span></td>
+            <td><code style="font-size:12px">${escHTML(a.alertname)}</code></td>
+            <td>${a.target ? `<a href="#/target/${escHTML(a.target)}" style="color:var(--accent)">${escHTML(a.target)}</a>` : '—'}</td>
+            <td>${a.destination ? escHTML(a.destination) : '—'}</td>
+            <td style="font-size:12px;color:var(--text-muted)">${a.activeSince ? timeAgo(a.activeSince) : '—'}</td>
+            <td><span class="badge badge-${a.source === 'prometheus' ? 'ok' : 'pending'}" title="${a.source === 'prometheus' ? 'From Prometheus — honors rule for: duration' : 'Local heuristic — fires immediately, no for: debounce'}">${escHTML(a.source || '?')}</span></td>
+            <td style="font-size:13px">${escHTML(a.summary || '')}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>`}`;
+}
+
+// updateAlertsPill keeps the sidebar counter in sync with the latest /api/alerts
+// response. We call it after every alert refresh and once on startup; the SSE
+// refresh tick triggers periodic re-fetches when the user is on other pages
+// so the pill stays current without polling.
+function updateAlertsPill(counts) {
+  const el = $('#navAlertsPill');
+  if (!el) return;
+  const total = (counts.critical || 0) + (counts.warning || 0) + (counts.info || 0);
+  if (total === 0) { el.hidden = true; return; }
+  el.hidden = false;
+  el.textContent = total;
+  el.className = 'alerts-pill ' + (counts.critical > 0 ? 'critical' : counts.warning > 0 ? 'warning' : 'info');
+}
+
+async function refreshAlertsPill() {
+  try {
+    const resp = await api('/api/alerts');
+    if (resp && resp.counts) updateAlertsPill(resp.counts);
+  } catch(_) { /* pill stays as-is on error */ }
+}
 
 // --- Jobs ---
 async function renderJobs(loading = true) {
@@ -1810,5 +1901,9 @@ document.addEventListener('click', function(e) {
 // --- Init ---
 connectSSE();
 renderPage(currentPage());
+// Sidebar alerts pill — refresh on init and every 30s in the background so
+// the counter is current regardless of which page the user is on.
+refreshAlertsPill();
+setInterval(refreshAlertsPill, 30000);
 
 })();

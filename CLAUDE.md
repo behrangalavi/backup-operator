@@ -417,6 +417,8 @@ The operator and the worker have separate (overlapping) config schemas. All valu
 | `UI_ADDR` | no | `:8081` | Listen address for the UI HTTP server. |
 | `UI_MAX_BODY_BYTES` | no | `1048576` | Per-request body cap applied via `http.MaxBytesReader` to every UI route. Without this an unauthenticated POST of a multi-GB body OOMs the operator. |
 | `UI_MAX_SSE_CLIENTS` | no | `256` | Concurrent SSE subscribers allowed on `/api/events`. Excess clients receive `503` so they retry instead of pinning operator memory. |
+| `PROMETHEUS_URL` | no | — | When set (e.g. `http://prometheus-operated.alert.svc:9090`), `/api/alerts` proxies `/api/v1/alerts` filtered to `alertname=~"^Backup.*"` so the UI mirrors what Alertmanager will route. When unset, the UI falls back to a local heuristic over the operator's own metric registry — useful during onboarding but does not honor the rule's `for:` duration. |
+| `ALERTMANAGER_URL` | no | — | Surfaced to the UI for an "open in Alertmanager" link on the Alerts page. The operator never calls Alertmanager directly. |
 | `SETTINGS_CONFIGMAP` | no | — | Name of the ConfigMap for runtime-configurable settings via the UI wizard. Set automatically by Helm when `ui.enabled=true`. |
 
 ### Worker (`cmd/worker/main.go`)
@@ -1011,6 +1013,10 @@ The notable ones, with the reasoning that future readers should preserve.
 
 - **UI body-size cap and SSE client cap.** `limitBodyMiddleware` wraps every request body with `http.MaxBytesReader(MaxBodyBytes)` (default 1 MiB) so a multi-GB POST cannot OOM the operator before any handler runs. `sseBroker.maxClients` (default 256) refuses additional `/api/events` subscribers with `503` instead of letting them block in subscribe queues. Both are global rather than per-route so newly added mutating endpoints inherit the protection automatically. Tunable via `UI_MAX_BODY_BYTES` and `UI_MAX_SSE_CLIENTS`. These are defence-in-depth — they do not replace the auth proxy, they limit the blast radius if the proxy is misconfigured or removed.
 
+- **Alerts surfaced via two independent providers.** `internal/alerts.PrometheusProvider` queries `/api/v1/alerts` on the configured Prometheus and filters by `alertname=~"^Backup.*"`; `internal/alerts.LocalProvider` re-evaluates the six PrometheusRule conditions inline against the operator's gathered metric registry. The UI handler exposes whichever is configured (Prometheus preferred, local as fallback chained automatically). This keeps the UI useful before kube-prometheus-stack is wired up — most of the value of alerts is "what's on fire right now", which we can answer locally — while preserving the audit-grade path through Prometheus → Alertmanager once it's set up. The two evaluators are deliberately independent: there is no shared PromQL evaluator, the local rules are 60 lines of Go that mirror the YAML in `values.yaml`. Keep both in sync when adding a rule. The `Source` field on each Alert (`"prometheus"` vs `"local"`) tells the UI to show a "for: not honored" disclaimer when in local mode.
+
+- **Helm chart sets `release: kube-prometheus-stack` by default.** kube-prometheus-stack's Prometheus selects ServiceMonitors and PrometheusRules via `matchLabels: { release: kube-prometheus-stack }`. Without this label, our chart-shipped CRDs would render but never be scraped — exactly the failure mode that hid the project's semantic alerts in early enterprise pilots. The single top-level value `prometheusReleaseLabel` (default `kube-prometheus-stack`) applies the label to both objects; set to `""` to opt out and use `serviceMonitor.labels` / `prometheusRule.labels` manually instead.
+
 ---
 
 ## 19. Helm Distribution
@@ -1028,6 +1034,12 @@ helm install backup-operator ./charts/backup-operator \
   -n backup --create-namespace \
   --set agePublicKeys="age1qx...your-recipient"
 ```
+
+**Defaults to know:**
+
+- `prometheusReleaseLabel: kube-prometheus-stack` — applied as the `release:` label on `ServiceMonitor` and `PrometheusRule` so kube-prometheus-stack picks them up. Set to `""` to opt out.
+- `alerts.prometheusURL: http://prometheus-operated.alert.svc.cluster.local:9090` — assumes kube-prometheus-stack lives in the `alert` namespace. Override or set to `""` for the local heuristic.
+- `alerts.alertmanagerURL: http://alertmanager-operated.alert.svc.cluster.local:9093` — surfaced as an "open in Alertmanager" link in the UI; not called directly.
 
 ### 19.2 CI/CD
 

@@ -195,6 +195,33 @@ thead th.sortable:hover { color: var(--text); }
 .badge-running { background: rgba(91,110,239,0.15); color: var(--accent); }
 .badge-pending { background: rgba(113,113,122,0.15); color: var(--text-muted); }
 .badge-succeeded { background: var(--success-bg); color: var(--success); }
+.badge-critical { background: var(--danger-bg); color: var(--danger); }
+.badge-warning  { background: var(--warning-bg); color: var(--warning); }
+.badge-info     { background: rgba(91,110,239,0.15); color: var(--accent); }
+
+/* Alerts sidebar pill — small numeric counter next to the nav label. */
+.alerts-pill {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 18px; padding: 0 6px;
+  margin-left: auto;
+  border-radius: 9px; font-size: 10px; font-weight: 700;
+  background: rgba(113,113,122,0.25); color: var(--text);
+}
+.alerts-pill.info     { background: rgba(91,110,239,0.25); color: #a5b0ff; }
+.alerts-pill.warning  { background: var(--warning-bg); color: var(--warning); }
+.alerts-pill.critical { background: var(--danger-bg); color: var(--danger); }
+/* Make the alerts nav row a flex container so the pill sits at the right. */
+.nav-link[data-page="alerts"] { display: flex; align-items: center; }
+.nav-link[data-page="alerts"] > span:first-of-type { flex: 1; }
+
+/* Banner — used at top of the alerts page when local fallback is active. */
+.banner {
+  margin-bottom: 16px; padding: 10px 14px;
+  border-radius: var(--radius-sm); font-size: 13px;
+  border: 1px solid var(--border);
+}
+.banner-info { background: rgba(91,110,239,0.08); color: var(--text); }
+.banner code { background: var(--bg-input); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
 
 /* Buttons */
 .btn {

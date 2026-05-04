@@ -88,6 +88,25 @@ spec:
               value: {{ .Values.ui.readOnly | default false | quote }}
             - name: UI_ALLOW_KEY_MUTATION
               value: {{ .Values.ui.allowKeyMutation | default false | quote }}
+            {{- with .Values.ui.maxBodyBytes }}
+            - name: UI_MAX_BODY_BYTES
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.ui.maxSSEClients }}
+            - name: UI_MAX_SSE_CLIENTS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- /* Alerts integration: with prometheusURL set, /api/alerts
+                   mirrors what Alertmanager will route. Without it the UI
+                   falls back to a local heuristic over our own metrics. */}}
+            {{- with .Values.alerts.prometheusURL }}
+            - name: PROMETHEUS_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.alerts.alertmanagerURL }}
+            - name: ALERTMANAGER_URL
+              value: {{ . | quote }}
             {{- end }}
           ports:
             - name: metrics

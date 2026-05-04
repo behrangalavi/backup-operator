@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"backup-operator/dumper"
+	"backup-operator/internal/alerts"
 
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -44,6 +45,17 @@ type Config struct {
 	AllowKeyMutation  bool   // when true, age-key add/remove endpoints are exposed (read-only listing always available)
 	MaxBodyBytes      int64  // request body cap; 0 = use defaultMaxBodyBytes
 	MaxSSEClients     int    // concurrent SSE subscribers; 0 = use defaultMaxSSEClients
+
+	// AlertsProvider supplies /api/alerts. When PrometheusURL is configured
+	// in main.go we install a PrometheusProvider with a LocalProvider
+	// fallback; otherwise just LocalProvider. Optional — when nil, the
+	// /api/alerts endpoint returns 503 with a helpful message instead of
+	// pretending to know.
+	AlertsProvider alerts.Provider
+
+	// AlertmanagerURL is surfaced to the UI for "open in Alertmanager"
+	// links. The operator never calls Alertmanager directly.
+	AlertmanagerURL string
 }
 
 // Conservative defaults sized for an enterprise deployment with thousands of
@@ -133,6 +145,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// SSE live updates
 	mux.HandleFunc("/api/events", s.handleSSE)
+
+	// Alerts surface (Prometheus or local heuristic)
+	mux.HandleFunc("/api/alerts", s.handleAlerts)
 
 	// Downloads
 	mux.HandleFunc("/download/", s.handleDownload)

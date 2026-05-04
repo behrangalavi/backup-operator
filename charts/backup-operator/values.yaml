@@ -82,21 +82,51 @@ ui:
   # backup decryption to the attacker. Stays opt-in even when the rest
   # of the UI is read-write.
   allowKeyMutation: false
+  # Defence-in-depth caps applied inside the UI HTTP server.
+  # maxBodyBytes: cap on every request body to prevent OOM via giant POST.
+  # maxSSEClients: cap on concurrent /api/events subscribers.
+  # Both have sane in-code defaults; uncomment to override.
+  # maxBodyBytes: 1048576
+  # maxSSEClients: 256
+
+# Alerts integration. The UI's Alerts page calls Prometheus directly when
+# prometheusURL is set; otherwise it falls back to a local heuristic that
+# evaluates the same conditions on the operator's own metric registry —
+# useful before kube-prometheus-stack is wired up, but does not honour
+# the rule's `for:` duration.
+#
+# Defaults below assume kube-prometheus-stack installed in the `alert`
+# namespace (this matches the test stack and most reference installs). If
+# your stack lives elsewhere, override or set to "" to disable Prometheus
+# integration and use the local heuristic only.
+alerts:
+  prometheusURL: "http://prometheus-operated.alert.svc.cluster.local:9090"
+  # AlertmanagerURL is purely cosmetic — the UI surfaces a link for users
+  # who want to silence/inhibit alerts in Alertmanager. The operator never
+  # calls Alertmanager itself.
+  alertmanagerURL: "http://alertmanager-operated.alert.svc.cluster.local:9093"
+
+# Convenience knob: kube-prometheus-stack's Prometheus selects ServiceMonitors
+# AND PrometheusRules by `release: <name>`. Setting this here applies the
+# label to BOTH so a typical install picks up our metrics and alert rules.
+# Set to "" to opt out and use serviceMonitor.labels / prometheusRule.labels
+# manually instead.
+prometheusReleaseLabel: "kube-prometheus-stack"
 
 # Conditional on Prometheus Operator presence — see _helpers.
 serviceMonitor:
   enabled: true
   interval: 30s
   scrapeTimeout: 10s
-  # Extra labels merged into ServiceMonitor metadata. kube-prometheus-stack's
-  # Prometheus selects ServiceMonitors by `release: <release-name>`; if you
-  # installed it as `kube-prometheus-stack`, set `release: kube-prometheus-stack`.
+  # Extra labels merged into ServiceMonitor metadata. The `release` label is
+  # added automatically from `.Values.prometheusReleaseLabel` (above) — this
+  # field is for any additional custom labels.
   labels: {}
 
 prometheusRule:
   enabled: true
-  # Same story as serviceMonitor.labels — required so kube-prometheus-stack's
-  # Prometheus picks up the rule group.
+  # Extra labels merged into PrometheusRule metadata. Same rules as
+  # serviceMonitor.labels — `release` comes from prometheusReleaseLabel.
   labels: {}
   # Ship sensible defaults; override at install time to suit your environment.
   rules:

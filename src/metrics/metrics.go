@@ -131,6 +131,11 @@ var (
 	)
 )
 
+// gatherer holds the same registry we registered to, so the alerts package
+// can re-evaluate rule conditions in-process without each consumer needing to
+// know which registry the operator uses (controller-runtime's, in main.go).
+var gatherer prometheus.Gatherer
+
 func Register(registry prometheus.Registerer) {
 	registry.MustRegister(
 		runDurationSeconds,
@@ -148,7 +153,14 @@ func Register(registry prometheus.Registerer) {
 		retentionDeletedTotal,
 		retentionFailedTotal,
 	)
+	if g, ok := registry.(prometheus.Gatherer); ok {
+		gatherer = g
+	}
 }
+
+// Gatherer returns the registry we registered to, or nil if Register has
+// not been called (tests that bypass main wiring).
+func Gatherer() prometheus.Gatherer { return gatherer }
 
 func IncRetentionDeleted(target, destination, kind string) {
 	retentionDeletedTotal.WithLabelValues(target, destination, kind).Inc()

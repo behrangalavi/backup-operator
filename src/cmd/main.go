@@ -4,11 +4,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"strconv"
 	"time"
 
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/client-go/rest"
@@ -21,6 +23,7 @@ import (
 	"backup-operator/assert"
 	"backup-operator/config"
 	"backup-operator/controllers"
+	"backup-operator/internal/alerts"
 	"backup-operator/metrics"
 	"backup-operator/ui"
 )
@@ -97,6 +100,14 @@ func main() {
 		// values so operators can tune without rebuilding.
 		{Key: "UI_MAX_BODY_BYTES", Optional: true, Default: "1048576"}, // 1 MiB
 		{Key: "UI_MAX_SSE_CLIENTS", Optional: true, Default: "256"},
+		// Alert integration. PROMETHEUS_URL points at the in-cluster
+		// Prometheus that scrapes our ServiceMonitor and evaluates the
+		// chart's PrometheusRule — when set, /api/alerts mirrors what
+		// Alertmanager will route. When unset the UI falls back to a
+		// local heuristic over our own metric registry, which is enough
+		// to be useful but does not honor the rule's "for:" duration.
+		{Key: "PROMETHEUS_URL", Optional: true},
+		{Key: "ALERTMANAGER_URL", Optional: true},
 	})
 	assert.NoError(err, "failed to initialize config module")
 
@@ -166,6 +177,20 @@ func main() {
 	if config.GetValue("UI_ENABLED") == "true" {
 		maxBody, _ := strconv.ParseInt(config.GetValue("UI_MAX_BODY_BYTES"), 10, 64)
 		maxSSE, _ := strconv.Atoi(config.GetValue("UI_MAX_SSE_CLIENTS"))
+
+		// Pick an alerts provider. Order: explicit Prometheus > local
+		// fallback over our own metric registry. The chained provider
+		// degrades gracefully when Prometheus is reachable at boot but
+		// briefly unavailable later.
+		var alertsProvider alerts.Provider = alerts.NewLocalProvider(metrics.Gatherer())
+		if promURL := config.GetValue("PROMETHEUS_URL"); promURL != "" {
+			alertsProvider = chainedProvider{
+				primary:  alerts.NewPrometheusProvider(promURL),
+				fallback: alertsProvider,
+				log:      ctrl.Log.WithName("alerts"),
+			}
+		}
+
 		uiServer, err := ui.New(ui.Config{
 			Addr:              config.GetValue("UI_ADDR"),
 			Namespace:         namespaceForUI(watchNs),
@@ -178,6 +203,8 @@ func main() {
 			AllowKeyMutation:  config.GetValue("UI_ALLOW_KEY_MUTATION") == "true",
 			MaxBodyBytes:      maxBody,
 			MaxSSEClients:     maxSSE,
+			AlertsProvider:    alertsProvider,
+			AlertmanagerURL:   config.GetValue("ALERTMANAGER_URL"),
 		})
 		assert.NoError(err, "failed to construct UI server")
 		// Register before manager start so the cache and HTTP listener share
@@ -241,4 +268,22 @@ func buildWorkerResources() corev1.ResourceRequirements {
 		}
 	}
 	return reqs
+}
+
+// chainedProvider tries primary first; on error it logs (without leaking
+// PROMETHEUS_URL credentials thanks to the provider's own redaction) and
+// returns the fallback's result. This keeps the UI up if Prometheus blips.
+type chainedProvider struct {
+	primary  alerts.Provider
+	fallback alerts.Provider
+	log      logr.Logger
+}
+
+func (c chainedProvider) List(ctx context.Context) ([]alerts.Alert, error) {
+	if out, err := c.primary.List(ctx); err == nil {
+		return out, nil
+	} else {
+		c.log.V(1).Info("primary alerts source failed, falling back to local", "err", err.Error())
+	}
+	return c.fallback.List(ctx)
 }

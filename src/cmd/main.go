@@ -24,6 +24,7 @@ import (
 	"backup-operator/assert"
 	"backup-operator/config"
 	"backup-operator/controllers"
+	"backup-operator/docs"
 	"backup-operator/internal/alerts"
 	"backup-operator/metrics"
 	"backup-operator/ui"
@@ -109,6 +110,15 @@ func main() {
 		// to be useful but does not honor the rule's "for:" duration.
 		{Key: "PROMETHEUS_URL", Optional: true},
 		{Key: "ALERTMANAGER_URL", Optional: true},
+		// Docs server. Independent listener so it can be exposed/scoped
+		// separately from the management UI (read-only, public-facing
+		// reference vs. mutating admin surface). DOCS_DIR points at the
+		// directory that holds CLAUDE.md, README.md, and go.mod; the
+		// Dockerfile populates /app/docs, locally a developer points it
+		// at the repo root.
+		{Key: "DOCS_ENABLED", Optional: true, Default: "false"},
+		{Key: "DOCS_ADDR", Optional: true, Default: ":8083"},
+		{Key: "DOCS_DIR", Optional: true, Default: "/app/docs"},
 	})
 	assert.NoError(err, "failed to initialize config module")
 
@@ -219,6 +229,17 @@ func main() {
 		// Register before manager start so the cache and HTTP listener share
 		// the manager's context (and shut down with it).
 		assert.NoError(mgr.Add(uiServer), "failed to register UI server")
+	}
+
+	if config.GetValue("DOCS_ENABLED") == "true" {
+		docsServer, err := docs.New(docs.Config{
+			Addr:    config.GetValue("DOCS_ADDR"),
+			DocsDir: config.GetValue("DOCS_DIR"),
+			Logger:  ctrl.Log.WithName("docs"),
+			Version: Version,
+		})
+		assert.NoError(err, "failed to construct docs server")
+		assert.NoError(mgr.Add(docsServer), "failed to register docs server")
 	}
 
 	ctx := ctrl.SetupSignalHandler()

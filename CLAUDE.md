@@ -1,6 +1,6 @@
 # Backup Operator — Claude Code Guide
 
-A Kubernetes-native backup operator in Go for **PostgreSQL**, **MySQL**, and **MongoDB**, with public-key encryption (`age`), multi-destination fan-out (SFTP + S3-compatible), semantic dump analysis, and Prometheus-driven alerting. Built on the **Operator-Reconciles-CronJobs** pattern: the operator does not run backups itself; Kubernetes does.
+A Kubernetes-native backup operator in Go for **PostgreSQL**, **MySQL**, **MariaDB**, **MongoDB**, and **Redis**, with public-key encryption (`age`), multi-destination fan-out (SFTP + S3-compatible), semantic dump analysis, and Prometheus-driven alerting. Built on the **Operator-Reconciles-CronJobs** pattern: the operator does not run backups itself; Kubernetes does.
 
 ---
 
@@ -259,7 +259,7 @@ A pure Kubernetes reconciler. Does **not**:
 
 - run cron in-process
 - hold encryption keys
-- shell out to `pg_dump`/`mysqldump`/`mongodump`
+- shell out to `pg_dump` / `mysqldump` (MySQL+MariaDB) / `mongodump` / `redis-cli --rdb`
 - maintain destination caches
 
 Does:
@@ -628,7 +628,9 @@ Every dump produces **two** objects per run:
 
 Exposed by the operator pod on `:8080/metrics`. **Worker pods are short-lived** — Prometheus cannot scrape them in time, so the run-level metrics are reconstructed by the operator's `MetricsRefresher` (`controllers/metrics_refresher.go`). It runs on a tick (default 30s, see `METRICS_REFRESH_INTERVAL_SECONDS`), lists Source Secrets in the watch namespace, fetches the most recent `*.meta.json` from each allowed destination, and writes the result into the operator's local Prometheus registry. That is why everything below is a Gauge — counters would require an always-on producer the worker cannot provide.
 
-The histograms (`dump_duration_seconds`, `upload_duration_seconds`) are kept in the worker for code-coupling reasons but their samples never reach Prometheus. Treat them as a known gap; rely on Job duration via kube-state-metrics if you need timing alerts today.
+The histograms (`dump_duration_seconds`, `upload_duration_seconds`, `run_duration_seconds`) are kept in the worker for code-coupling reasons but their samples never reach Prometheus. Treat them as a known gap; rely on Job duration via kube-state-metrics if you need timing alerts today.
+
+`metrics.Register(reg)` also stashes the registry as a `prometheus.Gatherer` (`metrics.Gatherer()`), which the alerts package's `LocalProvider` reads to re-evaluate the chart's PrometheusRule conditions inline — this is the no-Prometheus-configured fallback path for the UI's `/api/alerts` endpoint (see §13 and the §18 ADR on alerts providers).
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
@@ -666,6 +668,8 @@ Shipped in the Helm chart's `values.yaml` under `prometheusRule.rules`. The char
 `BackupSucceeded` is a heartbeat-style positive signal (firing + resolved per run) — useful when you want a notification on every successful backup, but expect one firing + one resolved mail per completed run per target. With a frequent cron (e.g. every 5 min in the test stack), this is intentionally noisy.
 
 The semantic alerts (`DumpSizeCollapsed`, `SchemaChanged`, `AnomaliesAppearing`) are the project's main differentiator vs K8up — they alert on *content*, not just job exit code.
+
+These same conditions also surface in the operator UI under `/api/alerts` and `#/alerts` — Prometheus-backed when `PROMETHEUS_URL` is set, otherwise re-evaluated locally over the registry returned by `metrics.Gatherer()`. The local path does NOT honour `for:` debounce; treat the in-UI list as advisory and Alertmanager as the audit-grade source. See the §18 ADR on alert providers.
 
 ---
 

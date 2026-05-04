@@ -36,5 +36,11 @@ RUN apk add --no-cache \
 WORKDIR /app
 COPY --from=builder /workspace/backup-operator /app/backup-operator
 COPY --from=builder /workspace/backup-worker /app/backup-worker
+# Documentation sources for the docs server (served on DOCS_ADDR when
+# DOCS_ENABLED=true). Read at runtime, not embedded — keeps the docs
+# package portable to repo layouts where these files live outside the
+# package directory and out of go:embed reach.
+COPY CLAUDE.md README.md /app/docs/
+COPY src/go.mod /app/docs/go.mod
 USER 1000:1000
 ENTRYPOINT ["/app/backup-operator"]

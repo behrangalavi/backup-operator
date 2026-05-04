@@ -89,6 +89,19 @@ ui:
   # maxBodyBytes: 1048576
   # maxSSEClients: 256
 
+# Read-only documentation portal served by the operator pod itself, on a
+# separate port from the management UI. Renders CLAUDE.md (operator
+# reference) and README.md (user guide), plus a generated Tech Stack page
+# from go.mod. Disable by default — flip `enabled: true` to expose. The
+# docs server reads no Kubernetes state and holds no credentials, so it's
+# safe to expose to a wider audience than the management UI.
+docs:
+  enabled: false
+  port: 8083
+  # Path inside the container that holds CLAUDE.md, README.md, and go.mod.
+  # The Dockerfile populates /app/docs at build time.
+  dir: /app/docs
+
 # Alerts integration. The UI's Alerts page calls Prometheus directly when
 # prometheusURL is set; otherwise it falls back to a local heuristic that
 # evaluates the same conditions on the operator's own metric registry —

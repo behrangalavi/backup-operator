@@ -1,6 +1,6 @@
 # backup-operator
 
-A Kubernetes-native backup operator in Go for **PostgreSQL**, **MySQL**, and **MongoDB**, with public-key encryption (`age`), multi-destination fan-out (SFTP + S3-compatible), semantic dump analysis, and Prometheus-driven alerting.
+A Kubernetes-native backup operator in Go for **PostgreSQL**, **MySQL**, **MariaDB**, **MongoDB**, and **Redis**, with public-key encryption (`age`), multi-destination fan-out (SFTP + S3-compatible), semantic dump analysis, and Prometheus-driven alerting.
 
 > **The contract:** label a `Secret`, get a backup. No CRDs to install, no extra resources to learn. The operator watches Secrets in its namespace, materialises a `CronJob` per labelled source, and Kubernetes does the running.
 
@@ -211,16 +211,16 @@ A **Source** is any `Secret` with `backup.mogenius.io/role=source` in the operat
 | Label | Value |
 |---|---|
 | `backup.mogenius.io/role` | `source` |
-| `backup.mogenius.io/db-type` | `postgres` \| `mysql` \| `mongo` |
+| `backup.mogenius.io/db-type` | `postgres` \| `mysql` \| `mariadb` \| `mongo` \| `redis` |
 
 ### Required `data` keys
 
 | Key | Required | Notes |
 |---|---|---|
 | `host` | yes | Reachable hostname from the worker pod |
-| `port` | no | Defaults: 5432 (pg), 3306 (mysql), 27017 (mongo) |
-| `database` | yes for pg/mysql; optional for mongo | Mongo: omit to back up all non-system databases |
-| `username` | yes | |
+| `port` | no | Defaults: 5432 (pg), 3306 (mysql/mariadb), 27017 (mongo), 6379 (redis) |
+| `database` | yes for pg/mysql/mariadb; optional for mongo/redis | Mongo: omit to back up all non-system databases. Redis: optional DB index `0`–`15` — narrows stats only; the RDB dump is always full-instance. |
+| `username` | yes for all except `redis` | Redis pre-6 uses password-only AUTH; ACL usernames came in 6.0 and are optional |
 | `password` | yes | |
 
 ### Annotations
@@ -297,6 +297,43 @@ type: Opaque
 stringData:
   host: mongo.events.svc.cluster.local
   username: backup
+  password: ...
+```
+
+**MariaDB** (uses the MySQL wire protocol — same `mysqldump` tool):
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cms-mariadb
+  labels:
+    backup.mogenius.io/role: source
+    backup.mogenius.io/db-type: mariadb
+  annotations:
+    backup.mogenius.io/name: "cms"
+type: Opaque
+stringData:
+  host: mariadb.cms.svc.cluster.local
+  database: cms
+  username: backup
+  password: ...
+```
+
+**Redis** (RDB snapshot via `redis-cli --rdb`; full-instance, all DB indexes):
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sessions-redis
+  labels:
+    backup.mogenius.io/role: source
+    backup.mogenius.io/db-type: redis
+  annotations:
+    backup.mogenius.io/name: "sessions"
+type: Opaque
+stringData:
+  host: redis.sessions.svc.cluster.local
+  # username is optional — only needed for Redis 6+ ACL users
   password: ...
 ```
 
@@ -435,10 +472,11 @@ kubectl -n backup port-forward svc/backup-operator 8081:8081
 ### What you get
 
 - **Dashboard (`#/`):** overview with stats cards (source count, healthy/failed, running jobs), target table with status badges, manual trigger button per target.
-- **Sources (`#/sources`):** card grid of all backup sources. Create, edit, and delete database backup sources via forms. Supports PostgreSQL, MySQL, and MongoDB with all configuration options.
+- **Sources (`#/sources`):** card grid of all backup sources. Create, edit, and delete database backup sources via forms. Supports PostgreSQL, MySQL, MariaDB, MongoDB, and Redis with all configuration options.
 - **Destinations (`#/destinations`):** manage storage destinations (SFTP, S3). Create, edit, and delete with full field support. Sensitive fields (passwords, SSH keys) are masked in API responses.
 - **Jobs (`#/jobs`):** running and recent backup jobs with status and timing.
-- **Target detail (`#/target/<name>`):** full run history table — timestamps, sizes, SHA256 checksums, schema status, anomaly counts, and download buttons per run.
+- **Target detail (`#/target/<name>`):** full run history table — timestamps, sizes, SHA256 checksums, schema status, anomaly counts, and download buttons per run. Failed runs surface phase + full error message inline.
+- **Alerts (`#/alerts`):** currently-firing backup alerts with severity counters and a sidebar pill counter. Pulls from Prometheus when configured (`alerts.prometheusURL`), otherwise re-evaluates the same conditions locally — see [Surfacing alerts in the operator UI](#surfacing-alerts-in-the-operator-ui).
 - **Settings (`#/settings`):** configuration wizard (see [Settings Wizard](#settings-wizard) below).
 - **Live updates:** Server-Sent Events (SSE) push changes to all connected browsers in real time — no polling, no page refresh.
 - **Downloads:** `.age` (encrypted dump, pass-through) and `.json` (analyzer metadata).
@@ -464,6 +502,9 @@ kubectl -n backup port-forward svc/backup-operator 8081:8081
 | `PUT` | `/api/settings` | Update operator settings |
 | `GET` | `/api/settings/export` | Download settings as `values.yaml` |
 | `GET` | `/api/events` | SSE stream for live updates |
+| `GET` | `/api/alerts` | Currently-firing backup alerts (Prometheus or local fallback) |
+| `GET` | `/api/alerts/status` | Connectivity check for Prometheus + Alertmanager |
+| `POST` | `/api/alerts/test` | Send a self-resolving test alert via Alertmanager v2 API |
 
 ### Security model
 
@@ -568,23 +609,26 @@ gunzip dump.sql.gz   # or pipe `--decompress` directly
 
 ### Metrics
 
-The operator pod exposes Prometheus metrics on `:8080/metrics`. Worker pods expose the same registry briefly during their ~20s lifetime — for run-level metrics, scrape via the included `ServiceMonitor` or rely on `kube-state-metrics` for Job status.
+The **operator pod** exposes Prometheus metrics on `:8080/metrics`. Run-level signals come from the operator's `MetricsRefresher` controller, which periodically reads the latest `*.meta.json` sidecar from each destination and writes the resulting state into the gauges below. This is why the run-state metrics are **gauges, not counters** — worker pods are too short-lived for Prometheus to scrape, so the operator reconstructs the state from storage instead.
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `backup_operator_dump_duration_seconds` | Histogram | `target`, `db_type` | Dump time (pre-encrypt, pre-upload) |
-| `backup_operator_upload_duration_seconds` | Histogram | `target`, `destination`, `storage_type` | Time per destination upload |
-| `backup_operator_dump_size_bytes` | Gauge | `target` | Encrypted dump size of last run |
+| `backup_operator_dump_size_bytes` | Gauge | `target` | Encrypted size of the most recent successful dump |
 | `backup_operator_dump_size_change_ratio` | Gauge | `target` | current/previous encrypted size; `<0.5` = suspicious shrinkage |
-| `backup_operator_table_count` | Gauge | `target` | Tables/collections in current dump |
-| `backup_operator_table_row_count` | Gauge | `target`, `table` | Per-table row count (estimate) |
-| `backup_operator_schema_changed` | Gauge | `target` | 1 if schema hash differs from previous |
-| `backup_operator_anomalies_total` | Counter | `target`, `kind` | `size-collapse`, `table-disappeared`, `row-count-drop` |
-| `backup_operator_runs_total` | Counter | `target`, `status` | `success` / `failure` |
-| `backup_operator_last_success_timestamp_seconds` | Gauge | `target`, `destination` | Unix ts of last successful upload |
-| `backup_operator_destination_failed` | Gauge | `target`, `destination` | 1 if last upload to that destination failed |
-| `backup_operator_retention_deleted_total` | Counter | `target`, `destination`, `kind` | dump / meta / other |
-| `backup_operator_retention_failed_total` | Counter | `target`, `destination` | Retention errors (non-fatal) |
+| `backup_operator_table_count` | Gauge | `target` | Tables/collections in the most recent successful run |
+| `backup_operator_table_row_count` | Gauge | `target`, `table` | Per-table row count (estimate) at the most recent run |
+| `backup_operator_schema_changed` | Gauge | `target` | 1 if schema hash differs from previous run, 0 otherwise |
+| `backup_operator_last_run_anomalies` | Gauge | `target` | Analyzer anomaly count in the most recent run |
+| `backup_operator_last_run_status` | Gauge | `target` | 1 = most recent run wrote a usable artifact, 0 = failure |
+| `backup_operator_last_success_timestamp_seconds` | Gauge | `target`, `destination` | Unix ts of last successful upload to that destination |
+| `backup_operator_destination_failed` | Gauge | `target`, `destination` | 1 if the destination is unreadable / last upload failed |
+| `backup_operator_retention_deleted_total` | Counter | `target`, `destination`, `kind` | Worker-only — see caveat below |
+| `backup_operator_retention_failed_total` | Counter | `target`, `destination` | Worker-only — see caveat below |
+| `backup_operator_dump_duration_seconds` | Histogram | `target`, `db_type` | Worker-only — see caveat below |
+| `backup_operator_upload_duration_seconds` | Histogram | `target`, `destination`, `storage_type` | Worker-only — see caveat below |
+| `backup_operator_run_duration_seconds` | Histogram | `target`, `db_type` | Worker-only — see caveat below |
+
+**Caveat — "worker-only" metrics:** the histograms and `retention_*` counters are observed inside the worker pod, but worker pods finish in seconds and Prometheus's scrape interval (≥15s) cannot catch them. They live in the codebase for future use (e.g. an aggregator that pushes to Pushgateway or rebuilds them from meta.json). For timing alerts today, rely on Job duration via `kube-state-metrics`.
 
 ### ServiceMonitor
 
@@ -596,7 +640,15 @@ serviceMonitor:
   enabled: true
   interval: 30s
   scrapeTimeout: 10s
+
+# Top-level convenience: kube-prometheus-stack's Prometheus selects
+# ServiceMonitors and PrometheusRules via `release: <name>`. The chart
+# applies this label to BOTH out of the box. Set to "" to opt out and
+# use your own labels via {serviceMonitor,prometheusRule}.labels instead.
+prometheusReleaseLabel: "kube-prometheus-stack"
 ```
+
+Without this label, kube-prometheus-stack's Prometheus *renders* the CRDs but never loads them — the most common reason backup alerts silently don't fire. If your stack uses a different release name, override accordingly.
 
 If you don't run Prometheus Operator, set `serviceMonitor.enabled=false` and configure your scrape job manually pointing at `:8080/metrics`.
 
@@ -674,6 +726,26 @@ prometheusRule:
 ```bash
 helm upgrade ... --set prometheusRule.enabled=false
 ```
+
+### Surfacing alerts in the operator UI
+
+When the UI is enabled (`ui.enabled=true`), an **Alerts** tab in the sidebar shows currently-firing alerts with severity counters (critical/warning/info) and a sortable list. Two providers feed it, picked automatically:
+
+- **Prometheus mode** (preferred) — queries `<prometheusURL>/api/v1/alerts` filtered by `alertname=~"^Backup.*"` so the UI mirrors what Alertmanager will route. Honours each rule's `for:` duration.
+- **Local heuristic** (fallback) — when `prometheusURL` is empty or unreachable, the operator re-evaluates the same six conditions on its own gathered metric registry. Useful before kube-prometheus-stack is wired up; does **not** honour `for:` debounce, so it fires immediately on threshold crossing.
+
+The UI marks each alert with a `source` badge (`prometheus` vs `local`) so you can see which view you're looking at.
+
+```yaml
+# values.yaml — defaults assume kube-prometheus-stack lives in the `alert` namespace
+alerts:
+  prometheusURL: "http://prometheus-operated.alert.svc.cluster.local:9090"
+  alertmanagerURL: "http://alertmanager-operated.alert.svc.cluster.local:9093"
+```
+
+`alertmanagerURL` is currently used for the *"Open in Alertmanager"* link plus a connectivity-status indicator and a one-click *"Send test alert"* button. The operator never *receives* notifications from Alertmanager — wiring stays one-way through Prometheus.
+
+Set both to `""` to disable the integration entirely; the UI then falls back to local-heuristic mode silently.
 
 ---
 

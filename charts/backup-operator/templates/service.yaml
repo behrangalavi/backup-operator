@@ -16,4 +16,10 @@ spec:
       protocol: TCP
       name: ui
     {{- end }}
+    {{- if .Values.docs.enabled }}
+    - port: {{ .Values.docs.port }}
+      targetPort: docs
+      protocol: TCP
+      name: docs
+    {{- end }}
   selector: {{- include "backup-operator.selectorLabels" . | nindent 4 }}

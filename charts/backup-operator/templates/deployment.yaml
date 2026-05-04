@@ -112,6 +112,14 @@ spec:
             - name: ALERTMANAGER_URL
               value: {{ . | trim | quote }}
             {{- end }}
+            {{- if .Values.docs.enabled }}
+            - name: DOCS_ENABLED
+              value: "true"
+            - name: DOCS_ADDR
+              value: ":{{ .Values.docs.port }}"
+            - name: DOCS_DIR
+              value: {{ .Values.docs.dir | default "/app/docs" | quote }}
+            {{- end }}
           ports:
             - name: metrics
               containerPort: 8080
@@ -122,6 +130,11 @@ spec:
             {{- if .Values.ui.enabled }}
             - name: ui
               containerPort: {{ .Values.ui.port }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.docs.enabled }}
+            - name: docs
+              containerPort: {{ .Values.docs.port }}
               protocol: TCP
             {{- end }}
           livenessProbe:

@@ -123,7 +123,7 @@ func (p *Pipeline) retainForDestination(
 			continue
 		}
 		metrics.IncRetentionDeleted(target, dest.Name, classifyKind(v))
-		if dir := path.Dir(v); dir != "." && dir != "/" && dir != target {
+		for dir := path.Dir(v); dir != "." && dir != "/" && dir != target; dir = path.Dir(dir) {
 			parentDirs[dir] = true
 		}
 	}

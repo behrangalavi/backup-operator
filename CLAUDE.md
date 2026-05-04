@@ -418,7 +418,7 @@ The operator and the worker have separate (overlapping) config schemas. All valu
 | `UI_MAX_BODY_BYTES` | no | `1048576` | Per-request body cap applied via `http.MaxBytesReader` to every UI route. Without this an unauthenticated POST of a multi-GB body OOMs the operator. |
 | `UI_MAX_SSE_CLIENTS` | no | `256` | Concurrent SSE subscribers allowed on `/api/events`. Excess clients receive `503` so they retry instead of pinning operator memory. |
 | `PROMETHEUS_URL` | no | — | When set (e.g. `http://prometheus-operated.alert.svc:9090`), `/api/alerts` proxies `/api/v1/alerts` filtered to `alertname=~"^Backup.*"` so the UI mirrors what Alertmanager will route. When unset, the UI falls back to a local heuristic over the operator's own metric registry — useful during onboarding but does not honor the rule's `for:` duration. |
-| `ALERTMANAGER_URL` | no | — | Surfaced to the UI for an "open in Alertmanager" link on the Alerts page. The operator never calls Alertmanager directly. |
+| `ALERTMANAGER_URL` | no | — | Used for the "open in Alertmanager" link on the Alerts page, the `/api/alerts/status` connectivity check (`GET /api/v2/status`), and the `/api/alerts/test` endpoint that sends a test alert (`POST /api/v2/alerts`). |
 | `SETTINGS_CONFIGMAP` | no | — | Name of the ConfigMap for runtime-configurable settings via the UI wizard. Set automatically by Helm when `ui.enabled=true`. |
 
 ### Worker (`cmd/worker/main.go`)
@@ -865,6 +865,8 @@ This section documents the complete data lifecycle for compliance audits (DSGVO/
 | Worker → SFTP destination | SSH (SFTP subsystem) | SSH transport encryption |
 | Worker → S3 destination | HTTPS | TLS 1.2+ |
 | Operator → Storage (metrics refresh) | SSH/HTTPS (same as worker) | Same as worker |
+| Operator → Prometheus (alerts status) | HTTP | Plain HTTP (cluster-internal) |
+| Operator → Alertmanager (status check, test alerts) | HTTP | Plain HTTP (cluster-internal) |
 | Operator → K8s API | HTTPS (in-cluster ServiceAccount) | mTLS |
 
 ### 17.3 Key Management
@@ -895,11 +897,11 @@ This section documents the complete data lifecycle for compliance audits (DSGVO/
 
 | Principal | Can access | Cannot access |
 |---|---|---|
-| Operator pod | Source/Dest Secrets (CRUD), CronJobs (CRUD), ConfigMaps (get/update/patch), Jobs (create), Leases, Events | Private key, dump contents |
+| Operator pod | Source/Dest Secrets (CRUD), CronJobs (CRUD), ConfigMaps (get/update/patch), Jobs (create), Leases, Events, Prometheus query API (read), Alertmanager API (read status + write test alerts) | Private key, dump contents |
 | Worker pod | Source/Dest Secrets (read), Events (create) | CronJobs, Leases, private key |
 | Storage backend | Encrypted dumps, unencrypted meta.json | Private key, DB credentials |
 | Restore operator (human) | Private key, storage backend | Cluster Secrets (unless they have kubectl access) |
-| Prometheus/Alertmanager | Metrics (sizes, counts, anomalies) | Dump contents, credentials |
+| Prometheus/Alertmanager | Metrics (sizes, counts, anomalies); operator reads status + posts test alerts | Dump contents, credentials |
 
 ---
 
@@ -1027,6 +1029,8 @@ The notable ones, with the reasoning that future readers should preserve.
 
 - **Retention cleans empty ancestor directories.** Date-partitioned paths like `target/2024/01/15/dump-*.age` leave empty parent directories after file deletion. The retention loop now walks `path.Dir()` upward from deleted files to collect all ancestor directories (not just the immediate parent), then removes them deepest-first via an optional `RemoveDirectory` interface. S3 backends (which don't have directories) are unaffected — the interface check is a type assertion. `RemoveDirectory` errors are silently ignored because non-empty directories will correctly fail to delete.
 
+- **Operator now calls Alertmanager directly for status checks and test alerts.** Previously, `ALERTMANAGER_URL` was purely cosmetic (an "open in Alertmanager" link). Two new UI endpoints call Alertmanager: `GET /api/alerts/status` queries `/api/v2/status` for connectivity and version info, and `POST /api/alerts/test` sends a self-resolving test alert via `/api/v2/alerts`. Rationale: users need to verify the full notification pipeline works before relying on it in production. The test alert auto-resolves after 2 minutes. Error responses are sanitized (no raw `err.Error()` in HTTP responses) to prevent leaking cluster topology through the unauthenticated UI.
+
 ---
 
 ## 19. Helm Distribution
@@ -1049,7 +1053,7 @@ helm install backup-operator ./charts/backup-operator \
 
 - `prometheusReleaseLabel: kube-prometheus-stack` — applied as the `release:` label on `ServiceMonitor` and `PrometheusRule` so kube-prometheus-stack picks them up. Set to `""` to opt out.
 - `alerts.prometheusURL: http://prometheus-operated.alert.svc.cluster.local:9090` — assumes kube-prometheus-stack lives in the `alert` namespace. Override or set to `""` for the local heuristic.
-- `alerts.alertmanagerURL: http://alertmanager-operated.alert.svc.cluster.local:9093` — surfaced as an "open in Alertmanager" link in the UI; not called directly.
+- `alerts.alertmanagerURL: http://alertmanager-operated.alert.svc.cluster.local:9093` — used for the "open in Alertmanager" UI link, the `/api/alerts/status` connectivity check, and the `/api/alerts/test` endpoint.
 
 ### 19.2 CI/CD
 

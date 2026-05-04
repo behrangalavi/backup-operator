@@ -730,48 +730,242 @@ window.confirmDeleteDest = async function(secretName) {
   } catch(e) { toast(e.message, 'error'); }
 };
 
+// --- Alert descriptions for each alert type ---
+const ALERT_DESCRIPTIONS = {
+  BackupOverdue: {
+    title: 'Backup Overdue',
+    icon: '⏰',
+    desc: 'No successful backup in over 36 hours. The scheduled CronJob may not be running, or all destinations are failing.',
+    action: 'Check CronJob status: kubectl get cronjobs -n backup. Look for failed Jobs: kubectl get jobs -n backup --sort-by=.metadata.creationTimestamp. Check worker pod logs for errors.',
+  },
+  BackupDestinationFailing: {
+    title: 'Destination Failing',
+    icon: '💾',
+    desc: 'Uploads to this storage destination are failing. The backup may still succeed on other destinations.',
+    action: 'Test destination connectivity via the UI (Destinations → Test Connection). Check credentials, network access, and available storage space.',
+  },
+  BackupDumpSizeCollapsed: {
+    title: 'Dump Size Collapsed',
+    icon: '📉',
+    desc: 'The dump shrank to less than 50% of the previous size. This could indicate data loss, a truncated dump, or a legitimate large DELETE operation.',
+    action: 'Compare row counts in the Verification tab. If legitimate, the alert will auto-resolve on the next run. If unexpected, check the database for missing data.',
+  },
+  BackupSchemaChanged: {
+    title: 'Schema Changed',
+    icon: '🔧',
+    desc: 'Table structure (columns, types) changed since the last backup. Informational — may indicate a migration or an unintended schema drift.',
+    action: 'Review recent database migrations. Compare schema fingerprints in the target detail view.',
+  },
+  BackupAnomaliesAppearing: {
+    title: 'Anomalies Detected',
+    icon: '⚠️',
+    desc: 'The analyzer detected anomalies in the backup: unexpected row-count changes, missing tables, or other irregularities.',
+    action: 'Open the target detail view to see specific anomalies. Check if recent application changes explain the differences.',
+  },
+  BackupLastRunFailed: {
+    title: 'Last Run Failed',
+    icon: '❌',
+    desc: 'The most recent backup run did not produce a usable artifact. The dump, encryption, or upload may have failed.',
+    action: 'Check worker pod logs: kubectl logs -l job-name=backup-<target> -n backup --tail=100. Common causes: DB connection timeout, disk full, credential expiry.',
+  },
+  BackupSucceeded: {
+    title: 'Backup Succeeded',
+    icon: '🟢',
+    desc: 'Heartbeat alert — fires briefly after each successful backup to confirm the pipeline is working.',
+    action: 'No action needed. This alert auto-resolves after ~2 minutes.',
+  },
+  BackupOperatorTestAlert: {
+    title: 'Test Alert',
+    icon: '🧪',
+    desc: 'Test alert sent from the UI to verify the notification pipeline.',
+    action: 'No action needed. This alert auto-resolves after 2 minutes.',
+  },
+};
+
+function getAlertDescription(alertname) {
+  return ALERT_DESCRIPTIONS[alertname] || {
+    title: alertname,
+    icon: '🔔',
+    desc: 'Custom alert rule.',
+    action: 'Check Prometheus rules for details.',
+  };
+}
+
 // --- Alerts ---
 async function renderAlerts(loading = true) {
   if (loading) showLoading();
-  let resp = null;
+
+  // Fetch alerts + status in parallel
+  let alertsResp = null, statusResp = null;
   let errMsg = '';
   try {
-    resp = await api('/api/alerts');
+    const [a, s] = await Promise.all([
+      api('/api/alerts').catch(e => { errMsg = e.message || 'unknown error'; return null; }),
+      api('/api/alerts/status').catch(() => null),
+    ]);
+    alertsResp = a;
+    statusResp = s;
   } catch(e) {
     errMsg = e.message || 'unknown error';
   }
 
-  if (!resp) {
-    content.innerHTML = `
-      <div class="page-header">
-        <div><h1>Alerts</h1><div class="subtitle">Currently firing backup alerts</div></div>
-      </div>
-      <div class="empty-state">
-        <h3>Alerts not available</h3>
-        <p>${escHTML(errMsg)}</p>
-        <p style="margin-top:8px;font-size:12px;color:var(--text-muted)">Set <code>PROMETHEUS_URL</code> to point at your Prometheus, or rely on the local heuristic by ensuring metrics are registered.</p>
+  const items = alertsResp ? (alertsResp.items || []) : [];
+  const counts = alertsResp ? (alertsResp.counts || {}) : {};
+  const amURL = alertsResp ? alertsResp.alertmanagerUrl : '';
+  if (alertsResp) updateAlertsPill(counts);
+
+  // --- Connection Status Banner ---
+  let statusBanner = '';
+  if (statusResp) {
+    const prom = statusResp.prometheus || {};
+    const am = statusResp.alertmanager || {};
+    const mode = statusResp.mode || 'none';
+
+    const promStatus = !prom.configured
+      ? '<span class="badge badge-pending">Not configured</span>'
+      : prom.reachable
+        ? `<span class="badge badge-ok">Connected</span>${prom.version ? ' <span style="font-size:11px;color:var(--text-muted)">v' + escHTML(prom.version) + '</span>' : ''}`
+        : `<span class="badge badge-critical">Unreachable</span> <span style="font-size:11px;color:var(--text-muted)">${escHTML(prom.error || '')}</span>`;
+
+    const amStatus = !am.configured
+      ? '<span class="badge badge-pending">Not configured</span>'
+      : am.reachable
+        ? `<span class="badge badge-ok">Connected</span>${am.version ? ' <span style="font-size:11px;color:var(--text-muted)">v' + escHTML(am.version) + '</span>' : ''}`
+        : `<span class="badge badge-critical">Unreachable</span> <span style="font-size:11px;color:var(--text-muted)">${escHTML(am.error || '')}</span>`;
+
+    const modeLabel = mode === 'prometheus' ? 'Prometheus (canonical)'
+      : mode === 'local' ? 'Local Heuristic (no for: debounce)'
+      : 'Not available';
+    const modeBadge = mode === 'prometheus' ? 'ok' : mode === 'local' ? 'warning' : 'critical';
+
+    statusBanner = `
+      <div class="table-card" style="margin-bottom:16px">
+        <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
+          <strong>Connection Status</strong>
+          <span class="badge badge-${modeBadge}" style="margin-left:8px">Mode: ${escHTML(modeLabel)}</span>
+        </div>
+        <table>
+          <tbody>
+            <tr><td style="width:180px;font-weight:500">Prometheus</td><td>${promStatus}</td><td style="font-size:12px;color:var(--text-muted)">${prom.configured ? escHTML(prom.url || '') : 'Set <code>alerts.prometheusURL</code> in Helm values'}</td></tr>
+            <tr><td style="font-weight:500">Alertmanager</td><td>${amStatus}</td><td style="font-size:12px;color:var(--text-muted)">${am.configured ? escHTML(am.url || '') : 'Set <code>alerts.alertmanagerURL</code> in Helm values'}</td></tr>
+          </tbody>
+        </table>
       </div>`;
-    return;
   }
 
-  const items = resp.items || [];
-  const counts = resp.counts || {};
-  const amURL = resp.alertmanagerUrl;
-  updateAlertsPill(counts);
+  // --- Setup Guide (shown when nothing is configured) ---
+  let setupGuide = '';
+  if (statusResp && !statusResp.prometheus.configured && !statusResp.alertmanager.configured) {
+    setupGuide = `
+      <div class="table-card" style="margin-bottom:16px">
+        <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
+          <strong>Setup Guide</strong> — How to connect Prometheus &amp; Alertmanager
+        </div>
+        <div style="padding:16px;font-size:13px;line-height:1.7">
+          <p style="margin:0 0 12px"><strong>The backup operator works in 3 modes:</strong></p>
+          <table style="width:100%;margin-bottom:16px">
+            <thead><tr><th>Mode</th><th>What you need</th><th>What you get</th></tr></thead>
+            <tbody>
+              <tr><td><span class="badge badge-ok">Full</span></td><td>Prometheus + Alertmanager</td><td>Real-time alerts with debounce + notifications (Slack, Email, PagerDuty)</td></tr>
+              <tr><td><span class="badge badge-warning">Prometheus only</span></td><td>Prometheus (e.g. kube-prometheus-stack)</td><td>Canonical alert evaluation with <code>for:</code> duration, visible in this UI</td></tr>
+              <tr><td><span class="badge badge-pending">Local</span></td><td>Nothing (built-in)</td><td>Immediate alert evaluation against operator metrics — no external setup needed</td></tr>
+            </tbody>
+          </table>
 
-  // Sources mix in mixed deployments — surface the disclaimer when any
-  // alert is local-evaluated rather than from Prometheus, because the
-  // semantics differ ("for:" not honored locally).
+          <p style="margin:0 0 8px"><strong>Step 1: Install kube-prometheus-stack</strong> (if not already installed)</p>
+          <pre style="background:var(--bg-secondary);padding:12px;border-radius:6px;overflow-x:auto;font-size:12px;margin:0 0 16px">helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \\
+  -n monitoring --create-namespace</pre>
+
+          <p style="margin:0 0 8px"><strong>Step 2: Configure the backup operator</strong></p>
+          <pre style="background:var(--bg-secondary);padding:12px;border-radius:6px;overflow-x:auto;font-size:12px;margin:0 0 16px"># values.yaml
+alerts:
+  prometheusURL: "http://prometheus-operated.monitoring.svc.cluster.local:9090"
+  alertmanagerURL: "http://alertmanager-operated.monitoring.svc.cluster.local:9093"
+
+# Must match your kube-prometheus-stack release name
+prometheusReleaseLabel: "kube-prometheus-stack"</pre>
+
+          <p style="margin:0 0 8px"><strong>Step 3: Upgrade the release</strong></p>
+          <pre style="background:var(--bg-secondary);padding:12px;border-radius:6px;overflow-x:auto;font-size:12px;margin:0 0 16px">helm upgrade backup-operator ./charts/backup-operator -n backup -f values.yaml</pre>
+
+          <p style="margin:0 0 8px"><strong>Step 4: Configure notifications in Alertmanager</strong></p>
+          <details style="margin-bottom:8px">
+            <summary style="cursor:pointer;font-weight:500">Slack example</summary>
+            <pre style="background:var(--bg-secondary);padding:12px;border-radius:6px;overflow-x:auto;font-size:12px;margin:8px 0 0"># alertmanager-config (Secret or inline in kube-prometheus-stack values)
+route:
+  receiver: default
+  routes:
+    - match:
+        alertname: =~"^Backup.*"
+      receiver: backup-slack
+receivers:
+  - name: default
+    # ...
+  - name: backup-slack
+    slack_configs:
+      - api_url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+        channel: "#backup-alerts"
+        title: '{{ .CommonLabels.alertname }}'
+        text: '{{ .CommonAnnotations.summary }}'
+        send_resolved: true</pre>
+          </details>
+          <details>
+            <summary style="cursor:pointer;font-weight:500">Email example</summary>
+            <pre style="background:var(--bg-secondary);padding:12px;border-radius:6px;overflow-x:auto;font-size:12px;margin:8px 0 0"># alertmanager-config
+route:
+  receiver: default
+  routes:
+    - match:
+        alertname: =~"^Backup.*"
+      receiver: backup-email
+receivers:
+  - name: default
+    # ...
+  - name: backup-email
+    email_configs:
+      - to: "ops-team@yourcompany.com"
+        from: "alertmanager@yourcompany.com"
+        smarthost: "smtp.yourcompany.com:587"
+        auth_username: "alertmanager@yourcompany.com"
+        auth_password: "your-smtp-password"
+        send_resolved: true</pre>
+          </details>
+        </div>
+      </div>`;
+  }
+
+  // --- Source mode banner ---
   const localCount = items.filter(a => a.source === 'local').length;
   const sourceBanner = localCount === items.length && items.length > 0
-    ? '<div class="banner banner-info">Showing locally evaluated alerts. Configure <code>PROMETHEUS_URL</code> for the canonical view used by Alertmanager.</div>'
+    ? '<div class="banner banner-info" style="margin-bottom:12px">Showing locally evaluated alerts (no <code>for:</code> debounce). Configure <code>alerts.prometheusURL</code> for the canonical Prometheus-based view.</div>'
+    : '';
+
+  // --- Alert info/error banner ---
+  let alertError = '';
+  if (!alertsResp) {
+    alertError = `<div class="banner banner-warning" style="margin-bottom:12px">Could not fetch alerts: ${escHTML(errMsg)}. The local evaluator may not be initialized yet — wait for the first backup to complete.</div>`;
+  }
+
+  // --- Test alert button ---
+  const testBtn = statusResp && statusResp.alertmanager && statusResp.alertmanager.reachable
+    ? '<button class="btn btn-secondary btn-sm" onclick="sendTestAlert()" id="btnTestAlert">🧪 Send Test Alert</button>'
     : '';
 
   content.innerHTML = `
     <div class="page-header">
-      <div><h1>Alerts</h1><div class="subtitle">Currently firing backup alerts${amURL ? ' — <a href="' + escHTML(amURL) + '" target="_blank">open in Alertmanager</a>' : ''}</div></div>
-      <button class="btn btn-secondary btn-sm" onclick="renderAlerts(false)">↻ Refresh</button>
+      <div>
+        <h1>Alerts</h1>
+        <div class="subtitle">Backup alert monitoring${amURL ? ' — <a href="' + escHTML(amURL) + '" target="_blank">Open Alertmanager</a>' : ''}</div>
+      </div>
+      <div style="display:flex;gap:8px">
+        ${testBtn}
+        <button class="btn btn-secondary btn-sm" onclick="renderAlerts(false)">↻ Refresh</button>
+      </div>
     </div>
+    ${statusBanner}
+    ${setupGuide}
+    ${alertError}
     ${sourceBanner}
     <div class="stats-row">
       <div class="stat-card"><div class="label">Critical</div><div class="value${counts.critical > 0 ? ' bad' : ''}">${counts.critical || 0}</div></div>
@@ -786,18 +980,61 @@ async function renderAlerts(loading = true) {
             <th>Severity</th><th>Alert</th><th>Target</th><th>Destination</th>
             <th>Since</th><th>Source</th><th>Summary</th>
           </tr></thead>
-          <tbody>${items.map(a => `<tr>
+          <tbody>${items.map(a => {
+            const info = getAlertDescription(a.alertname);
+            return `<tr>
             <td><span class="badge badge-${escHTML(a.severity || 'info')}">${escHTML(a.severity || 'info')}</span></td>
-            <td><code style="font-size:12px">${escHTML(a.alertname)}</code></td>
-            <td>${a.target ? `<a href="#/target/${escHTML(a.target)}" style="color:var(--accent)">${escHTML(a.target)}</a>` : '—'}</td>
+            <td>
+              <details style="cursor:pointer">
+                <summary><code style="font-size:12px">${escHTML(info.icon)} ${escHTML(info.title)}</code></summary>
+                <div style="padding:8px 0;font-size:12px;line-height:1.6">
+                  <p style="margin:0 0 6px">${escHTML(info.desc)}</p>
+                  <p style="margin:0;color:var(--text-muted)"><strong>Action:</strong> ${escHTML(info.action)}</p>
+                </div>
+              </details>
+            </td>
+            <td>${a.target ? '<a href="#/target/' + escHTML(a.target) + '" style="color:var(--accent)">' + escHTML(a.target) + '</a>' : '—'}</td>
             <td>${a.destination ? escHTML(a.destination) : '—'}</td>
             <td style="font-size:12px;color:var(--text-muted)">${a.activeSince ? timeAgo(a.activeSince) : '—'}</td>
             <td><span class="badge badge-${a.source === 'prometheus' ? 'ok' : 'pending'}" title="${a.source === 'prometheus' ? 'From Prometheus — honors rule for: duration' : 'Local heuristic — fires immediately, no for: debounce'}">${escHTML(a.source || '?')}</span></td>
             <td style="font-size:13px">${escHTML(a.summary || '')}</td>
-          </tr>`).join('')}</tbody>
+          </tr>`;
+          }).join('')}</tbody>
         </table>
-      </div>`}`;
+      </div>`}
+
+    <div class="table-card" style="margin-top:24px">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
+        <strong>Alert Rules Reference</strong>
+        <span style="font-size:12px;color:var(--text-muted);margin-left:8px">7 built-in rules shipped with the Helm chart</span>
+      </div>
+      <table>
+        <thead><tr><th>Alert</th><th>Severity</th><th>Condition</th><th>Description</th></tr></thead>
+        <tbody>
+          ${Object.entries(ALERT_DESCRIPTIONS).filter(([k]) => k !== 'BackupOperatorTestAlert').map(([name, info]) => `<tr>
+            <td><code style="font-size:12px">${escHTML(info.icon)} ${escHTML(info.title)}</code></td>
+            <td><span class="badge badge-${name === 'BackupDumpSizeCollapsed' ? 'critical' : name === 'BackupSchemaChanged' || name === 'BackupSucceeded' ? 'info' : 'warning'}">${name === 'BackupDumpSizeCollapsed' ? 'critical' : name === 'BackupSchemaChanged' || name === 'BackupSucceeded' ? 'info' : 'warning'}</span></td>
+            <td style="font-size:12px">${escHTML(info.desc)}</td>
+            <td style="font-size:12px;color:var(--text-muted)">${escHTML(info.action)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
 }
+
+// Send test alert to Alertmanager
+window.sendTestAlert = async function() {
+  const btn = document.getElementById('btnTestAlert');
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending...'; }
+  try {
+    const resp = await api('/api/alerts/test', { method: 'POST' });
+    toast(resp.message || 'Test alert sent!', 'success');
+  } catch(e) {
+    toast(e.message || 'Failed to send test alert', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🧪 Send Test Alert'; }
+  }
+};
 
 // updateAlertsPill keeps the sidebar counter in sync with the latest /api/alerts
 // response. We call it after every alert refresh and once on startup; the SSE

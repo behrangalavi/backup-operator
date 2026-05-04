@@ -53,8 +53,14 @@ type Config struct {
 	// pretending to know.
 	AlertsProvider alerts.Provider
 
-	// AlertmanagerURL is surfaced to the UI for "open in Alertmanager"
-	// links. The operator never calls Alertmanager directly.
+	// PrometheusURL is the configured Prometheus endpoint. Stored here so
+	// the /api/alerts/status endpoint can report connectivity. Empty means
+	// "not configured — using local heuristic only."
+	PrometheusURL string
+
+	// AlertmanagerURL is used for "open in Alertmanager" links in the UI,
+	// for the /api/alerts/status connectivity check (GET /api/v2/status),
+	// and for the /api/alerts/test endpoint (POST /api/v2/alerts).
 	AlertmanagerURL string
 }
 
@@ -148,6 +154,8 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Alerts surface (Prometheus or local heuristic)
 	mux.HandleFunc("/api/alerts", s.handleAlerts)
+	mux.HandleFunc("/api/alerts/status", s.handleAlertsStatus)
+	mux.HandleFunc("/api/alerts/test", s.handleAlertsTest)
 
 	// Downloads
 	mux.HandleFunc("/download/", s.handleDownload)

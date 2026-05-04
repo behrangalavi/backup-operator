@@ -204,6 +204,7 @@ func main() {
 			MaxBodyBytes:      maxBody,
 			MaxSSEClients:     maxSSE,
 			AlertsProvider:    alertsProvider,
+			PrometheusURL:     config.GetValue("PROMETHEUS_URL"),
 			AlertmanagerURL:   config.GetValue("ALERTMANAGER_URL"),
 		})
 		assert.NoError(err, "failed to construct UI server")

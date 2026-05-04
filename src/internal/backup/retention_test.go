@@ -127,3 +127,24 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+func TestSortDirsByDepth(t *testing.T) {
+	dirs := map[string]bool{
+		"target/2024":       true,
+		"target/2024/01":    true,
+		"target/2024/01/15": true,
+		"target/2024/02":    true,
+	}
+	got := sortDirsByDepth(dirs)
+	if len(got) != 4 {
+		t.Fatalf("expected 4 dirs, got %d", len(got))
+	}
+	// Deepest first
+	if got[0] != "target/2024/01/15" {
+		t.Errorf("expected deepest first, got %s", got[0])
+	}
+	// Shallowest last
+	if got[len(got)-1] != "target/2024" {
+		t.Errorf("expected shallowest last, got %s", got[len(got)-1])
+	}
+}

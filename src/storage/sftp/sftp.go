@@ -185,11 +185,12 @@ func (s *sftpStorage) Upload(ctx context.Context, p string, r io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("create %s: %w", full, err)
 	}
-	defer func() { _ = f.Close() }()
 	if _, err := io.Copy(f, r); err != nil {
+		_ = f.Close()
+		_ = sc.Remove(full) // remove partial file
 		return fmt.Errorf("write %s: %w", full, err)
 	}
-	return nil
+	return f.Close()
 }
 
 // walkList traverses the directory tree and collects non-directory objects,
@@ -269,6 +270,18 @@ func (s *sftpStorage) Delete(ctx context.Context, p string) error {
 	return nil
 }
 
+// RemoveDirectory attempts to remove an empty directory. Returns an error if
+// the directory is not empty or does not exist — callers should ignore errors.
+func (s *sftpStorage) RemoveDirectory(ctx context.Context, p string) error {
+	ssh, sc, err := s.dial(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = ssh.Close() }()
+	defer func() { _ = sc.Close() }()
+	return sc.RemoveDirectory(s.full(p))
+}
+
 // WithSession opens one SSH+SFTP connection and returns a Storage that
 // reuses it for every call. The caller MUST call closer() when done.
 func (s *sftpStorage) WithSession(ctx context.Context) (storage.Storage, func() error, error) {
@@ -302,11 +315,12 @@ func (s *sftpSession) Upload(_ context.Context, p string, r io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("create %s: %w", full, err)
 	}
-	defer func() { _ = f.Close() }()
 	if _, err := io.Copy(f, r); err != nil {
+		_ = f.Close()
+		_ = s.sc.Remove(full) // remove partial file
 		return fmt.Errorf("write %s: %w", full, err)
 	}
-	return nil
+	return f.Close()
 }
 
 func (s *sftpSession) List(ctx context.Context, prefix string) ([]storage.Object, error) {
@@ -326,4 +340,8 @@ func (s *sftpSession) Delete(_ context.Context, p string) error {
 		return fmt.Errorf("remove %s: %w", p, err)
 	}
 	return nil
+}
+
+func (s *sftpSession) RemoveDirectory(_ context.Context, p string) error {
+	return s.sc.RemoveDirectory(s.parent.full(p))
 }

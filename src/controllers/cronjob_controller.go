@@ -2,6 +2,8 @@ package controllers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -286,10 +288,13 @@ func cronJobNameFor(secretName string) string {
 	const prefix = "backup-"
 	const max = 52 // CronJob names are k8s names; leave headroom for Job suffix
 	name := prefix + secretName
-	if len(name) > max {
-		return name[:max]
+	if len(name) <= max {
+		return name
 	}
-	return name
+	// Append a hash suffix to prevent collisions when truncating long names.
+	h := sha256.Sum256([]byte(secretName))
+	suffix := hex.EncodeToString(h[:4]) // 8 hex chars
+	return name[:max-len(suffix)-1] + "-" + suffix
 }
 
 // roleLabelTransitionPredicate ensures we reconcile when:

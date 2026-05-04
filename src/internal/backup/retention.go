@@ -16,6 +16,19 @@ import (
 	"github.com/go-logr/logr"
 )
 
+// sortDirsByDepth returns directory paths sorted deepest-first, so child
+// directories are removed before their parents.
+func sortDirsByDepth(dirs map[string]bool) []string {
+	out := make([]string, 0, len(dirs))
+	for d := range dirs {
+		out = append(out, d)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return strings.Count(out[i], "/") > strings.Count(out[j], "/")
+	})
+	return out
+}
+
 // RetentionPolicy defines the effective retention rules for one run. The
 // resolver in the pipeline turns annotation values + global defaults into a
 // concrete RetentionPolicy before invoking applyRetention.
@@ -102,6 +115,7 @@ func (p *Pipeline) retainForDestination(
 		fmt.Sprintf("Retention pruning %d artifacts for target %s from %s (policy: %d days, min-keep %d)",
 			len(victims), target, dest.Name, policy.Days, policy.MinKeep))
 
+	parentDirs := make(map[string]bool)
 	for _, v := range victims {
 		if err := active.Delete(ctx, v); err != nil {
 			log.Error(err, "retention: delete", "destination", dest.Name, "path", v)
@@ -109,6 +123,22 @@ func (p *Pipeline) retainForDestination(
 			continue
 		}
 		metrics.IncRetentionDeleted(target, dest.Name, classifyKind(v))
+		if dir := path.Dir(v); dir != "." && dir != "/" && dir != target {
+			parentDirs[dir] = true
+		}
+	}
+
+	// Best-effort cleanup of empty parent directories left by date-partitioned
+	// paths (e.g. target/2024/01/01/). Walk from deepest to shallowest so
+	// child dirs are removed before their parents. Errors are expected when
+	// directories are not empty (still holding other backups) — silently skip.
+	if remover, ok := active.(interface {
+		RemoveDirectory(ctx context.Context, path string) error
+	}); ok {
+		sorted := sortDirsByDepth(parentDirs)
+		for _, d := range sorted {
+			_ = remover.RemoveDirectory(ctx, d)
+		}
 	}
 }
 

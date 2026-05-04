@@ -275,6 +275,16 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		metaVerification = verification
 	}
 
+	// Pre-upload retention sweep: free space on destinations BEFORE uploading.
+	// Without this, a full storage stays full forever (upload fails → retention
+	// never runs → deadlock). Safe because MinKeep protects the N most recent
+	// existing backups. Best-effort: failures here do not abort the run.
+	policy := p.resolvePolicy(src)
+	if !policy.Disabled() {
+		log.V(1).Info("running pre-upload retention sweep")
+		p.applyRetention(ctx, dests, src.TargetName, policy, time.Now(), log)
+	}
+
 	// Phase 1: fan-out dumps to all destinations, collecting per-destination results.
 	destResults := p.fanOutDumps(ctx, dests, src.TargetName, dumpFile, objectPath, log)
 	successCount := 0
@@ -302,9 +312,12 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	log.Info("backup completed", "destinations_succeeded", successCount, "destinations_total", len(dests),
 		"verification", verification.Verdict)
 
-	// Retention runs after a successful upload so old artifacts are pruned
-	// only once a fresh one is in place. Errors here do not fail the run.
-	p.applyRetention(ctx, dests, src.TargetName, p.resolvePolicy(src), time.Now(), log)
+	// Post-upload retention: now that the fresh artifact is safely stored,
+	// prune again in case the newly uploaded backup pushed the count above
+	// the retention threshold. Uses the same resolved policy.
+	if !policy.Disabled() {
+		p.applyRetention(ctx, dests, src.TargetName, policy, time.Now(), log)
+	}
 
 	return nil
 }
@@ -569,7 +582,7 @@ func (p *Pipeline) uploadDumpOne(
 	localSize := info.Size()
 
 	if err := st.Upload(ctx, objectPath, dump); err != nil {
-		return &RetryableError{Op: "upload dump", Err: err}
+		return classifyUploadError("upload dump", err)
 	}
 	metrics.ObserveUploadDuration(target, d.Name, d.StorageType, time.Since(start))
 

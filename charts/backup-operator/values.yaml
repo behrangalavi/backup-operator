@@ -101,9 +101,9 @@ ui:
 # integration and use the local heuristic only.
 alerts:
   prometheusURL: "http://prometheus-operated.alert.svc.cluster.local:9090"
-  # AlertmanagerURL is purely cosmetic — the UI surfaces a link for users
-  # who want to silence/inhibit alerts in Alertmanager. The operator never
-  # calls Alertmanager itself.
+  # AlertmanagerURL is used for the "open in Alertmanager" UI link, the
+  # /api/alerts/status connectivity check, and the /api/alerts/test
+  # endpoint that sends a test alert via the Alertmanager v2 API.
   alertmanagerURL: "http://alertmanager-operated.alert.svc.cluster.local:9093"
 
 # Convenience knob: kube-prometheus-stack's Prometheus selects ServiceMonitors

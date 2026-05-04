@@ -210,7 +210,7 @@ func (s *Server) handleAlertsTest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.cfg.Logger.Error(err, "test alert: alertmanager unreachable")
 		writeJSON(w, http.StatusBadGateway, apiResponse{
-			Message: "Alertmanager unreachable: " + err.Error(),
+			Message: "Alertmanager unreachable",
 		})
 		return
 	}

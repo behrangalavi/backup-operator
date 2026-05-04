@@ -58,8 +58,9 @@ type Config struct {
 	// "not configured — using local heuristic only."
 	PrometheusURL string
 
-	// AlertmanagerURL is surfaced to the UI for "open in Alertmanager"
-	// links. The operator never calls Alertmanager directly.
+	// AlertmanagerURL is used for "open in Alertmanager" links in the UI,
+	// for the /api/alerts/status connectivity check (GET /api/v2/status),
+	// and for the /api/alerts/test endpoint (POST /api/v2/alerts).
 	AlertmanagerURL string
 }
 

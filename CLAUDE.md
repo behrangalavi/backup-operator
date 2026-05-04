@@ -865,6 +865,8 @@ This section documents the complete data lifecycle for compliance audits (DSGVO/
 | Worker → SFTP destination | SSH (SFTP subsystem) | SSH transport encryption |
 | Worker → S3 destination | HTTPS | TLS 1.2+ |
 | Operator → Storage (metrics refresh) | SSH/HTTPS (same as worker) | Same as worker |
+| Operator → Prometheus (alerts status) | HTTP | Plain HTTP (cluster-internal) |
+| Operator → Alertmanager (status check, test alerts) | HTTP | Plain HTTP (cluster-internal) |
 | Operator → K8s API | HTTPS (in-cluster ServiceAccount) | mTLS |
 
 ### 17.3 Key Management
@@ -895,11 +897,11 @@ This section documents the complete data lifecycle for compliance audits (DSGVO/
 
 | Principal | Can access | Cannot access |
 |---|---|---|
-| Operator pod | Source/Dest Secrets (CRUD), CronJobs (CRUD), ConfigMaps (get/update/patch), Jobs (create), Leases, Events | Private key, dump contents |
+| Operator pod | Source/Dest Secrets (CRUD), CronJobs (CRUD), ConfigMaps (get/update/patch), Jobs (create), Leases, Events, Prometheus query API (read), Alertmanager API (read status + write test alerts) | Private key, dump contents |
 | Worker pod | Source/Dest Secrets (read), Events (create) | CronJobs, Leases, private key |
 | Storage backend | Encrypted dumps, unencrypted meta.json | Private key, DB credentials |
 | Restore operator (human) | Private key, storage backend | Cluster Secrets (unless they have kubectl access) |
-| Prometheus/Alertmanager | Metrics (sizes, counts, anomalies) | Dump contents, credentials |
+| Prometheus/Alertmanager | Metrics (sizes, counts, anomalies); operator reads status + posts test alerts | Dump contents, credentials |
 
 ---
 

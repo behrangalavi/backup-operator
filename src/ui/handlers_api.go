@@ -43,6 +43,12 @@ type sourceRequest struct {
 	RowDropThreshold   string            `json:"rowDropThreshold"`
 	SizeDropThreshold  string            `json:"sizeDropThreshold"`
 	AnonymizeTables    *bool             `json:"anonymizeTables"`
+	// Restore-verification (Phase 1 stream-validate, Phase 2 spawn-and-restore).
+	// Empty string on optional fields means "don't change / use default".
+	RestoreVerificationMode     string `json:"restoreVerificationMode"`
+	RestoreVerificationInterval string `json:"restoreVerificationInterval"`
+	VerificationImage           string `json:"verificationImage"`
+	VerificationVolumeSize      string `json:"verificationVolumeSize"`
 	Extra              map[string]string `json:"extra"`
 }
 
@@ -655,6 +661,18 @@ func buildSourceAnnotations(req sourceRequest) map[string]string {
 	if req.AnonymizeTables != nil && *req.AnonymizeTables {
 		ann[labels.AnnotationAnonymizeTables] = "true"
 	}
+	if req.RestoreVerificationMode != "" {
+		ann[labels.AnnotationRestoreVerificationMode] = req.RestoreVerificationMode
+	}
+	if req.RestoreVerificationInterval != "" {
+		ann[labels.AnnotationRestoreVerificationInterval] = req.RestoreVerificationInterval
+	}
+	if req.VerificationImage != "" {
+		ann[labels.AnnotationVerificationImage] = req.VerificationImage
+	}
+	if req.VerificationVolumeSize != "" {
+		ann[labels.AnnotationVerificationVolumeSize] = req.VerificationVolumeSize
+	}
 	for k, v := range req.Extra {
 		ann["backup.mogenius.io/extra-"+k] = v
 	}
@@ -712,9 +730,28 @@ func mergeSourceAnnotations(sec *corev1.Secret, req sourceRequest) {
 	if req.AnonymizeTables != nil {
 		sec.Annotations[labels.AnnotationAnonymizeTables] = fmt.Sprintf("%t", *req.AnonymizeTables)
 	}
+	// Verification annotations: empty string from the form means "unset"
+	// (delete the annotation) so users can revert to default by clearing
+	// the input. Non-empty replaces.
+	applyOptionalAnnotation(sec, labels.AnnotationRestoreVerificationMode, req.RestoreVerificationMode)
+	applyOptionalAnnotation(sec, labels.AnnotationRestoreVerificationInterval, req.RestoreVerificationInterval)
+	applyOptionalAnnotation(sec, labels.AnnotationVerificationImage, req.VerificationImage)
+	applyOptionalAnnotation(sec, labels.AnnotationVerificationVolumeSize, req.VerificationVolumeSize)
 	for k, v := range req.Extra {
 		sec.Annotations["backup.mogenius.io/extra-"+k] = v
 	}
+}
+
+// applyOptionalAnnotation sets the annotation to v if non-empty, deletes
+// it otherwise. Lets the form clear an annotation by submitting an empty
+// string for that field. Without this, a cleared form field would have
+// no effect (zero-valued string just means "skip").
+func applyOptionalAnnotation(sec *corev1.Secret, key, v string) {
+	if v == "" {
+		delete(sec.Annotations, key)
+		return
+	}
+	sec.Annotations[key] = v
 }
 
 func mergeSourceData(sec *corev1.Secret, req sourceRequest) {
@@ -778,6 +815,11 @@ func (s *Server) handleAPIGetSource(w http.ResponseWriter, r *http.Request) {
 		RowDropThreshold  string `json:"rowDropThreshold"`
 		SizeDropThreshold string `json:"sizeDropThreshold"`
 		AnonymizeTables   string `json:"anonymizeTables"`
+		// Restore-verification settings — empty when annotation absent.
+		RestoreVerificationMode     string `json:"restoreVerificationMode"`
+		RestoreVerificationInterval string `json:"restoreVerificationInterval"`
+		VerificationImage           string `json:"verificationImage"`
+		VerificationVolumeSize      string `json:"verificationVolumeSize"`
 	}
 
 	name := sec.Annotations[labels.AnnotationName]
@@ -803,6 +845,10 @@ func (s *Server) handleAPIGetSource(w http.ResponseWriter, r *http.Request) {
 		RowDropThreshold:  sec.Annotations[labels.AnnotationRowDropThreshold],
 		SizeDropThreshold: sec.Annotations[labels.AnnotationSizeDropThreshold],
 		AnonymizeTables:   sec.Annotations[labels.AnnotationAnonymizeTables],
+		RestoreVerificationMode:     sec.Annotations[labels.AnnotationRestoreVerificationMode],
+		RestoreVerificationInterval: sec.Annotations[labels.AnnotationRestoreVerificationInterval],
+		VerificationImage:           sec.Annotations[labels.AnnotationVerificationImage],
+		VerificationVolumeSize:      sec.Annotations[labels.AnnotationVerificationVolumeSize],
 	})
 }
 

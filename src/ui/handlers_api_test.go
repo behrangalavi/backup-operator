@@ -2,6 +2,10 @@ package ui
 
 import (
 	"testing"
+
+	"backup-operator/internal/labels"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 func TestValidateK8sName(t *testing.T) {
@@ -78,6 +82,91 @@ func TestValidateCronSchedule(t *testing.T) {
 		if !c.ok && msg == "" {
 			t.Errorf("validateCronSchedule(%q) expected error", c.schedule)
 		}
+	}
+}
+
+func TestBuildSourceAnnotations_VerificationFields(t *testing.T) {
+	req := sourceRequest{
+		Name:                        "prod-db",
+		RestoreVerificationMode:     "stream-validate",
+		RestoreVerificationInterval: "168h",
+		VerificationImage:           "postgres:15.5-alpine",
+		VerificationVolumeSize:      "100Gi",
+	}
+	ann := buildSourceAnnotations(req)
+	checks := map[string]string{
+		labels.AnnotationRestoreVerificationMode:     "stream-validate",
+		labels.AnnotationRestoreVerificationInterval: "168h",
+		labels.AnnotationVerificationImage:           "postgres:15.5-alpine",
+		labels.AnnotationVerificationVolumeSize:      "100Gi",
+	}
+	for k, want := range checks {
+		if got := ann[k]; got != want {
+			t.Errorf("annotation %s = %q, want %q", k, got, want)
+		}
+	}
+}
+
+func TestBuildSourceAnnotations_VerificationOmittedWhenEmpty(t *testing.T) {
+	req := sourceRequest{Name: "prod-db"}
+	ann := buildSourceAnnotations(req)
+	for _, k := range []string{
+		labels.AnnotationRestoreVerificationMode,
+		labels.AnnotationRestoreVerificationInterval,
+		labels.AnnotationVerificationImage,
+		labels.AnnotationVerificationVolumeSize,
+	} {
+		if _, ok := ann[k]; ok {
+			t.Errorf("annotation %s must be omitted when request field is empty", k)
+		}
+	}
+}
+
+func TestMergeSourceAnnotations_ClearByEmptyString(t *testing.T) {
+	// Given a Secret that already has all four verification annotations,
+	// submitting empty strings in the form must remove them. This is the
+	// "revert to default" affordance the SPA exposes by clearing inputs.
+	sec := &corev1.Secret{}
+	sec.Annotations = map[string]string{
+		labels.AnnotationRestoreVerificationMode:     "stream-validate",
+		labels.AnnotationRestoreVerificationInterval: "168h",
+		labels.AnnotationVerificationImage:           "postgres:15",
+		labels.AnnotationVerificationVolumeSize:      "50Gi",
+	}
+	mergeSourceAnnotations(sec, sourceRequest{
+		Name:                        "prod-db",
+		RestoreVerificationMode:     "",
+		RestoreVerificationInterval: "",
+		VerificationImage:           "",
+		VerificationVolumeSize:      "",
+	})
+	for _, k := range []string{
+		labels.AnnotationRestoreVerificationMode,
+		labels.AnnotationRestoreVerificationInterval,
+		labels.AnnotationVerificationImage,
+		labels.AnnotationVerificationVolumeSize,
+	} {
+		if _, ok := sec.Annotations[k]; ok {
+			t.Errorf("annotation %s should have been deleted by empty form value", k)
+		}
+	}
+}
+
+func TestMergeSourceAnnotations_UpdatesExisting(t *testing.T) {
+	sec := &corev1.Secret{}
+	sec.Annotations = map[string]string{
+		labels.AnnotationRestoreVerificationMode: "stream-validate",
+	}
+	mergeSourceAnnotations(sec, sourceRequest{
+		Name:                    "prod-db",
+		RestoreVerificationMode: "schema-only",
+		VerificationImage:       "postgres:15.5",
+	})
+	if got := sec.Annotations[labels.AnnotationRestoreVerificationMode]; got != "schema-only" {
+		t.Errorf("mode = %q, want schema-only", got)
+	}
+	if got := sec.Annotations[labels.AnnotationVerificationImage]; got != "postgres:15.5" {
+		t.Errorf("image = %q, want postgres:15.5", got)
 	}
 }
 

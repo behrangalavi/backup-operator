@@ -129,6 +129,28 @@ function failedBadge(m) {
   const tip = m && (m.error || m.phase) ? escHTML((m.phase ? m.phase + ': ' : '') + (m.error || '')) : '';
   return `<span class="badge badge-failed"${tip ? ' title="' + tip + '"' : ''}>Failed${phase}</span>`;
 }
+
+// verificationRow renders the per-source restore-verification status
+// line in the source-list cards. Configured-but-not-yet-run shows just
+// the mode; if the latest meta has a restoreVerification block we add
+// the verdict badge + relative timestamp. Returns "" when verification
+// is off or unset so the row is hidden entirely.
+function verificationRow(t) {
+  const cfgMode = (t.verification && t.verification.mode) || '';
+  if (!cfgMode || cfgMode === 'off') return '';
+  const rv = t.Latest && t.Latest.restoreVerification;
+  let status = '<span class="badge badge-pending" style="font-size:11px">configured</span>';
+  if (rv) {
+    const verdict = rv.verdict || '';
+    let cls = 'badge-pending';
+    if (verdict === 'match') cls = 'badge-ok';
+    else if (verdict === 'mismatch') cls = 'badge-failed';
+    const ts = rv.completedAt ? timeAgo(rv.completedAt) : '—';
+    const tip = rv.summary ? ' title="' + escHTML(rv.summary) + '"' : '';
+    status = `<span class="badge ${cls}" style="font-size:11px"${tip}>${escHTML(verdict)} · ${ts}</span>`;
+  }
+  return `<div class="detail-row"><span class="key">Verify (${escHTML(cfgMode)})</span><span class="val">${status}</span></div>`;
+}
 function truncate(s, n) {
   if (!s) return '';
   return s.length > n ? s.slice(0, n) + '…' : s;
@@ -391,6 +413,7 @@ async function renderSources(loading = true) {
         <div class="detail-row" style="align-items:flex-start"><span class="key">Error</span><span class="val" style="color:var(--danger);font-size:12px;word-break:break-word" title="${escHTML(t.Latest.error)}">${escHTML(truncate(t.Latest.error, 140))}</span></div>` : ''}
         <div class="detail-row"><span class="key">Created</span><span class="val">${t.CreatedAt ? timeAgo(t.CreatedAt) : '—'}</span></div>
         <div class="detail-row"><span class="key">Destinations</span><span class="val">${(t.Destinations||[]).join(', ') || 'all'}</span></div>
+        ${verificationRow(t)}
         <div style="display:flex;gap:6px;margin-top:12px;justify-content:flex-end">
           <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();triggerBackup('${escHTML(t.Name)}')" title="Trigger a manual backup run now (creates a one-off Job from the CronJob template)">&#9654; Run</button>
           <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openSourceForm('${escHTML(t.SecretName)}')" title="Edit this source's connection details and schedule">Edit</button>
@@ -446,6 +469,32 @@ window.openSourceForm = function(secretName) {
           <div class="hint">Leave empty to fan out to all destinations</div></div>
         <div class="form-group"><label>Anonymize Tables</label>
           <select name="anonymizeTables"><option value="">No</option><option value="true">Yes</option></select></div>
+      </div>
+    </div>
+    <div class="form-section"><h4>Restore Verification</h4>
+      <div class="hint" style="margin-bottom:12px">Periodically prove the encrypted dump can be restored. The worker generates a one-shot age keypair, encrypts the run with both the DR recipient and the ephemeral one, then re-streams or restores the artifact before the pod terminates. The DR key is unaffected.</div>
+      <div class="form-row">
+        <div class="form-group"><label>Mode</label>
+          <select name="restoreVerificationMode">
+            <option value="">Off (default)</option>
+            <option value="off">Off</option>
+            <option value="stream-validate">stream-validate (in-process, no DB pod)</option>
+            <option value="schema-only">schema-only (spawn DB, restore DDL)</option>
+            <option value="sample">sample (spawn DB, restore selected tables)</option>
+            <option value="full">full (spawn DB, full restore + smoke queries)</option>
+          </select>
+          <div class="hint">stream-validate is RBAC-free. schema-only / sample / full need the chart's <code>restoreVerification.enableEphemeralPodSpawn=true</code>.</div></div>
+        <div class="form-group"><label>Interval</label>
+          <input name="restoreVerificationInterval" placeholder="168h">
+          <div class="hint">Go duration. Default 168h (weekly). Worker checks since the last completed verification and skips when not yet due.</div></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Verifier Image (Phase-2 only)</label>
+          <input name="verificationImage" placeholder="e.g. postgres:15.5-alpine">
+          <div class="hint">Pin the verifier-pod image to match your source DB version. Empty → per-DB-type default.</div></div>
+        <div class="form-group"><label>Volume Size (Phase-2 only)</label>
+          <input name="verificationVolumeSize" placeholder="e.g. 100Gi">
+          <div class="hint"><code>emptyDir.sizeLimit</code> on the verifier pod. Defaults: 1Gi schema-only, 5Gi sample, 50Gi full.</div></div>
       </div>
     </div>
     <div class="form-section"><h4>Analysis &amp; Validation</h4>
@@ -505,6 +554,10 @@ window.openSourceForm = function(secretName) {
       f.emptyDumpCheck.value = (src.emptyDumpCheck === 'true' || src.emptyDumpCheck === 'false') ? src.emptyDumpCheck : '';
       f.rowDropThreshold.value = src.rowDropThreshold || '';
       f.sizeDropThreshold.value = src.sizeDropThreshold || '';
+      f.restoreVerificationMode.value = src.restoreVerificationMode || '';
+      f.restoreVerificationInterval.value = src.restoreVerificationInterval || '';
+      f.verificationImage.value = src.verificationImage || '';
+      f.verificationVolumeSize.value = src.verificationVolumeSize || '';
     }).catch(e => toast('Failed to load source: ' + e.message, 'error'));
   }
 };
@@ -533,6 +586,10 @@ window.submitSourceForm = async function(e, secretName) {
     emptyDumpCheck: triState(f.emptyDumpCheck.value),
     rowDropThreshold: f.rowDropThreshold.value,
     sizeDropThreshold: f.sizeDropThreshold.value,
+    restoreVerificationMode: f.restoreVerificationMode.value,
+    restoreVerificationInterval: f.restoreVerificationInterval.value,
+    verificationImage: f.verificationImage.value,
+    verificationVolumeSize: f.verificationVolumeSize.value,
   };
   try {
     if (secretName) {

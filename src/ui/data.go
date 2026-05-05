@@ -39,6 +39,12 @@ type targetSummary struct {
 	// design for the source's DB type (charset for mongo/redis, row counter
 	// for mongo/redis, etc.).
 	Analysis analysisFlags
+
+	// Verification surfaces the source's restore-verification config so
+	// the source list can render "mode | last-verified" without an
+	// extra round-trip. The actual verdict for the most recent run
+	// lives in Latest.RestoreVerification.
+	Verification verificationFlags `json:"verification"`
 }
 
 type analysisFlags struct {
@@ -46,6 +52,16 @@ type analysisFlags struct {
 	EmptyDumpCheck     bool    `json:"emptyDumpCheck"`
 	RowDropThreshold   float64 `json:"rowDropThreshold"`  // -1 = default
 	SizeDropThreshold  float64 `json:"sizeDropThreshold"` // -1 = default
+}
+
+// verificationFlags mirrors the per-source verification configuration
+// so the source list can render configuration-state badges without
+// re-querying the Source secret.
+type verificationFlags struct {
+	Mode     string `json:"mode"`               // "off" / stream-validate / schema-only / sample / full
+	Interval string `json:"interval,omitempty"` // raw annotation value (Go duration)
+	Image    string `json:"image,omitempty"`
+	VolumeSize string `json:"volumeSize,omitempty"`
 }
 
 // targetDetail backs the per-source detail page.
@@ -130,6 +146,12 @@ func (d *k8sData) listTargets(ctx context.Context) ([]targetSummary, error) {
 				EmptyDumpCheck:    src.EmptyDumpCheck,
 				RowDropThreshold:  src.RowDropThreshold,
 				SizeDropThreshold: src.SizeDropThreshold,
+			},
+			Verification: verificationFlags{
+				Mode:       src.RestoreVerificationMode,
+				Interval:   formatDurationOptional(src.RestoreVerificationInterval),
+				Image:      src.VerificationImage,
+				VolumeSize: src.VerificationVolumeSize,
 			},
 		}
 		out = append(out, summary)
@@ -268,6 +290,17 @@ func (d *k8sData) listParsedSecrets(ctx context.Context, role string) ([]*secret
 // findRun resolves a (target, timestamp) pair to the MetaFile that the
 // detail page already loaded. Returns nil if the timestamp doesn't match
 // a known run.
+// formatDurationOptional renders a Go duration as the same string format
+// the user typed in the annotation, with the special case that 0 (the
+// "annotation absent" sentinel) becomes "" so JSON marshalling drops it
+// via omitempty rather than rendering "0s".
+func formatDurationOptional(d time.Duration) string {
+	if d <= 0 {
+		return ""
+	}
+	return d.String()
+}
+
 func findRun(runs []*meta.MetaFile, timestamp string) *meta.MetaFile {
 	for _, r := range runs {
 		if r.Timestamp == timestamp {

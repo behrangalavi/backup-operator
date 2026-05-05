@@ -38,12 +38,16 @@ const (
 	AnnotationVerificationVolumeSize = "backup.mogenius.io/verification-volume-size"
 )
 
-// Restore-verification mode values.
+// Restore-verification mode values. RestoreVerificationOff /
+// StreamValidate run without extra RBAC. The remaining three (SchemaOnly /
+// Sample / Full) are Phase-2 modes that spawn an ephemeral DB pod via
+// verifier/ephemeral and require restoreVerification.enableEphemeralPodSpawn=true
+// in the chart so the worker SA gets pods: create/get/list/watch/delete in
+// its own namespace.
 const (
 	RestoreVerificationOff            = "off"
 	RestoreVerificationStreamValidate = "stream-validate"
-	// Phase 2 — reserved, not yet implemented:
-	RestoreVerificationSchemaOnly = "schema-only"
-	RestoreVerificationSample     = "sample"
-	RestoreVerificationFull       = "full"
+	RestoreVerificationSchemaOnly     = "schema-only"
+	RestoreVerificationSample         = "sample"
+	RestoreVerificationFull           = "full"
 )

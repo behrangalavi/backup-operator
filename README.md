@@ -611,32 +611,32 @@ gunzip dump.sql.gz   # or pipe `--decompress` directly
 
 > A backup that hasn't been restored is not a backup.
 
-The operator can prove that an encrypted dump can actually be decrypted and parsed, on a configurable cadence, **without ever sending the age private key into the cluster**. It does this by generating a fresh X25519 keypair in the worker pod's process memory at the moment it decides to verify, encrypting the dump for both the long-lived disaster-recovery recipient *and* the ephemeral recipient, then doing the verification in-process. When the pod terminates, the ephemeral private half is gone — the offline DR key is unaffected and remains the only path that can decrypt the artifact for real recovery.
+The operator can prove on a configurable cadence that an encrypted dump can actually be decrypted, parsed, and (optionally) restored — **without ever sending the age private key into the cluster**. The worker generates a one-shot X25519 keypair in process memory at the moment it decides to verify, encrypts the dump for *both* the long-lived disaster-recovery recipient and the ephemeral one (age supports multi-recipient natively, ~200 bytes header overhead per recipient), runs the verifier in-process, then the pod terminates and the ephemeral private half is gone. The DR key is unaffected and remains the only path that can decrypt the artifact for a real recovery.
 
 ### Modes
 
-Set on a source via `backup.mogenius.io/restore-verification-mode`. Off by default.
+Set on a source via `backup.mogenius.io/restore-verification-mode`. Off by default. A typo on the annotation falls back to `off` (parsed via `parseRestoreVerificationMode` in `internal/secrets/parser.go`).
 
 | Mode | What it does | RBAC needed | Cost |
 |---|---|---|---|
-| `off` | No verification (default) | none | — |
-| `stream-validate` | In-process: decrypt → gunzip → engine-aware parser. Catches: bit rot, broken encryption, corrupt gzip, truncated dumps, "looks like a dump but isn't" garbage. | none | seconds; no extra pods |
-| `schema-only` | Spawns an ephemeral DB pod, restores schema only (SQL engines stream-filter `INSERT`/`COPY` data lines). Catches everything `stream-validate` does plus DDL the engine actually rejects. | `pods: create/delete` in worker namespace | a small DB pod for ~30 s |
-| `sample` | Spawns an ephemeral DB pod, restores a small sample of data alongside the full schema. Catches data-encoding issues. | same as above | small pod, modest disk |
-| `full` | Spawns an ephemeral DB pod, restores the entire dump, runs smoke queries. Highest fidelity. | same as above | full-size pod and emptyDir; node needs the headroom |
+| `off` | No verification. (default) | none | — |
+| `stream-validate` | In-process: decrypt with the ephemeral identity → gunzip → engine-aware parser. **SQL engines** (postgres / mysql / mariadb): re-runs `dumper.RowCounter` against the plaintext stream, header sanity-check against the engine banner, then total-rows comparison vs pre-dump stats with the same 99 % tolerance the dump-time verifier uses. **Mongo:** asserts the BSON archive magic `0x8199e26d` and drains the stream so a corrupt gzip layer fails loudly. **Redis:** asserts the `REDIS` magic + 4 ASCII version digits, drains the body. Catches bit rot, broken encryption, corrupt gzip, truncated dumps, "looks like a dump but isn't" garbage. | none | seconds; no extra pods |
+| `schema-only` | Spawns an ephemeral DB pod, restores DDL only. SQL engines stream-filter the `COPY ... FROM stdin` body and `INSERT INTO` lines on the fly so the engine literally never sees the data — proves schema restores cleanly without paying data-restore cost on a 50 GiB DB. **Mongo / Redis:** `schema-only` is a label, not a meaningfully cheaper restore — the BSON archive and RDB binary aren't decomposable that way. Pick `stream-validate` instead on those engines if cost matters. | `pods: create/get/list/watch/delete`, `pods/status: get`, `pods/log: get` in worker namespace | a small DB pod for ~30 s |
+| `sample` | Spawns an ephemeral DB pod, restores schema + a sample of data. Catches data-encoding issues a schema-only run would miss. From the engine's perspective `sample` is currently equivalent to `full`; pre-filtering hooks are reserved for a future iteration. | same as above | small pod, modest disk |
+| `full` | Spawns an ephemeral DB pod, restores the entire dump, runs smoke queries (per-table `SELECT count(*)` for SQL engines; ping + auth roundtrip for Redis whose RDB-restore is deferred to a follow-up iteration). Highest fidelity. | same as above | full-size pod and emptyDir; node needs the headroom |
 
 ### Annotations
 
 | Annotation | Default | Effect |
 |---|---|---|
-| `backup.mogenius.io/restore-verification-mode` | `off` | Mode (see above) |
-| `backup.mogenius.io/restore-verification-interval` | `168h` (weekly) | Minimum gap between verifier runs. State-driven: the worker reads `latestMeta.restoreVerification.completedAt` and skips if the interval hasn't elapsed. Manual runs verify whenever overdue, regardless of cron drift. |
-| `backup.mogenius.io/verification-image` | per-DB-type default (e.g. `postgres:15.5-alpine`) | Container image for the verifier pod. Pin to the source DB's exact major version when restore semantics depend on it. Phase-2 modes only. |
-| `backup.mogenius.io/verification-volume-size` | `1Gi` (schema-only), `5Gi` (sample), `50Gi` (full) | `emptyDir.sizeLimit` for the verifier pod's data volume. Override when one source's restore needs more headroom. |
+| `backup.mogenius.io/restore-verification-mode` | `off` | One of the modes above. Unknown values fall back to `off`. |
+| `backup.mogenius.io/restore-verification-interval` | `168h` (weekly) | Minimum gap between verifier runs (Go duration: `30m`, `48h`, `7d` …). **State-driven:** the worker reads `latestMeta.restoreVerification.completedAt` and skips when `now - completedAt < interval`. Cron drift doesn't matter; manual runs (`kubectl create job --from=cronjob/...`) verify whenever overdue. The very first run after enabling verification falls through to a "first verification" path that runs immediately so operators see signal without waiting one full interval. |
+| `backup.mogenius.io/verification-image` | per-DB-type default | Container image for the verifier pod. Pin to the source DB's exact major version when restore semantics depend on it (charset defaults, function signatures, dump-format compatibility). **Phase-2 modes only** (`schema-only` / `sample` / `full`) — `stream-validate` ignores it. Per-engine defaults: `postgres:16-alpine`, `mysql:8.0`, `mariadb:11`, `mongo:7`, `redis:7-alpine`. |
+| `backup.mogenius.io/verification-volume-size` | `1Gi` (schema-only), `5Gi` (sample), `50Gi` (full) | `emptyDir.sizeLimit` for the verifier pod's data volume. Accepts `K`/`M`/`G`/`T` (decimal) and `Ki`/`Mi`/`Gi`/`Ti` (binary) suffixes. Override when one source's restore needs more headroom — at scale, the node's ephemeral storage is a real budget. **Phase-2 modes only.** |
 
 ### Enabling Phase 2 in the chart
 
-Phase-2 modes need the worker ServiceAccount to manage Pods in its namespace. Off by default; flip on with:
+Phase-2 modes spawn ephemeral DB pods and need a wider RBAC grant on the worker ServiceAccount. Off by default; flip on with:
 
 ```yaml
 # values.yaml
@@ -644,22 +644,38 @@ restoreVerification:
   enableEphemeralPodSpawn: true
 ```
 
-This grants `pods: create/delete` on the worker SA, scoped to its own namespace.
+The chart then grants the worker SA `pods: create/get/list/watch/delete`, `pods/status: get`, and `pods/log: get` in its own namespace. Without this flag, attempting to set a Phase-2 mode produces a `Verdict=Skipped` result with the RBAC error captured in `meta.json`.
+
+The spawned pod is restricted-PSA compliant out of the box: `runAsNonRoot=true`, `RunAsUser=999`, `readOnlyRootFilesystem=true`, `capabilities.drop=ALL`, `seccompProfile=RuntimeDefault`. It carries an `OwnerReference → worker pod`, so the moment the worker exits, K8s GC cascades the verifier pod away regardless of completion state.
+
+### When does verification actually run?
+
+`ShouldVerify` (in `verifier/verifier.go`) skips a run for any of:
+
+- mode is `off` or absent
+- **No prior run for this target** — verifier needs a `preStats` baseline that the regular DumpVerification has already established. The very first backup of a new source establishes that baseline; verification starts from the second run.
+- Interval not elapsed since the last `completedAt`.
+
+It runs (and emits `restore_verification_passed` + `_last_timestamp`) when:
+
+- Mode is set and the interval has elapsed, OR
+- Mode is set but no `RestoreVerification` block exists on the latest meta yet (the "first verification" path fires immediately).
 
 ### Alerts
 
-Two new rules ship with the chart:
+Two rules ship with the chart:
 
 | Alert | Condition | Severity |
 |---|---|---|
-| `BackupRestoreVerificationFailed` | `restore_verification_passed == 0` for 5 m | critical |
-| `BackupRestoreVerificationStale` | `time() - restore_verification_last_timestamp > 14 d` | warning |
+| `BackupRestoreVerificationFailed` | `max by (target, mode) (backup_operator_restore_verification_passed) == 0` for 5 m | **critical** |
+| `BackupRestoreVerificationStale` | `time() - max by (target, mode) (backup_operator_restore_verification_last_timestamp_seconds) > 86400 * 14` for 1 h | warning |
 
-A failed verification does **not** fail the backup run itself — verification is observability, not a gate. The dump still uploads, the artifact remains decryptable with the DR key, and downstream integrations are unaffected. The alert exists so an operator can investigate.
+A failed or skipped verification does **not** fail the backup run itself — verification is observability, not a gate. The dump still uploads, the artifact remains decryptable with the DR key, and downstream integrations are unaffected. The alerts exist so an operator can investigate before the next disaster-recovery drill.
 
 ### What the UI shows
 
-The Target Detail page (`#/target/<name>`) renders a verification badge per run. The Settings → "Restore Verification" wizard step lets operators toggle the mode and interval per source without a `helm upgrade`.
+- **Target Detail (`#/target/<name>`):** every run carries a verification badge — `match` / `mismatch` / `skipped` / `not configured` — plus the verifier mode, completed-at, and ephemeral-recipient fingerprint. The fingerprint is per-run; seeing the same one twice in a row would itself be a bug, since the keypair regenerates on every verifier-run.
+- **Source form / Settings → "Restore Verification":** four fields mirroring the annotations above (mode, interval, verifier image, volume size). Phase-2-only fields are disabled in the form when mode is `off` or `stream-validate`.
 
 ---
 

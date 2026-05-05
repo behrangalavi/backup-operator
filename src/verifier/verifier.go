@@ -4,9 +4,13 @@
 // age identity that lives only inside the running worker pod (see ADR in
 // CLAUDE.md §18).
 //
-// Phase 1 implements ModeStreamValidate: header + row-count parsing
-// without spinning up a real DB. Phase 2 will add schema-only / sample /
-// full restore against an ephemerally-spawned DB pod.
+// Two phases ship today:
+//   - Phase 1 (ModeStreamValidate): in-process header + row-count parsing,
+//     no DB-pod-spawn, no extra RBAC.
+//   - Phase 2 (ModeSchemaOnly / ModeSample / ModeFull): spawn an ephemeral
+//     DB pod via verifier/ephemeral, restore the dump, run smoke queries.
+//     Gated behind restoreVerification.enableEphemeralPodSpawn=true in the
+//     chart so the worker SA gets pods CRUD in its own namespace.
 package verifier
 
 import (

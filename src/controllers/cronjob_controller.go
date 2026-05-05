@@ -267,6 +267,18 @@ func (r *CronJobReconciler) workerEnv(namespace string) []corev1.EnvVar {
 			Name:      "POD_NAMESPACE",
 			ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}},
 		},
+		// Downward API: worker Pod's own name + uid lets the
+		// restore-verifier spawn ephemeral DB pods OwnerReference'd to
+		// the worker, so they cascade-delete on worker exit. Without
+		// these, Phase 2 verifiers can't clean up after themselves.
+		{
+			Name:      "POD_NAME",
+			ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}},
+		},
+		{
+			Name:      "POD_UID",
+			ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.uid"}},
+		},
 		{
 			Name: "AGE_PUBLIC_KEYS",
 			ValueFrom: &corev1.EnvVarSource{

@@ -296,6 +296,32 @@ func TestParseSource_RestoreVerificationInterval_Defaults(t *testing.T) {
 	}
 }
 
+func TestParseSource_VerificationImageAndSize(t *testing.T) {
+	src, err := ParseSource(newSourceSecret(map[string]string{
+		labels.AnnotationVerificationImage:      "postgres:15.5-alpine",
+		labels.AnnotationVerificationVolumeSize: "100Gi",
+	}), "0 2 * * *")
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if src.VerificationImage != "postgres:15.5-alpine" {
+		t.Errorf("VerificationImage = %q", src.VerificationImage)
+	}
+	if src.VerificationVolumeSize != "100Gi" {
+		t.Errorf("VerificationVolumeSize = %q", src.VerificationVolumeSize)
+	}
+}
+
+func TestParseSource_VerificationImageDefaultsEmpty(t *testing.T) {
+	src, err := ParseSource(newSourceSecret(nil), "0 2 * * *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.VerificationImage != "" || src.VerificationVolumeSize != "" {
+		t.Error("expected both verification overrides to default to empty string")
+	}
+}
+
 func TestSource_AllowsDestination(t *testing.T) {
 	cases := []struct {
 		allow []string

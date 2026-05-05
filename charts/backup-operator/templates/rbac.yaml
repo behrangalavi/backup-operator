@@ -71,6 +71,23 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
+
+  {{- if .Values.restoreVerification.enableEphemeralPodSpawn }}
+  # Phase-2 restore verifier (schema-only / sample / full): worker
+  # spawns a short-lived DB Pod in this namespace, owns it via
+  # OwnerReference (cascade-delete on worker exit), and tears it down.
+  # Disabled by default — enable when you set
+  # restore-verification-mode to a Phase-2 mode.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

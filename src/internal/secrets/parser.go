@@ -51,6 +51,14 @@ type Source struct {
 	// 0 means "annotation absent — use DefaultRestoreVerificationInterval at
 	// apply time". Negative durations are coerced to 0 for the same reason.
 	RestoreVerificationInterval time.Duration
+	// VerificationImage overrides the verifier-pod image. Empty falls
+	// back to a per-DB-type default (see verifier/restore/engine.go).
+	// Only consulted when RestoreVerificationMode is schema-only / sample / full.
+	VerificationImage string
+	// VerificationVolumeSize is the emptyDir sizeLimit for the verifier
+	// pod's data volume (e.g. "100Gi", "5Gi"). Empty falls back to a
+	// per-mode default. Same gating as VerificationImage.
+	VerificationVolumeSize string
 	Config             dumper.Config
 }
 
@@ -137,6 +145,8 @@ func ParseSource(s *corev1.Secret, defaultSchedule string) (*Source, error) {
 		EmptyDumpCheck:     parseBoolAnnotation(s.Annotations[labels.AnnotationEmptyDumpCheck], true),
 		RestoreVerificationMode:     parseRestoreVerificationMode(s.Annotations[labels.AnnotationRestoreVerificationMode]),
 		RestoreVerificationInterval: parseDurationAnnotation(s.Annotations[labels.AnnotationRestoreVerificationInterval]),
+		VerificationImage:           strings.TrimSpace(s.Annotations[labels.AnnotationVerificationImage]),
+		VerificationVolumeSize:      strings.TrimSpace(s.Annotations[labels.AnnotationVerificationVolumeSize]),
 		Config: dumper.Config{
 			Name:     target,
 			Host:     host,

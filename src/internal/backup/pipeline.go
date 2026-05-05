@@ -27,8 +27,10 @@ import (
 	"backup-operator/storage"
 	storageFactory "backup-operator/storage/factory"
 	"backup-operator/verifier"
+	"backup-operator/verifier/ephemeral"
 
 	"github.com/go-logr/logr"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // EventEmitter abstracts Kubernetes event recording so the pipeline stays
@@ -63,6 +65,13 @@ type Pipeline struct {
 	// means restore-verification is disabled at this build of the
 	// pipeline (used by tests and the legacy NewPipeline constructor).
 	verifierFactory func(mode, dbType string, log logr.Logger) (verifier.Verifier, error)
+
+	// Phase-2 fields, only used when a Phase-2 mode is selected on a
+	// source. nil spawner means Phase-2 modes will fail with
+	// "no spawner configured" — Phase-1 stream-validate is unaffected.
+	spawner   ephemeral.Spawner
+	namespace string
+	ownerRef  *metav1.OwnerReference
 }
 
 // DestinationProvider returns the current set of destinations at run time.
@@ -118,6 +127,17 @@ func NewPipelineWithEvents(
 // Pipeline and returns it for chaining. nil disables verification.
 func (p *Pipeline) WithVerifierFactory(f func(mode, dbType string, log logr.Logger) (verifier.Verifier, error)) *Pipeline {
 	p.verifierFactory = f
+	return p
+}
+
+// WithRestoreSpawner wires the ephemeral-DB spawning context the
+// Phase-2 restore verifier needs. Pass spawner=nil if you want
+// Phase-1 stream-validate only — Phase-2 verifiers will then refuse
+// to run with a clear error rather than half-execute.
+func (p *Pipeline) WithRestoreSpawner(s ephemeral.Spawner, namespace string, owner *metav1.OwnerReference) *Pipeline {
+	p.spawner = s
+	p.namespace = namespace
+	p.ownerRef = owner
 	return p
 }
 
@@ -465,6 +485,9 @@ func (p *Pipeline) runRestoreVerifier(
 		DumpRows:  dumpCounts,
 		StartedAt: started,
 		Logger:    log,
+		Spawner:   p.spawner,
+		Namespace: p.namespace,
+		OwnerRef:  p.ownerRef,
 	})
 	if err != nil {
 		log.Error(err, "restore-verifier hard failure", "mode", mode)

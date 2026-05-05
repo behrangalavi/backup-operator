@@ -76,6 +76,16 @@ storageScrub:
   enabled: false
   intervalHours: 24
 
+# Phase-2 restore-verification (schema-only / sample / full modes)
+# requires the worker ServiceAccount to be able to create/delete Pods
+# in the operator's namespace so it can spawn short-lived ephemeral
+# DBs to restore against. Disabled by default — enable AND set
+# `backup.mogenius.io/restore-verification-mode` on a source to a
+# Phase-2 mode to actually use it. Phase-1 mode `stream-validate` does
+# NOT need this RBAC expansion.
+restoreVerification:
+  enableEphemeralPodSpawn: false
+
 # Read-only HTML/JSON dashboard served by the operator pod itself.
 # Disabled by default — flip `enabled: true` to expose it on a second
 # container port + Service port. The dashboard never writes to the

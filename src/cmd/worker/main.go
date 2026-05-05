@@ -42,7 +42,10 @@ import (
 	"backup-operator/internal/backup"
 	"backup-operator/internal/labels"
 	"backup-operator/internal/secrets"
+	"backup-operator/verifier/ephemeral"
 	verifierFactory "backup-operator/verifier/factory"
+
+	apitypes "k8s.io/apimachinery/pkg/types"
 )
 
 // staticDestProvider implements backup.DestinationProvider with a fixed list —
@@ -85,6 +88,12 @@ func run() int {
 		{Key: "DEFAULT_MIN_KEEP", Optional: true, Default: "3", Validate: validateNonNegInt},
 		{Key: "DEFAULT_SCHEDULE", Optional: true, Default: "0 2 * * *"}, // unused here, but parser needs it
 		{Key: "POD_NAMESPACE", Optional: true},
+		// POD_NAME / POD_UID come from Downward API in the CronJob
+		// pod-spec; the restore-verifier uses them as OwnerReference
+		// targets for spawned ephemeral DB pods. Optional because
+		// stream-validate / off don't need them.
+		{Key: "POD_NAME", Optional: true},
+		{Key: "POD_UID", Optional: true},
 	})
 	assert.NoError(err, "failed to initialize config module")
 
@@ -153,7 +162,12 @@ func run() int {
 		policy,
 		log.WithName("pipeline"),
 		events,
-	).WithVerifierFactory(verifierFactory.New)
+	).WithVerifierFactory(verifierFactory.New).
+		WithRestoreSpawner(
+			ephemeral.NewK8sSpawner(cs, ns),
+			ns,
+			workerOwnerRef(),
+		)
 
 	if err := pipeline.Run(ctx, src); err != nil {
 		log.Error(err, "backup run failed", "target", src.TargetName)
@@ -219,6 +233,30 @@ func validateNonNegInt(v string) error {
 		return fmt.Errorf("must be >= 0")
 	}
 	return nil
+}
+
+// workerOwnerRef builds the OwnerReference the restore-verifier uses
+// when spawning ephemeral DB pods. Tying spawned pods to the worker
+// pod's UID lets K8s GC cascade-delete them as soon as the worker
+// terminates — even if the verifier never reaches Stop() (panic, OOM,
+// node drain). Returns nil if Downward API didn't populate the env;
+// the spawner then logs a warning and relies on best-effort Stop()
+// only.
+func workerOwnerRef() *metav1.OwnerReference {
+	name := config.GetValue("POD_NAME")
+	uid := config.GetValue("POD_UID")
+	if name == "" || uid == "" {
+		return nil
+	}
+	t := true
+	return &metav1.OwnerReference{
+		APIVersion:         "v1",
+		Kind:               "Pod",
+		Name:               name,
+		UID:                apitypes.UID(uid),
+		BlockOwnerDeletion: &t,
+		Controller:         nil,
+	}
 }
 
 // buildEventEmitter creates a Kubernetes EventRecorder that emits events

@@ -30,6 +30,12 @@ const (
 	// untouched and can still decrypt forever — see §18 ADR.
 	AnnotationRestoreVerificationMode     = "backup.mogenius.io/restore-verification-mode"
 	AnnotationRestoreVerificationInterval = "backup.mogenius.io/restore-verification-interval"
+
+	// Phase-2-only: only consulted when restore-verification-mode is
+	// schema-only / sample / full (i.e. modes that spawn an ephemeral
+	// DB pod). stream-validate ignores both.
+	AnnotationVerificationImage      = "backup.mogenius.io/verification-image"
+	AnnotationVerificationVolumeSize = "backup.mogenius.io/verification-volume-size"
 )
 
 // Restore-verification mode values.

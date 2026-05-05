@@ -118,6 +118,14 @@ type MetaFile struct {
 	// like `time() - last_change_timestamp > 86400 * 180` flag backups whose
 	// schema is so old the application has likely diverged.
 	SchemaChangedAt    time.Time        `json:"schemaChangedAt,omitempty"`
+	// CompletedAt and DurationSeconds describe the run's wall-clock duration.
+	// Timestamp is the run's start; CompletedAt is when the meta was written
+	// (after dump + fan-out + retention). DurationSeconds == CompletedAt -
+	// Timestamp's parsed value, persisted explicitly so callers don't have to
+	// recompute and so legacy metas (where these fields are absent) are
+	// distinguishable from genuinely-zero durations.
+	CompletedAt        time.Time        `json:"completedAt,omitempty"`
+	DurationSeconds    float64          `json:"durationSeconds,omitempty"`
 	Stats              *dumper.Stats    `json:"stats,omitempty"`
 	Report             *analyzer.Report `json:"report,omitempty"`
 	Verification       *DumpVerification `json:"verification,omitempty"`
@@ -210,6 +218,60 @@ func LatestPerTarget(ctx context.Context, st storage.Storage) (map[string]*MetaF
 		out[target] = m
 	}
 	return out, nil
+}
+
+// MedianDuration returns the median run duration over the most recent
+// successful runs of target, plus the sample size that produced it.
+//
+// Only metas with Status==success and DurationSeconds>0 are considered.
+// Failed runs tend to be much faster (and are far rarer than successes), so
+// including them would systematically underestimate the duration of a real
+// run. Legacy metas written before duration was persisted have
+// DurationSeconds==0 and are also skipped — sample-size==0 is a meaningful
+// signal to the caller (no estimate available).
+//
+// n caps how many recent runs to consider. Median is preferred over mean
+// to stay robust against single-run outliers (e.g. a one-off index rebuild
+// that doubled the dump time).
+func MedianDuration(ctx context.Context, st storage.Storage, target string, n int) (time.Duration, int, error) {
+	all, err := List(ctx, st, target)
+	if err != nil {
+		return 0, 0, err
+	}
+	d, count := MedianDurationFromList(all, n)
+	return d, count, nil
+}
+
+// MedianDurationFromList computes the median over an already-loaded slice of
+// metas (assumed sorted newest-first, as List returns them). Useful when the
+// caller has already merged metas across destinations and wants to avoid a
+// second storage round-trip.
+func MedianDurationFromList(all []*MetaFile, n int) (time.Duration, int) {
+	if n <= 0 {
+		n = 10
+	}
+	durations := make([]float64, 0, n)
+	for _, m := range all {
+		if len(durations) >= n {
+			break
+		}
+		if m.IsFailure() || m.DurationSeconds <= 0 {
+			continue
+		}
+		durations = append(durations, m.DurationSeconds)
+	}
+	if len(durations) == 0 {
+		return 0, 0
+	}
+	sort.Float64s(durations)
+	mid := len(durations) / 2
+	var median float64
+	if len(durations)%2 == 1 {
+		median = durations[mid]
+	} else {
+		median = (durations[mid-1] + durations[mid]) / 2
+	}
+	return time.Duration(median * float64(time.Second)), len(durations)
 }
 
 func fetchOne(ctx context.Context, st storage.Storage, p string) (*MetaFile, error) {

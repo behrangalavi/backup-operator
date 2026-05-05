@@ -421,6 +421,14 @@ rect.hm-out    { fill: transparent; pointer-events: none; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Job progress bar (Jobs page, running rows) */
+.job-progress { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
+.job-progress-bar { position: relative; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+.job-progress-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); transition: width 0.5s linear; }
+.job-progress-fill.overdue { background: #d97706; }
+.job-progress-label { font-size: 11px; color: var(--text-muted); }
+.job-progress-label.overdue { color: #d97706; }
+
 /* Empty state */
 .empty-state {
   text-align: center; padding: 60px 20px; color: var(--text-muted);

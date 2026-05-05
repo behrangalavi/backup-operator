@@ -191,7 +191,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		metrics.SetLastRunStatus(src.TargetName, false)
 		p.events.Emit("Warning", "BackupFailed",
 			fmt.Sprintf("Backup failed for target %s in phase dumper-init: %v", src.TargetName, err))
-		p.recordFailure(ctx, dests, src, timestamp, "dumper-init", err, log)
+		p.recordFailure(ctx, dests, src, timestamp, "dumper-init", runStart, err, log)
 		return fmt.Errorf("dumper: %w", err)
 	}
 
@@ -211,7 +211,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		metrics.SetLastRunStatus(src.TargetName, false)
 		p.events.Emit("Warning", "BackupFailed",
 			fmt.Sprintf("Backup failed for target %s in phase temp-dir: %v", src.TargetName, err))
-		p.recordFailure(ctx, dests, src, timestamp, "temp-dir", err, log)
+		p.recordFailure(ctx, dests, src, timestamp, "temp-dir", runStart, err, log)
 		return fmt.Errorf("create temp dir: %w", err)
 	}
 	dumpFile := path.Join(p.tempDir, fmt.Sprintf("%s-%s.sql.gz.age", src.TargetName, timestamp))
@@ -269,7 +269,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		_ = os.Remove(dumpFile)
 		p.events.Emit("Warning", "BackupFailed",
 			fmt.Sprintf("Backup failed for target %s in phase dump: %v", src.TargetName, err))
-		p.recordFailure(ctx, dests, src, timestamp, "dump", err, log)
+		p.recordFailure(ctx, dests, src, timestamp, "dump", runStart, err, log)
 		return fmt.Errorf("dump: %w", err)
 	}
 	defer func() { _ = os.Remove(dumpFile) }()
@@ -279,7 +279,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		emptyErr := errors.New("dump produced zero bytes")
 		p.events.Emit("Warning", "BackupFailed",
 			fmt.Sprintf("Backup failed for target %s: dump produced zero bytes (possible empty database or dump tool misconfiguration)", src.TargetName))
-		p.recordFailure(ctx, dests, src, timestamp, "dump-empty", emptyErr, log)
+		p.recordFailure(ctx, dests, src, timestamp, "dump-empty", runStart, emptyErr, log)
 		return emptyErr
 	}
 
@@ -321,7 +321,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		emptyErr := fmt.Errorf("empty dump detected: %s", verification.Summary)
 		p.events.Emit("Warning", "BackupFailed",
 			fmt.Sprintf("Backup failed for target %s: %s", src.TargetName, emptyErr.Error()))
-		p.recordFailure(ctx, dests, src, timestamp, "dump-empty-content", emptyErr, log)
+		p.recordFailure(ctx, dests, src, timestamp, "dump-empty-content", runStart, emptyErr, log)
 		return emptyErr
 	}
 
@@ -334,7 +334,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		metrics.SetLastRunStatus(src.TargetName, false)
 		p.events.Emit("Warning", "BackupFailed",
 			fmt.Sprintf("Backup cancelled for target %s after dump phase: %v", src.TargetName, err))
-		p.recordFailure(ctx, dests, src, timestamp, "cancelled", err, log)
+		p.recordFailure(ctx, dests, src, timestamp, "cancelled", runStart, err, log)
 		return fmt.Errorf("cancelled after dump: %w", err)
 	}
 
@@ -414,7 +414,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		metrics.SetLastRunStatus(src.TargetName, false)
 		p.events.Emit("Warning", "BackupFailed",
 			fmt.Sprintf("Backup failed for target %s: all %d destination uploads failed", src.TargetName, len(dests)))
-		p.recordFailure(ctx, dests, src, timestamp, "upload", errors.New("all destination uploads failed"), log)
+		p.recordFailure(ctx, dests, src, timestamp, "upload", runStart, errors.New("all destination uploads failed"), log)
 		return errors.New("all destination uploads failed")
 	}
 
@@ -430,7 +430,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	}
 
 	// Phase 2: build meta with destination results, upload to successful destinations.
-	metaBytes := metaJSON(src, metaStats, metaReport, metaVerification, encryptedSize, sha256sum, timestamp, schemaChangedAt, destResults, restoreVerification)
+	metaBytes := metaJSON(src, metaStats, metaReport, metaVerification, encryptedSize, sha256sum, timestamp, runStart, schemaChangedAt, destResults, restoreVerification)
 	p.uploadMeta(ctx, dests, destResults, metaPath, metaBytes, log)
 
 	metrics.SetLastRunStatus(src.TargetName, true)
@@ -516,6 +516,7 @@ func (p *Pipeline) recordFailure(
 	dests []*secrets.Destination,
 	src *secrets.Source,
 	timestamp, phase string,
+	runStart time.Time,
 	runErr error,
 	log logr.Logger,
 ) {
@@ -529,7 +530,7 @@ func (p *Pipeline) recordFailure(
 	uploadCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	body := failureMetaJSON(src, timestamp, phase, runErr)
+	body := failureMetaJSON(src, timestamp, phase, runStart, runErr)
 	metaPath := buildObjectPath(src.TargetName, timestamp, "meta.json")
 
 	var wg sync.WaitGroup
@@ -864,7 +865,8 @@ func sortedMetaPaths(objs []storage.Object) []string {
 	return out
 }
 
-func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report, verification *meta.DumpVerification, size int64, sha256sum, timestamp string, schemaChangedAt time.Time, destResults []meta.DestinationResult, restoreVerification *meta.RestoreVerificationResult) []byte {
+func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report, verification *meta.DumpVerification, size int64, sha256sum, timestamp string, runStart time.Time, schemaChangedAt time.Time, destResults []meta.DestinationResult, restoreVerification *meta.RestoreVerificationResult) []byte {
+	completedAt := time.Now().UTC()
 	m := meta.MetaFile{
 		Target:              src.TargetName,
 		Timestamp:           timestamp,
@@ -873,6 +875,8 @@ func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report,
 		EncryptedSizeBytes:  size,
 		SHA256:              sha256sum,
 		SchemaChangedAt:     schemaChangedAt,
+		CompletedAt:         completedAt,
+		DurationSeconds:     completedAt.Sub(runStart).Seconds(),
 		Stats:               stats,
 		Report:              report,
 		Verification:        verification,
@@ -886,18 +890,21 @@ func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report,
 // failureMetaJSON produces the sidecar written when a run never reaches the
 // fan-out — there is no dump and no stats, only the cause and the phase
 // where it broke.
-func failureMetaJSON(src *secrets.Source, timestamp, phase string, runErr error) []byte {
+func failureMetaJSON(src *secrets.Source, timestamp, phase string, runStart time.Time, runErr error) []byte {
 	msg := ""
 	if runErr != nil {
 		msg = runErr.Error()
 	}
+	completedAt := time.Now().UTC()
 	m := meta.MetaFile{
-		Target:    src.TargetName,
-		Timestamp: timestamp,
-		DBType:    src.DBType,
-		Status:    meta.StatusFailed,
-		Error:     msg,
-		Phase:     phase,
+		Target:          src.TargetName,
+		Timestamp:       timestamp,
+		DBType:          src.DBType,
+		Status:          meta.StatusFailed,
+		Error:           msg,
+		Phase:           phase,
+		CompletedAt:     completedAt,
+		DurationSeconds: completedAt.Sub(runStart).Seconds(),
 	}
 	out, _ := json.MarshalIndent(m, "", "  ")
 	return out

@@ -62,6 +62,12 @@ function renderPage(page, loading = true) {
   $$('.nav-link').forEach(a => {
     a.classList.toggle('active', a.dataset.page === page);
   });
+  // Stop the per-second progress-bar tick whenever we leave the Jobs page.
+  // renderJobs re-arms it as needed.
+  if (page !== 'jobs' && jobProgressTimer) {
+    clearInterval(jobProgressTimer);
+    jobProgressTimer = null;
+  }
   switch(page) {
     case 'dashboard': renderDashboard(loading); break;
     case 'sources': renderSources(loading); break;
@@ -1159,6 +1165,45 @@ async function refreshAlertsPill() {
 }
 
 // --- Jobs ---
+let jobProgressTimer = null;
+
+function fmtDurationShort(sec) {
+  if (sec == null || !isFinite(sec) || sec < 0) return '';
+  if (sec < 60) return `${Math.round(sec)}s`;
+  const m = Math.floor(sec / 60), s = Math.round(sec % 60);
+  if (m < 60) return s ? `${m}m ${s}s` : `${m}m`;
+  const h = Math.floor(m / 60), mm = m % 60;
+  return mm ? `${h}h ${mm}m` : `${h}h`;
+}
+
+// renderProgressCell builds the Duration cell content. For non-running jobs
+// it returns the static formatted duration. For running jobs it renders a
+// progress bar driven by elapsed time and an estimate from past runs (when
+// available); without an estimate, it shows elapsed-only.
+function renderProgressCell(j) {
+  if (j.status !== 'running') return j.duration || '—';
+  const startMs = parseTsRFC(j.startTime);
+  if (!startMs) return '—';
+  const elapsed = (Date.now() - startMs) / 1000;
+  const est = j.estimatedDurationSeconds || 0;
+  const sample = j.estimateSampleSize || 0;
+  if (est > 0) {
+    const ratio = Math.min(elapsed / est, 0.99);
+    const overdue = elapsed > est;
+    const remaining = Math.max(est - elapsed, 0);
+    const fillCls = overdue ? 'job-progress-fill overdue' : 'job-progress-fill';
+    const labelCls = overdue ? 'job-progress-label overdue' : 'job-progress-label';
+    const label = overdue
+      ? `läuft ${fmtDurationShort(elapsed)} — länger als üblich (Ø ${fmtDurationShort(est)}, n=${sample})`
+      : `${fmtDurationShort(elapsed)} / ~${fmtDurationShort(est)} — ${fmtDurationShort(remaining)} verbleibend (n=${sample})`;
+    return `<div class="job-progress">
+      <div class="job-progress-bar"><div class="${fillCls}" style="width:${(ratio * 100).toFixed(1)}%"></div></div>
+      <div class="${labelCls}">${escHTML(label)}</div>
+    </div>`;
+  }
+  return `<span style="color:var(--text-muted)">läuft seit ${fmtDurationShort(elapsed)}</span>`;
+}
+
 async function renderJobs(loading = true) {
   if (loading) showLoading();
   let jobs = [];
@@ -1189,16 +1234,30 @@ async function renderJobs(loading = true) {
           <th class="sortable" onclick="toggleSort('jobs','startTime')">Started${sortIndicator('jobs','startTime')}</th>
           <th class="sortable" onclick="toggleSort('jobs','duration')">Duration${sortIndicator('jobs','duration')}</th>
         </tr></thead>
-        <tbody>${sortedJobs.map((j, i) => `<tr>
+        <tbody>${sortedJobs.map((j, i) => `<tr data-job-name="${escHTML(j.name)}">
           <td class="num row-num">${i + 1}</td>
           <td style="font-family:ui-monospace,monospace;font-size:12px">${escHTML(j.name)}</td>
           <td><strong>${escHTML(j.target || '—')}</strong></td>
           <td><span class="badge badge-${j.status}">${j.status}</span></td>
           <td style="color:var(--text-muted);font-size:12px">${j.startTime ? new Date(j.startTime).toLocaleString() : '—'}</td>
-          <td style="font-size:12px">${j.duration || '—'}</td>
+          <td class="job-duration-cell" style="font-size:12px">${renderProgressCell(j)}</td>
         </tr>`).join('')}</tbody>
       </table>`}
     </div>`;
+
+  // Tick progress bars locally between SSE refreshes so they advance smoothly
+  // without re-fetching /api/jobs every second.
+  if (jobProgressTimer) { clearInterval(jobProgressTimer); jobProgressTimer = null; }
+  const runningJobs = sortedJobs.filter(j => j.status === 'running');
+  if (runningJobs.length > 0) {
+    jobProgressTimer = setInterval(() => {
+      // If user navigated away, the cells will be gone; guard against null.
+      runningJobs.forEach(j => {
+        const row = document.querySelector(`tr[data-job-name="${CSS.escape(j.name)}"] .job-duration-cell`);
+        if (row) row.innerHTML = renderProgressCell(j);
+      });
+    }, 1000);
+  }
 }
 
 // --- Audit log ---

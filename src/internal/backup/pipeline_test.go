@@ -190,7 +190,7 @@ func TestSortedMetaPaths_NoMetas(t *testing.T) {
 
 func TestMetaJSON_SuccessStatus(t *testing.T) {
 	src := testSource("prod-db", "postgres")
-	m := metaJSON(src, nil, nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, nil, nil)
+	m := metaJSON(src, nil, nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, nil)
 	if !bytes.Contains(m, []byte(`"status": "success"`)) {
 		t.Error("meta should contain status=success")
 	}
@@ -205,7 +205,7 @@ func TestMetaJSON_WithDestinations(t *testing.T) {
 		{Name: "hetzner", StorageType: "sftp", Status: meta.StatusSuccess},
 		{Name: "aws-s3", StorageType: "s3", Status: meta.StatusFailed, Error: "connection refused"},
 	}
-	m := metaJSON(src, nil, nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, drs, nil)
+	m := metaJSON(src, nil, nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, drs, nil)
 	if !bytes.Contains(m, []byte(`"destinations"`)) {
 		t.Error("meta should contain destinations array")
 	}
@@ -219,7 +219,7 @@ func TestMetaJSON_WithDestinations(t *testing.T) {
 
 func TestFailureMetaJSON_FailedStatus(t *testing.T) {
 	src := testSource("prod-db", "postgres")
-	meta := failureMetaJSON(src, "20260501T020000Z", "dump", fmt.Errorf("pg_dump failed"))
+	meta := failureMetaJSON(src, "20260501T020000Z", "dump", time.Time{}, fmt.Errorf("pg_dump failed"))
 	if !bytes.Contains(meta, []byte(`"status": "failed"`)) {
 		t.Error("failure meta should contain status=failed")
 	}
@@ -240,7 +240,7 @@ func TestMetaJSON_WithRestoreVerification(t *testing.T) {
 		EphemeralRecipientFingerprint: "abc1234567890def",
 		DurationSeconds:               1.23,
 	}
-	m := metaJSON(src, nil, nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, nil, rv)
+	m := metaJSON(src, nil, nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, rv)
 	if !bytes.Contains(m, []byte(`"restoreVerification"`)) {
 		t.Error("meta should contain restoreVerification")
 	}
@@ -261,7 +261,7 @@ func TestMetaJSON_WithVerification(t *testing.T) {
 			{Name: "users", PreDumpRows: 100, PostDumpRows: 100, DumpRows: 100, Verdict: "match"},
 		},
 	}
-	m := metaJSON(src, nil, nil, v, 42000, "abc123", "20260501T020000Z", time.Time{}, nil, nil)
+	m := metaJSON(src, nil, nil, v, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, nil)
 	if !bytes.Contains(m, []byte(`"verification"`)) {
 		t.Error("meta should contain verification")
 	}

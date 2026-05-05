@@ -21,6 +21,7 @@ import (
 type dataSource interface {
 	listTargets(ctx context.Context) ([]targetSummary, error)
 	target(ctx context.Context, name string) (*targetDetail, error)
+	estimateDuration(ctx context.Context, name string, n int) (time.Duration, int, error)
 }
 
 // targetSummary is what the index page needs per source.
@@ -158,6 +159,65 @@ func (d *k8sData) listTargets(ctx context.Context) ([]targetSummary, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// estimateDuration returns a median run duration for target across all
+// allowed destinations and the sample size that produced it. Returns
+// (0, 0, nil) when no successful, duration-bearing meta is available
+// (e.g. brand-new target, all destinations unreachable, only legacy
+// metas without DurationSeconds). Reuses runsCache so calling this
+// per-running-job from /api/jobs does not amplify storage I/O.
+func (d *k8sData) estimateDuration(ctx context.Context, name string, n int) (time.Duration, int, error) {
+	sources, err := d.listSourceSecrets(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	var src *secrets.Source
+	for _, s := range sources {
+		if s.TargetName == name {
+			src = s
+			break
+		}
+	}
+	if src == nil {
+		return 0, 0, nil
+	}
+	allDests, err := d.listDestinationSecrets(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	dests := secrets.FilterDestinations(src, allDests)
+	if len(dests) == 0 {
+		return 0, 0, nil
+	}
+	// Merge metas across destinations like target() does — a single
+	// destination may be unreachable or lag behind. Dedup by timestamp.
+	byTimestamp := map[string]*meta.MetaFile{}
+	for _, dest := range dests {
+		key := name + "@" + dest.Name
+		got, err := d.runsCache.getOrLoad(key, func() ([]*meta.MetaFile, error) {
+			st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, d.log.WithName("storage"))
+			if err != nil {
+				return nil, err
+			}
+			return meta.List(ctx, st, name)
+		})
+		if err != nil {
+			continue
+		}
+		for _, m := range got {
+			if _, ok := byTimestamp[m.Timestamp]; !ok {
+				byTimestamp[m.Timestamp] = m
+			}
+		}
+	}
+	merged := make([]*meta.MetaFile, 0, len(byTimestamp))
+	for _, m := range byTimestamp {
+		merged = append(merged, m)
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i].Timestamp > merged[j].Timestamp })
+	dur, count := meta.MedianDurationFromList(merged, n)
+	return dur, count, nil
 }
 
 func (d *k8sData) target(ctx context.Context, name string) (*targetDetail, error) {

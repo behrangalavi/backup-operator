@@ -469,11 +469,13 @@ func (s *Server) handleAPIJobs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type jobInfo struct {
-		Name      string `json:"name"`
-		Target    string `json:"target"`
-		Status    string `json:"status"`
-		StartTime string `json:"startTime,omitempty"`
-		Duration  string `json:"duration,omitempty"`
+		Name                      string  `json:"name"`
+		Target                    string  `json:"target"`
+		Status                    string  `json:"status"`
+		StartTime                 string  `json:"startTime,omitempty"`
+		Duration                  string  `json:"duration,omitempty"`
+		EstimatedDurationSeconds  float64 `json:"estimatedDurationSeconds,omitempty"`
+		EstimateSampleSize        int     `json:"estimateSampleSize,omitempty"`
 	}
 
 	out := make([]jobInfo, 0, len(jobs.Items))
@@ -499,6 +501,22 @@ func (s *Server) handleAPIJobs(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, info)
 	}
+
+	// For running jobs, attach a duration estimate from past runs so the UI
+	// can render a progress bar. Sequential (typical fleet has 0–3 running
+	// jobs at once); the underlying meta lookups are 30s-cached.
+	for i := range out {
+		if out[i].Status != "running" || out[i].Target == "" {
+			continue
+		}
+		dur, n, err := s.data.estimateDuration(r.Context(), out[i].Target, 10)
+		if err != nil || n == 0 {
+			continue
+		}
+		out[i].EstimatedDurationSeconds = dur.Seconds()
+		out[i].EstimateSampleSize = n
+	}
+
 	writeJSON(w, http.StatusOK, out)
 }
 

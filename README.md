@@ -4,6 +4,8 @@ A Kubernetes-native backup operator in Go for **PostgreSQL**, **MySQL**, **Maria
 
 > **The contract:** label a `Secret`, get a backup. No CRDs to install, no extra resources to learn. The operator watches Secrets in its namespace, materialises a `CronJob` per labelled source, and Kubernetes does the running.
 
+> **Built mostly with AI.** This project is an experiment: how far can you take a complete, production-shaped system — Kubernetes operator, three binaries, encryption, multi-destination fan-out, dashboard UI, restore verification, Helm chart, alerts, docs — with different AI coding assistants doing most of the typing? The architecture decisions, code review, and direction are human; the implementation, refactors, and large parts of the documentation (this file included) were written collaboratively with several AI agents and then audited. Treat the design choices in CLAUDE.md §18 as the human-curated record of what was actually decided.
+
 ---
 
 ## Table of Contents

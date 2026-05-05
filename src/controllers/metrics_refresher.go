@@ -209,6 +209,26 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 			}
 		}
 	}
+
+	// Restore-verification: surfaced from the latest meta that carries a
+	// result (success or newest, doesn't matter — verification ran at
+	// some point and we want operators to see it). Only set when present
+	// to avoid creating empty mode-labelled series for sources that have
+	// verification disabled.
+	rvSource := newest
+	if success != nil && success.RestoreVerification != nil {
+		// Prefer the success path so a transient failed run doesn't drop
+		// the verification gauge.
+		rvSource = success
+	}
+	if rvSource != nil && rvSource.RestoreVerification != nil {
+		rv := rvSource.RestoreVerification
+		passed := rv.Verdict == meta.VerificationMatch
+		metrics.SetRestoreVerificationPassed(src.TargetName, rv.Mode, passed)
+		if !rv.CompletedAt.IsZero() {
+			metrics.SetRestoreVerificationLastTimestamp(src.TargetName, rv.Mode, rv.CompletedAt)
+		}
+	}
 }
 
 // loadLatestMeta fetches and parses the most recent *.meta.json under the

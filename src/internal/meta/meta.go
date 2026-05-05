@@ -76,6 +76,27 @@ type TableVerification struct {
 	Detail        string `json:"detail,omitempty"`
 }
 
+// RestoreVerificationResult records the outcome of a single
+// restore-verification phase: did the just-uploaded encrypted artifact
+// successfully decrypt and parse? Distinct from DumpVerification (which
+// runs DURING the dump and compares pre/post stats); this runs AFTER the
+// dump landed in storage and proves the round-trip.
+//
+// The Mode field maps 1:1 to labels.RestoreVerification* constants so
+// dashboards can group by capability level. Phase 1 only emits Mode =
+// "stream-validate"; later modes (schema-only, sample, full) plug into
+// the same struct.
+type RestoreVerificationResult struct {
+	Mode                          string    `json:"mode"`
+	Verdict                       string    `json:"verdict"` // re-uses Verification* constants
+	Summary                       string    `json:"summary,omitempty"`
+	Error                         string    `json:"error,omitempty"`
+	StartedAt                     time.Time `json:"startedAt,omitempty"`
+	CompletedAt                   time.Time `json:"completedAt,omitempty"`
+	DurationSeconds               float64   `json:"durationSeconds,omitempty"`
+	EphemeralRecipientFingerprint string    `json:"ephemeralRecipientFingerprint,omitempty"`
+}
+
 // MetaFile is the deserialised representation of a `dump-<ts>.meta.json`.
 //
 // A failure run writes a meta file too, with Status="failed" and no dump
@@ -100,6 +121,10 @@ type MetaFile struct {
 	Stats              *dumper.Stats    `json:"stats,omitempty"`
 	Report             *analyzer.Report `json:"report,omitempty"`
 	Verification       *DumpVerification `json:"verification,omitempty"`
+	// RestoreVerification is set when a restore-verifier ran for this run.
+	// Absent when verification was off or not yet due. Distinct field from
+	// Verification (dump-stream check) — both can coexist on the same run.
+	RestoreVerification *RestoreVerificationResult `json:"restoreVerification,omitempty"`
 	Destinations       []DestinationResult `json:"destinations,omitempty"`
 
 	// Path within the destination, populated when fetched via List+Get so

@@ -214,6 +214,26 @@ prometheusRule:
       labels: { severity: info }
       annotations:
         summary: "Backup of {{ $labels.target }} completed successfully"
+    # Restore-verification: an in-process round-trip test of the last
+    # uploaded artifact (decrypt + parse). Only emitted when a source
+    # has restore-verification-mode != off. Failed (=0) means the
+    # ephemeral identity could not decrypt the dump, the gzip layer
+    # blew up, or the parser found a content mismatch — all warrant
+    # immediate human attention. Stale means the verifier hasn't run
+    # within twice the configured interval (default verification
+    # interval is 168h, so default stale threshold is 14 days).
+    - alert: BackupRestoreVerificationFailed
+      expr: max by (target, mode) (backup_operator_restore_verification_passed) == 0
+      for: 5m
+      labels: { severity: critical }
+      annotations:
+        summary: "Restore-verification failed for {{ $labels.target }} (mode={{ $labels.mode }}) — encrypted dump did not decrypt+parse cleanly"
+    - alert: BackupRestoreVerificationStale
+      expr: time() - max by (target, mode) (backup_operator_restore_verification_last_timestamp_seconds) > 86400 * 14
+      for: 1h
+      labels: { severity: warning }
+      annotations:
+        summary: "Restore-verification for {{ $labels.target }} (mode={{ $labels.mode }}) hasn't run in over 14 days"
 
 # Restricts operator pod egress to DNS, K8s API, SSH (22/23), and HTTPS (443).
 # Disabled by default — enable once you've verified your storage endpoints

@@ -232,6 +232,10 @@ src/
 │   ├── factory/         # Creates the right Storage from storage-type label
 │   ├── sftp/            # Hetzner Storage Box and generic SFTP
 │   └── s3/              # AWS S3, MinIO, Hetzner Object Storage, R2, B2, ...
+├── verifier/            # Restore-verification: prove the uploaded artifact is decryptable+parseable
+│   ├── verifier.go      # Verifier interface, ShouldVerify schedule logic, FailureResult helper
+│   ├── factory/         # Mode → Verifier (Phase 1: only stream-validate registered)
+│   └── stream/          # ModeStreamValidate: in-process decrypt → gunzip → parser, no DB-pod-spawn
 └── ui/                  # Built-in web dashboard and management API
     ├── cache.go         # Cached Secret data for dashboard rendering
     ├── data.go          # Data aggregation helpers for templates
@@ -344,6 +348,8 @@ backup-restore --storage-secret hetzner-sb -n backup --target prod-users \
 | `backup.mogenius.io/size-drop-threshold` | `0.5` | Analyzer anomaly threshold for dump size drops. Same semantics as row-drop. |
 | `backup.mogenius.io/anonymize-tables` | `false` | `true` → hash table names in `meta.json` with SHA256 (16 hex chars). Row counts preserved. |
 | `backup.mogenius.io/empty-dump-check` | `true` | Hard-fail when the dump appears empty despite the source DB having data. Two detection paths: SQL (postgres/mysql/mariadb) compares dump-stream INSERT/COPY rows to pre-dump stats; mongo / redis use a size heuristic against pre-dump `collStats` / key counts. Set to `false` for sources that are intentionally schema-only (empty template DBs). |
+| `backup.mogenius.io/restore-verification-mode` | `off` | Restore-verification mode. Phase 1 supports `off` and `stream-validate`. `stream-validate` triggers the worker to generate an ephemeral age keypair *for that single run only*, encrypt the dump with both the DR recipient and the ephemeral one, then re-stream the local artifact through age-decrypt → gunzip → parser before the pod terminates. Phase 2 will add `schema-only`, `sample`, `full`. |
+| `backup.mogenius.io/restore-verification-interval` | `168h` (when mode is active) | Minimum gap between verifier-runs (Go duration). State-driven: worker reads `latestMeta.restoreVerification.completedAt` and skips this run when the interval has not elapsed. Manual runs (`kubectl create job --from=cronjob/...`) verify whenever they're overdue regardless of cron drift. |
 | `backup.mogenius.io/extra-<key>` | none | Surfaced into `dumper.Config.Extra[key]`. Used for DB-specific options (e.g. `extra-sslmode`, `extra-authSource`). |
 
 A typo on a feature-flag annotation falls back to the default rather than rejecting the Secret — backups must keep running even if a flag is misspelled.
@@ -658,6 +664,9 @@ The histograms (`dump_duration_seconds`, `upload_duration_seconds`, `run_duratio
 | `backup_operator_storage_scrub_passed` | Gauge | `target`, `destination` | 1 if the most recent scrub of this pair matched the recorded SHA256, 0 otherwise. Only present when `STORAGE_SCRUB_ENABLED=true` and at least one scrub has run. |
 | `backup_operator_storage_scrub_last_check_timestamp_seconds` | Gauge | `target`, `destination` | Unix ts of the most recent scrub attempt for this pair |
 | `backup_operator_storage_scrub_failed_total` | Counter | `target`, `destination` | Cumulative scrub failures (mismatch or unreachable). Operator-side, scraped normally. |
+| `backup_operator_restore_verification_passed` | Gauge | `target`, `mode` | 1 if the most recent restore-verifier run for this target+mode produced verdict `match`, 0 if `mismatch`/`skipped`. Absent until a verifier has run at least once — present-with-zero is meaningful, absent is "not configured / not yet due". |
+| `backup_operator_restore_verification_last_timestamp_seconds` | Gauge | `target`, `mode` | Unix ts of the most recent restore-verifier completion for this pair. Drives the `BackupRestoreVerificationStale` alert. |
+| `backup_operator_restore_verification_duration_seconds` | Histogram | `target`, `mode` | Worker-only; not visible to Prometheus (same as the dump/upload histograms). |
 
 ---
 
@@ -676,6 +685,8 @@ Shipped in the Helm chart's `values.yaml` under `prometheusRule.rules`. The char
 | `BackupAnomaliesAppearing` | `last_run_anomalies > 0` for 5m | warning |
 | `BackupLastRunFailed` | `last_run_status == 0` for 5m | warning |
 | `BackupSucceeded` | `time() - last_success_timestamp_seconds < 120` | info |
+| `BackupRestoreVerificationFailed` | `restore_verification_passed == 0` for 5m | **critical** |
+| `BackupRestoreVerificationStale` | `time() - restore_verification_last_timestamp > 14d` | warning |
 
 `BackupSucceeded` is a heartbeat-style positive signal (firing + resolved per run) — useful when you want a notification on every successful backup, but expect one firing + one resolved mail per completed run per target. With a frequent cron (e.g. every 5 min in the test stack), this is intentionally noisy.
 
@@ -699,6 +710,8 @@ These same conditions also surface in the operator UI under `/api/alerts` and `#
 | `mysqldump` exits 0 with empty data (perm denial) | Pipeline detects dump rows == 0 vs pre-stats > 0, fails with `dump-empty-content`, persists failure-meta | `BackupLastRunFailed` fires; Verification has `looksEmpty=true`; opt out per source via `backup.mogenius.io/empty-dump-check=false` |
 | `mongodump` / `redis-cli --rdb` exit 0 with tiny output | Heuristic: encrypted size < 1% of preStats source size (mongo) or < 200 bytes with > 0 keys (redis) → `dump-empty-content` failure | Same as above; opt-out annotation works identically |
 | Stored dump bit-rots | Scrubber re-hash mismatches meta SHA256 | `storage_scrub_passed=0` → `BackupStorageCorrupted` (critical); only fires when `STORAGE_SCRUB_ENABLED=true` |
+| Encrypted dump won't decrypt+parse (verification due) | Worker generates ephemeral keypair, encrypts with DR+ephemeral recipients, re-streams the local file through age-decrypt → gunzip → parser, finds garbage / wrong header / empty content | `restore_verification_passed=0`, `BackupRestoreVerificationFailed` (critical). Run still succeeds — verification is observability, not a gate. The DR recipient remains valid; the offline restore path is unaffected. |
+| Verifier itself dies (decryptor init / open file) | `RestoreVerificationResult` written with `Verdict=skipped` and `Error` populated | Same alert path; treated same as a hard mismatch from an operator's perspective (something needs investigation). |
 | Run takes >`RUN_TIMEOUT_SECONDS` | K8s kills the pod via `activeDeadlineSeconds` | Job failed; configure higher timeout for big DBs |
 | Two cron ticks overlap (long run) | Second tick is **skipped** by `concurrencyPolicy: Forbid` | No second Job created; run continues |
 | Source Secret deleted | `OwnerReference` cascades; CronJob deleted by GC | No more runs; existing artifacts in storage untouched |
@@ -1062,6 +1075,8 @@ The notable ones, with the reasoning that future readers should preserve.
 - **Storage scrubber re-hashes stored dumps periodically.** SHA256 has been written into `meta.json` since the integrity work; the scrubber finally consumes it. Operator-side controller (leader-elected, 24h default tick) lists each source's allowed destinations, fetches the most recent dump, streams it through `crypto/sha256`, and compares the hex against the meta. Failure → `storage_scrub_passed=0` + `BackupStorageCorrupted` (critical). Off by default because each scrub re-streams the full encrypted dump from storage — at scale that's a serious egress bill. Trade-off vs. a server-side checksum API (S3 `ETag`, `x-amz-content-sha256`): client-side re-hash catches storage backends that lie about their own content, and works uniformly across SFTP and S3 without per-backend code paths. The scrubber respects `Source.AllowsDestination` so destination allow-lists narrow scrub scope automatically.
 
 - **Schema-change timestamp carried forward across runs.** The previous setup answered "did schema change since the last run?" but not "how old is the current schema?". Each meta now stores `schemaChangedAt`: bumped only when `SchemaHash` actually drifts, copied forward otherwise. Exposed as `backup_operator_schema_last_change_timestamp_seconds` so PromQL can answer "schema older than N days" — relevant when an old backup is being restored against a much newer application that no longer matches the dump's structure. Choice of "carry forward" over a counter / drift-rate metric: a single meta is self-describing without needing history, and the metric refresher reconstructs the value from any single recent meta rather than aggregating across the retention window.
+
+- **Restore-verification uses an ephemeral keypair generated inside the worker pod.** The "a backup that hasn't been restored is not a backup" gap was real — the existing `DumpVerification` only validates the stream as it's *being produced*, never the encrypted artifact at rest. The classical fix (auto-restore against an ephemeral DB) requires the age private key inside the cluster, which §10 forbids. Resolution: **the worker generates a fresh X25519 identity in process memory at the moment it decides to verify**, encrypts the dump with both the long-lived DR recipient AND the ephemeral one (age supports multi-recipient natively, ~200 bytes header overhead per recipient), runs the in-process verifier, the pod terminates and the private half is gone. The DR key is unaffected — it can decrypt the same artifact for years. Trade-offs considered: a static "verifier-recipient" K8s Secret would have been simpler but exposes ALL backups if compromised (whereas an ephemeral keypair only exposes ONE run); a "schema-only without decrypt" mode would have skipped the key problem but doesn't actually prove the encryption layer works. The chosen design dominates both on security AND on coverage. Scheduling is **state-driven** (`shouldVerify` reads `latestMeta.restoreVerification.completedAt` and compares with `interval`) rather than time-window-matched against cron, so manual runs verify when overdue and cron drift is irrelevant. Phase 1 ships only `stream-validate` (no DB-pod-spawn, no RBAC expansion); Phase 2 will add `schema-only`/`sample`/`full` against an ephemerally-spawned DB pod and require Worker SA `pods: create/delete` in own namespace.
 
 ---
 

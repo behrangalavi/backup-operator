@@ -4,12 +4,19 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"backup-operator/dumper"
 	"backup-operator/internal/labels"
 
 	corev1 "k8s.io/api/core/v1"
 )
+
+// DefaultRestoreVerificationInterval is used when restore-verification-mode is
+// active but no interval annotation is set. Weekly cadence balances signal
+// freshness against the cost of re-streaming the encrypted dump through a
+// verifier each time.
+const DefaultRestoreVerificationInterval = 168 * time.Hour
 
 // Source describes a parsed source Secret that the pipeline can act on.
 //
@@ -36,6 +43,14 @@ type Source struct {
 	// the dump itself contains zero INSERTs. Default true. Set the annotation
 	// to false on schema-only sources (e.g. an empty template DB).
 	EmptyDumpCheck     bool
+	// RestoreVerificationMode is one of the labels.RestoreVerification* values.
+	// Empty annotation → "off". Unknown values fall back to "off" rather than
+	// rejecting the source — a typo on a feature flag must not stop backups.
+	RestoreVerificationMode string
+	// RestoreVerificationInterval is the minimum gap between verifier-runs.
+	// 0 means "annotation absent — use DefaultRestoreVerificationInterval at
+	// apply time". Negative durations are coerced to 0 for the same reason.
+	RestoreVerificationInterval time.Duration
 	Config             dumper.Config
 }
 
@@ -120,6 +135,8 @@ func ParseSource(s *corev1.Secret, defaultSchedule string) (*Source, error) {
 		SizeDropThreshold:  parseFloatAnnotation(s.Annotations[labels.AnnotationSizeDropThreshold], -1),
 		AnonymizeTables:    parseBoolAnnotation(s.Annotations[labels.AnnotationAnonymizeTables], false),
 		EmptyDumpCheck:     parseBoolAnnotation(s.Annotations[labels.AnnotationEmptyDumpCheck], true),
+		RestoreVerificationMode:     parseRestoreVerificationMode(s.Annotations[labels.AnnotationRestoreVerificationMode]),
+		RestoreVerificationInterval: parseDurationAnnotation(s.Annotations[labels.AnnotationRestoreVerificationInterval]),
 		Config: dumper.Config{
 			Name:     target,
 			Host:     host,
@@ -253,6 +270,38 @@ func parseCSVAnnotation(v string) []string {
 		return nil
 	}
 	return out
+}
+
+// parseRestoreVerificationMode normalises the annotation value. Unknown
+// values fall back to "off" — typos on the flag must not silently enable a
+// mode the user did not pick.
+func parseRestoreVerificationMode(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	switch v {
+	case "", labels.RestoreVerificationOff:
+		return labels.RestoreVerificationOff
+	case labels.RestoreVerificationStreamValidate,
+		labels.RestoreVerificationSchemaOnly,
+		labels.RestoreVerificationSample,
+		labels.RestoreVerificationFull:
+		return v
+	}
+	return labels.RestoreVerificationOff
+}
+
+// parseDurationAnnotation accepts any Go-style duration string (e.g. "168h",
+// "30m", "1h30m"). Empty / malformed → 0, signalling "use default at apply
+// time". Forgiveness rule: a typo here must not reject the Secret.
+func parseDurationAnnotation(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < 0 {
+		return 0
+	}
+	return d
 }
 
 // extraFromAnnotations exposes any backup.mogenius.io/extra-* annotations

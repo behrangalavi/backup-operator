@@ -42,6 +42,7 @@ import (
 	"backup-operator/internal/backup"
 	"backup-operator/internal/labels"
 	"backup-operator/internal/secrets"
+	verifierFactory "backup-operator/verifier/factory"
 )
 
 // staticDestProvider implements backup.DestinationProvider with a fixed list —
@@ -152,7 +153,7 @@ func run() int {
 		policy,
 		log.WithName("pipeline"),
 		events,
-	)
+	).WithVerifierFactory(verifierFactory.New)
 
 	if err := pipeline.Run(ctx, src); err != nil {
 		log.Error(err, "backup run failed", "target", src.TargetName)

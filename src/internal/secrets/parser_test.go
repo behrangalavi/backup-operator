@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"testing"
+	"time"
 
 	"backup-operator/internal/labels"
 
@@ -224,6 +225,74 @@ func TestDefaultPortFor(t *testing.T) {
 		if got := defaultPortFor(dbt); got != want {
 			t.Errorf("defaultPortFor(%q) = %d, want %d", dbt, got, want)
 		}
+	}
+}
+
+func TestParseSource_RestoreVerificationMode_DefaultOff(t *testing.T) {
+	src, err := ParseSource(newSourceSecret(nil), "0 2 * * *")
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if src.RestoreVerificationMode != labels.RestoreVerificationOff {
+		t.Errorf("default mode = %q, want %q", src.RestoreVerificationMode, labels.RestoreVerificationOff)
+	}
+}
+
+func TestParseSource_RestoreVerificationMode_ExplicitValid(t *testing.T) {
+	for _, mode := range []string{
+		labels.RestoreVerificationOff,
+		labels.RestoreVerificationStreamValidate,
+		labels.RestoreVerificationSchemaOnly,
+		labels.RestoreVerificationSample,
+		labels.RestoreVerificationFull,
+	} {
+		src, err := ParseSource(newSourceSecret(map[string]string{
+			labels.AnnotationRestoreVerificationMode: mode,
+		}), "0 2 * * *")
+		if err != nil {
+			t.Fatalf("mode %q: %v", mode, err)
+		}
+		if src.RestoreVerificationMode != mode {
+			t.Errorf("mode %q: got %q", mode, src.RestoreVerificationMode)
+		}
+	}
+}
+
+func TestParseSource_RestoreVerificationMode_TypoFallsBackOff(t *testing.T) {
+	src, err := ParseSource(newSourceSecret(map[string]string{
+		labels.AnnotationRestoreVerificationMode: "stream",
+	}), "0 2 * * *")
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if src.RestoreVerificationMode != labels.RestoreVerificationOff {
+		t.Errorf("typo should fall back to off, got %q", src.RestoreVerificationMode)
+	}
+}
+
+func TestParseSource_RestoreVerificationInterval_Defaults(t *testing.T) {
+	cases := []struct {
+		name string
+		ann  map[string]string
+		want time.Duration
+	}{
+		{"absent", nil, 0},
+		{"empty", map[string]string{labels.AnnotationRestoreVerificationInterval: ""}, 0},
+		{"168h", map[string]string{labels.AnnotationRestoreVerificationInterval: "168h"}, 168 * time.Hour},
+		{"30m", map[string]string{labels.AnnotationRestoreVerificationInterval: "30m"}, 30 * time.Minute},
+		{"malformed-falls-back", map[string]string{labels.AnnotationRestoreVerificationInterval: "weekly"}, 0},
+		{"negative-clamped", map[string]string{labels.AnnotationRestoreVerificationInterval: "-1h"}, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			src, err := ParseSource(newSourceSecret(c.ann), "0 2 * * *")
+			if err != nil {
+				t.Fatalf("unexpected: %v", err)
+			}
+			if src.RestoreVerificationInterval != c.want {
+				t.Errorf("got %v, want %v", src.RestoreVerificationInterval, c.want)
+			}
+		})
 	}
 }
 

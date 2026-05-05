@@ -173,6 +173,40 @@ var (
 		},
 		[]string{"target", "destination"},
 	)
+
+	// Restore-verification metrics — written by the worker (within the
+	// running pod) into the meta.json sidecar, then reconstructed by the
+	// operator-side MetricsRefresher into these gauges. Same pattern as
+	// the analyzer fields. Mode is included as a label so dashboards can
+	// distinguish stream-validate runs from later schema-only/full runs
+	// without losing history when a source switches modes.
+	restoreVerificationPassed = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "backup_operator_restore_verification_passed",
+			Help: "1 if the most recent restore-verification of this target succeeded, 0 if it found a mismatch, absent if never verified",
+		},
+		[]string{"target", "mode"},
+	)
+
+	restoreVerificationLastTimestamp = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "backup_operator_restore_verification_last_timestamp_seconds",
+			Help: "Unix timestamp of the most recent restore-verification attempt for this target",
+		},
+		[]string{"target", "mode"},
+	)
+
+	// Worker-only histogram (not visible to Prometheus, see CLAUDE.md §12).
+	// Kept for symmetry with dump_duration / upload_duration so future
+	// observability surface can read it from the worker process if needed.
+	restoreVerificationDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "backup_operator_restore_verification_duration_seconds",
+			Help:    "Time spent in the restore-verification phase",
+			Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600},
+		},
+		[]string{"target", "mode"},
+	)
 )
 
 // gatherer holds the same registry we registered to, so the alerts package
@@ -201,6 +235,9 @@ func Register(registry prometheus.Registerer) {
 		storageScrubPassed,
 		storageScrubLastCheck,
 		storageScrubFailedTotal,
+		restoreVerificationPassed,
+		restoreVerificationLastTimestamp,
+		restoreVerificationDuration,
 	)
 	if g, ok := registry.(prometheus.Gatherer); ok {
 		gatherer = g
@@ -310,6 +347,25 @@ func IncStorageScrubFailed(target, destination string) {
 	storageScrubFailedTotal.WithLabelValues(target, destination).Inc()
 }
 
+func SetRestoreVerificationPassed(target, mode string, passed bool) {
+	v := 0.0
+	if passed {
+		v = 1.0
+	}
+	restoreVerificationPassed.WithLabelValues(target, mode).Set(v)
+}
+
+func SetRestoreVerificationLastTimestamp(target, mode string, t time.Time) {
+	if t.IsZero() {
+		return
+	}
+	restoreVerificationLastTimestamp.WithLabelValues(target, mode).Set(float64(t.Unix()))
+}
+
+func ObserveRestoreVerificationDuration(target, mode string, d time.Duration) {
+	restoreVerificationDuration.WithLabelValues(target, mode).Observe(d.Seconds())
+}
+
 func DeleteTargetMetrics(target string) {
 	dumpSizeBytes.DeleteLabelValues(target)
 	dumpSizeChangeRatio.DeleteLabelValues(target)
@@ -328,4 +384,7 @@ func DeleteTargetMetrics(target string) {
 	storageScrubPassed.DeletePartialMatch(prometheus.Labels{"target": target})
 	storageScrubLastCheck.DeletePartialMatch(prometheus.Labels{"target": target})
 	storageScrubFailedTotal.DeletePartialMatch(prometheus.Labels{"target": target})
+	restoreVerificationPassed.DeletePartialMatch(prometheus.Labels{"target": target})
+	restoreVerificationLastTimestamp.DeletePartialMatch(prometheus.Labels{"target": target})
+	restoreVerificationDuration.DeletePartialMatch(prometheus.Labels{"target": target})
 }

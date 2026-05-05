@@ -26,6 +26,7 @@ import (
 	"backup-operator/metrics"
 	"backup-operator/storage"
 	storageFactory "backup-operator/storage/factory"
+	"backup-operator/verifier"
 
 	"github.com/go-logr/logr"
 )
@@ -50,14 +51,18 @@ func (NoopEventEmitter) Emit(string, string, string) {}
 //   5. Compare with previous meta to populate analyzer metrics.
 //   6. Apply retention policy per destination (best-effort, never fails the run).
 type Pipeline struct {
-	encryptor      crypto.Encryptor
-	analyzer       analyzer.Analyzer
-	tempDir        string
-	logger         logr.Logger
-	destProvider   DestinationProvider
-	defaults       RetentionPolicy
-	events         EventEmitter
-	maxConcurrency int
+	encryptor       crypto.Encryptor
+	analyzer        analyzer.Analyzer
+	tempDir         string
+	logger          logr.Logger
+	destProvider    DestinationProvider
+	defaults        RetentionPolicy
+	events          EventEmitter
+	maxConcurrency  int
+	// verifierFactory builds a per-(mode, dbType) restore-verifier. nil
+	// means restore-verification is disabled at this build of the
+	// pipeline (used by tests and the legacy NewPipeline constructor).
+	verifierFactory func(mode, dbType string, log logr.Logger) (verifier.Verifier, error)
 }
 
 // DestinationProvider returns the current set of destinations at run time.
@@ -107,6 +112,13 @@ func NewPipelineWithEvents(
 		events:         events,
 		maxConcurrency: defaultMaxConcurrency,
 	}
+}
+
+// WithVerifierFactory wires a restore-verifier factory into an existing
+// Pipeline and returns it for chaining. nil disables verification.
+func (p *Pipeline) WithVerifierFactory(f func(mode, dbType string, log logr.Logger) (verifier.Verifier, error)) *Pipeline {
+	p.verifierFactory = f
+	return p
 }
 
 // resolvePolicy turns the source's annotation values + global defaults into
@@ -184,9 +196,51 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	}
 	dumpFile := path.Join(p.tempDir, fmt.Sprintf("%s-%s.sql.gz.age", src.TargetName, timestamp))
 
+	// Decide whether THIS run gets a restore-verifier attached BEFORE we
+	// build the encryptor — if yes, we generate an ephemeral keypair and
+	// add its public half as an additional age recipient so the same
+	// dump can be decrypted by either the long-lived DR key (offline)
+	// or this single ephemeral identity (in-memory only). The ephemeral
+	// identity is wiped at the end of Run via defer.
+	//
+	// ShouldVerify needs the latest meta to compute interval-elapsed,
+	// so loading is pulled forward here. We re-use the same loader the
+	// analyzer block uses below.
+	var (
+		ephID         *crypto.EphemeralIdentity
+		runEncryptor  = p.encryptor
+		preloadedMeta *meta.MetaFile
+	)
+	if p.verifierFactory != nil && src.RestoreVerificationMode != "" {
+		preloadedMeta = p.loadPreviousMeta(ctx, dests, src.TargetName)
+		shouldVerify, reason := verifier.ShouldVerify(src, preloadedMeta, runStart)
+		log.V(1).Info("restore-verification decision", "should_verify", shouldVerify, "reason", reason, "mode", src.RestoreVerificationMode)
+		if shouldVerify {
+			id, err := crypto.GenerateEphemeralIdentity()
+			if err != nil {
+				log.Error(err, "ephemeral keypair generation failed; running without restore-verification this run")
+			} else {
+				re, err := crypto.NewEncryptorWithExtraRecipient(p.encryptor, id.PublicLine())
+				if err != nil {
+					log.Error(err, "encryptor extra-recipient wrap failed; running without restore-verification this run")
+					id.Wipe()
+				} else {
+					ephID = id
+					runEncryptor = re
+					log.Info("restore-verification armed for this run", "mode", src.RestoreVerificationMode, "ephemeralFingerprint", id.RecipientFingerprint())
+				}
+			}
+		}
+	}
+	defer func() {
+		if ephID != nil {
+			ephID.Wipe()
+		}
+	}()
+
 	rowCounter := dumper.NewRowCounter(nil, src.DBType) // writer set inside dumpToFile
 	dumpStart := time.Now()
-	encryptedSize, sha256sum, err := p.dumpToFileWithCounter(ctx, d, dumpFile, rowCounter)
+	encryptedSize, sha256sum, err := p.dumpToFileWithEncryptor(ctx, d, dumpFile, rowCounter, runEncryptor)
 	dumpDuration := time.Since(dumpStart)
 	metrics.ObserveDumpDuration(src.TargetName, src.DBType, dumpDuration)
 
@@ -272,7 +326,10 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	var report *analyzer.Report
 	var schemaChangedAt time.Time
 	if src.AnalyzerEnabled {
-		prevMeta := p.loadPreviousMeta(ctx, dests, src.TargetName)
+		prevMeta := preloadedMeta
+		if prevMeta == nil {
+			prevMeta = p.loadPreviousMeta(ctx, dests, src.TargetName)
+		}
 		var prevStats *dumper.Stats
 		var prevSize int64
 		var prevSchemaChangedAt time.Time
@@ -341,8 +398,19 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		return errors.New("all destination uploads failed")
 	}
 
+	// Phase 2 prologue: run the restore-verifier (if armed) against the
+	// local temp file before we serialise the meta. We deliberately
+	// verify the LOCAL file rather than re-downloading from a
+	// destination — Storage Scrubber already covers byte-level upload
+	// integrity (see CLAUDE.md §18 ADR), and the local file's
+	// decryptability is the property we care about here.
+	var restoreVerification *meta.RestoreVerificationResult
+	if ephID != nil && p.verifierFactory != nil {
+		restoreVerification = p.runRestoreVerifier(ctx, src, dumpFile, ephID, preStats, dumpCounts, log)
+	}
+
 	// Phase 2: build meta with destination results, upload to successful destinations.
-	metaBytes := metaJSON(src, metaStats, metaReport, metaVerification, encryptedSize, sha256sum, timestamp, schemaChangedAt, destResults)
+	metaBytes := metaJSON(src, metaStats, metaReport, metaVerification, encryptedSize, sha256sum, timestamp, schemaChangedAt, destResults, restoreVerification)
 	p.uploadMeta(ctx, dests, destResults, metaPath, metaBytes, log)
 
 	metrics.SetLastRunStatus(src.TargetName, true)
@@ -360,6 +428,60 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	}
 
 	return nil
+}
+
+// runRestoreVerifier invokes the configured verifier against the local
+// dump file using the run's ephemeral identity, then wipes the identity.
+// Returns the result for inclusion in meta.json, or a Skipped result if
+// the verifier itself blew up (e.g. unsupported mode for Phase 1). Never
+// fails the run — restore-verification is an observability layer, not a
+// gating one.
+func (p *Pipeline) runRestoreVerifier(
+	ctx context.Context,
+	src *secrets.Source,
+	dumpFile string,
+	id *crypto.EphemeralIdentity,
+	preStats *dumper.Stats,
+	dumpCounts map[string]int64,
+	log logr.Logger,
+) *meta.RestoreVerificationResult {
+	mode := src.RestoreVerificationMode
+	v, err := p.verifierFactory(mode, src.DBType, log)
+	if err != nil {
+		log.Error(err, "restore-verifier factory failed", "mode", mode)
+		return verifier.FailureResult(mode, time.Now().UTC(), err, id.RecipientFingerprint())
+	}
+	if v == nil {
+		// "off" should not reach here (we already gated on mode != ""),
+		// but defensively short-circuit.
+		return nil
+	}
+	started := time.Now().UTC()
+	res, err := v.Verify(ctx, verifier.Input{
+		Source:    src,
+		DumpPath:  dumpFile,
+		Identity:  id,
+		PreStats:  preStats,
+		DumpRows:  dumpCounts,
+		StartedAt: started,
+		Logger:    log,
+	})
+	if err != nil {
+		log.Error(err, "restore-verifier hard failure", "mode", mode)
+		return verifier.FailureResult(mode, started, err, id.RecipientFingerprint())
+	}
+	log.Info("restore-verification result",
+		"mode", res.Mode,
+		"verdict", res.Verdict,
+		"duration_seconds", res.DurationSeconds,
+		"summary", res.Summary,
+	)
+	// Worker-side metrics: histogram is process-local (Prometheus can't
+	// scrape the short-lived pod), but emit anyway for symmetry; the
+	// gauges that DO surface to Prometheus are reconstructed by the
+	// MetricsRefresher reading meta.json.
+	metrics.ObserveRestoreVerificationDuration(src.TargetName, res.Mode, time.Duration(res.DurationSeconds*float64(time.Second)))
+	return res
 }
 
 // recordFailure best-effort uploads a failure-meta sidecar to every
@@ -412,10 +534,18 @@ func (p *Pipeline) dumpToFile(ctx context.Context, d dumper.Dumper, dumpFile str
 	return p.dumpToFileWithCounter(ctx, d, dumpFile, nil)
 }
 
-// dumpToFileWithCounter dumps the database to a temp file while optionally
-// counting rows via the RowCounter. The counter sits between the dump output
-// and gzip, so it sees raw SQL/BSON before compression and encryption.
+// dumpToFileWithCounter is a thin wrapper that uses the pipeline's default
+// encryptor — kept for backwards compatibility with existing tests and
+// callers that don't need a per-run encryptor.
 func (p *Pipeline) dumpToFileWithCounter(ctx context.Context, d dumper.Dumper, dumpFile string, rc *dumper.RowCounter) (int64, string, error) {
+	return p.dumpToFileWithEncryptor(ctx, d, dumpFile, rc, p.encryptor)
+}
+
+// dumpToFileWithEncryptor dumps the database to a temp file while optionally
+// counting rows via the RowCounter, using the supplied Encryptor. Restore-
+// verification supplies a per-run encryptor that includes an extra ephemeral
+// recipient; everything else passes p.encryptor.
+func (p *Pipeline) dumpToFileWithEncryptor(ctx context.Context, d dumper.Dumper, dumpFile string, rc *dumper.RowCounter, encryptor crypto.Encryptor) (int64, string, error) {
 	f, err := os.Create(dumpFile)
 	if err != nil {
 		return 0, "", fmt.Errorf("create temp dump: %w", err)
@@ -425,7 +555,7 @@ func (p *Pipeline) dumpToFileWithCounter(ctx context.Context, d dumper.Dumper, d
 	h := sha256.New()
 	w := io.MultiWriter(f, h)
 
-	enc, err := p.encryptor.Wrap(w)
+	enc, err := encryptor.Wrap(w)
 	if err != nil {
 		return 0, "", fmt.Errorf("encrypt wrap: %w", err)
 	}
@@ -711,19 +841,20 @@ func sortedMetaPaths(objs []storage.Object) []string {
 	return out
 }
 
-func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report, verification *meta.DumpVerification, size int64, sha256sum, timestamp string, schemaChangedAt time.Time, destResults []meta.DestinationResult) []byte {
+func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report, verification *meta.DumpVerification, size int64, sha256sum, timestamp string, schemaChangedAt time.Time, destResults []meta.DestinationResult, restoreVerification *meta.RestoreVerificationResult) []byte {
 	m := meta.MetaFile{
-		Target:             src.TargetName,
-		Timestamp:          timestamp,
-		DBType:             src.DBType,
-		Status:             meta.StatusSuccess,
-		EncryptedSizeBytes: size,
-		SHA256:             sha256sum,
-		SchemaChangedAt:    schemaChangedAt,
-		Stats:              stats,
-		Report:             report,
-		Verification:       verification,
-		Destinations:       destResults,
+		Target:              src.TargetName,
+		Timestamp:           timestamp,
+		DBType:              src.DBType,
+		Status:              meta.StatusSuccess,
+		EncryptedSizeBytes:  size,
+		SHA256:              sha256sum,
+		SchemaChangedAt:     schemaChangedAt,
+		Stats:               stats,
+		Report:              report,
+		Verification:        verification,
+		RestoreVerification: restoreVerification,
+		Destinations:        destResults,
 	}
 	out, _ := json.MarshalIndent(m, "", "  ")
 	return out

@@ -188,6 +188,7 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 			metrics.SetDumpSizeChangeRatio(src.TargetName, newest.Report.SizeChangeRatio)
 		}
 		metrics.SetSchemaChanged(src.TargetName, newest.Report.SchemaChanged)
+		metrics.SetCharsetChanged(src.TargetName, newest.Report.CharsetChanged)
 		metrics.SetLastRunAnomalies(src.TargetName, len(newest.Report.Anomalies))
 	} else {
 		// A failed run won't have a report. Keep these gauges sticky on their
@@ -198,6 +199,9 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 
 	if success != nil {
 		metrics.SetDumpSize(src.TargetName, success.EncryptedSizeBytes)
+		if !success.SchemaChangedAt.IsZero() {
+			metrics.SetSchemaLastChange(src.TargetName, success.SchemaChangedAt)
+		}
 		if success.Stats != nil {
 			metrics.SetTableCount(src.TargetName, len(success.Stats.Tables))
 			for _, t := range success.Stats.Tables {

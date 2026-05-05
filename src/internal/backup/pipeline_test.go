@@ -190,7 +190,7 @@ func TestSortedMetaPaths_NoMetas(t *testing.T) {
 
 func TestMetaJSON_SuccessStatus(t *testing.T) {
 	src := testSource("prod-db", "postgres")
-	m := metaJSON(src, nil, nil, nil, 42000, "abc123", "20260501T020000Z", nil)
+	m := metaJSON(src, nil, nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, nil)
 	if !bytes.Contains(m, []byte(`"status": "success"`)) {
 		t.Error("meta should contain status=success")
 	}
@@ -205,7 +205,7 @@ func TestMetaJSON_WithDestinations(t *testing.T) {
 		{Name: "hetzner", StorageType: "sftp", Status: meta.StatusSuccess},
 		{Name: "aws-s3", StorageType: "s3", Status: meta.StatusFailed, Error: "connection refused"},
 	}
-	m := metaJSON(src, nil, nil, nil, 42000, "abc123", "20260501T020000Z", drs)
+	m := metaJSON(src, nil, nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, drs)
 	if !bytes.Contains(m, []byte(`"destinations"`)) {
 		t.Error("meta should contain destinations array")
 	}
@@ -240,7 +240,7 @@ func TestMetaJSON_WithVerification(t *testing.T) {
 			{Name: "users", PreDumpRows: 100, PostDumpRows: 100, DumpRows: 100, Verdict: "match"},
 		},
 	}
-	m := metaJSON(src, nil, nil, v, 42000, "abc123", "20260501T020000Z", nil)
+	m := metaJSON(src, nil, nil, v, 42000, "abc123", "20260501T020000Z", time.Time{}, nil)
 	if !bytes.Contains(m, []byte(`"verification"`)) {
 		t.Error("meta should contain verification")
 	}

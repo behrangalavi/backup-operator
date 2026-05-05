@@ -74,11 +74,31 @@ func (d *postgresDumper) CollectStats(ctx context.Context) (*dumper.Stats, error
 		return nil, fmt.Errorf("query schema: %w", err)
 	}
 
+	// Best-effort: charset/collation drift is a useful drift signal but should
+	// never fail the run. pg_database.datcollate is per-database; encoding
+	// comes from pg_encoding_to_char(encoding).
+	charset, collation := d.queryEncoding(ctx, conn)
+
 	return &dumper.Stats{
 		SchemaHash:  hash,
+		Charset:     charset,
+		Collation:   collation,
 		Tables:      tables,
 		GeneratedAt: time.Now().UTC(),
 	}, nil
+}
+
+func (d *postgresDumper) queryEncoding(ctx context.Context, conn *pgx.Conn) (string, string) {
+	const q = `
+SELECT pg_encoding_to_char(encoding), datcollate
+FROM pg_database
+WHERE datname = current_database()`
+	var charset, collation string
+	if err := conn.QueryRow(ctx, q).Scan(&charset, &collation); err != nil {
+		d.logger.V(1).Info("query encoding skipped", "err", err.Error())
+		return "", ""
+	}
+	return charset, collation
 }
 
 func (d *postgresDumper) connString() string {

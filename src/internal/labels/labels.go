@@ -20,4 +20,5 @@ const (
 	AnnotationRowDropThreshold  = "backup.mogenius.io/row-drop-threshold"
 	AnnotationSizeDropThreshold = "backup.mogenius.io/size-drop-threshold"
 	AnnotationAnonymizeTables   = "backup.mogenius.io/anonymize-tables"
+	AnnotationEmptyDumpCheck    = "backup.mogenius.io/empty-dump-check"
 )

@@ -15,6 +15,7 @@ type Report struct {
 
 	SizeChangeRatio float64       `json:"sizeChangeRatio"` // current/previous total dump bytes; 1.0 = unchanged
 	SchemaChanged   bool          `json:"schemaChanged"`
+	CharsetChanged  bool          `json:"charsetChanged"` // db-level character_set or collation differs from previous run
 	Anomalies       []Anomaly     `json:"anomalies"`
 	TableDiffs      []TableDiff   `json:"tableDiffs"`
 }
@@ -94,6 +95,20 @@ func (a *analyzer) Compare(prev, curr *dumper.Stats, prevSize, currSize int64) *
 
 	if prev.SchemaHash != "" && curr.SchemaHash != "" && prev.SchemaHash != curr.SchemaHash {
 		r.SchemaChanged = true
+	}
+
+	// Charset/collation drift only triggers when both runs recorded a value;
+	// dumpers that don't capture encoding (mongo, redis) leave the fields
+	// empty and are skipped automatically.
+	prevHasEnc := prev.Charset != "" || prev.Collation != ""
+	currHasEnc := curr.Charset != "" || curr.Collation != ""
+	if prevHasEnc && currHasEnc && (prev.Charset != curr.Charset || prev.Collation != curr.Collation) {
+		r.CharsetChanged = true
+		r.Anomalies = append(r.Anomalies, Anomaly{
+			Kind:    "charset-changed",
+			Subject: "<database>",
+			Detail:  "charset/collation drifted: " + prev.Charset + "/" + prev.Collation + " -> " + curr.Charset + "/" + curr.Collation,
+		})
 	}
 
 	prevTables := indexTables(prev.Tables)

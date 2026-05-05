@@ -14,8 +14,10 @@ import (
 	"backup-operator/internal/labels"
 	"backup-operator/internal/meta"
 	"backup-operator/internal/secrets"
+	"backup-operator/metrics"
 	storageFactory "backup-operator/storage/factory"
 
+	dto "github.com/prometheus/client_model/go"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,6 +36,7 @@ type sourceRequest struct {
 	Username           string            `json:"username"`
 	Password           string            `json:"password"`
 	AnalyzerEnabled    *bool             `json:"analyzerEnabled"`
+	EmptyDumpCheck     *bool             `json:"emptyDumpCheck"`
 	Destinations       string            `json:"destinations"`
 	RetentionDays      string            `json:"retentionDays"`
 	MinKeep            string            `json:"minKeep"`
@@ -631,6 +634,9 @@ func buildSourceAnnotations(req sourceRequest) map[string]string {
 	if req.AnalyzerEnabled != nil {
 		ann[labels.AnnotationAnalyzerEnabled] = fmt.Sprintf("%t", *req.AnalyzerEnabled)
 	}
+	if req.EmptyDumpCheck != nil {
+		ann[labels.AnnotationEmptyDumpCheck] = fmt.Sprintf("%t", *req.EmptyDumpCheck)
+	}
 	if req.Destinations != "" {
 		ann[labels.AnnotationDestinations] = req.Destinations
 	}
@@ -684,6 +690,9 @@ func mergeSourceAnnotations(sec *corev1.Secret, req sourceRequest) {
 	}
 	if req.AnalyzerEnabled != nil {
 		sec.Annotations[labels.AnnotationAnalyzerEnabled] = fmt.Sprintf("%t", *req.AnalyzerEnabled)
+	}
+	if req.EmptyDumpCheck != nil {
+		sec.Annotations[labels.AnnotationEmptyDumpCheck] = fmt.Sprintf("%t", *req.EmptyDumpCheck)
 	}
 	if req.Destinations != "" {
 		sec.Annotations[labels.AnnotationDestinations] = req.Destinations
@@ -762,6 +771,7 @@ func (s *Server) handleAPIGetSource(w http.ResponseWriter, r *http.Request) {
 		Username          string `json:"username"`
 		HasPassword       bool   `json:"hasPassword"`
 		AnalyzerEnabled   string `json:"analyzerEnabled"`
+		EmptyDumpCheck    string `json:"emptyDumpCheck"`
 		Destinations      string `json:"destinations"`
 		RetentionDays     string `json:"retentionDays"`
 		MinKeep           string `json:"minKeep"`
@@ -786,6 +796,7 @@ func (s *Server) handleAPIGetSource(w http.ResponseWriter, r *http.Request) {
 		Username:          string(sec.Data["username"]),
 		HasPassword:       len(sec.Data["password"]) > 0,
 		AnalyzerEnabled:   sec.Annotations[labels.AnnotationAnalyzerEnabled],
+		EmptyDumpCheck:    sec.Annotations[labels.AnnotationEmptyDumpCheck],
 		Destinations:      sec.Annotations[labels.AnnotationDestinations],
 		RetentionDays:     sec.Annotations[labels.AnnotationRetentionDays],
 		MinKeep:           sec.Annotations[labels.AnnotationMinKeep],
@@ -1037,6 +1048,14 @@ type destHealthEntry struct {
 	LatestRun   string `json:"latestRun,omitempty"`
 	Status      string `json:"status"` // "ok", "failed", "missing", "unreachable"
 	Error       string `json:"error,omitempty"`
+
+	// Scrub fields are populated when STORAGE_SCRUB_ENABLED=true and at least
+	// one scrub has run for this pair. ScrubStatus is "" when no scrub data
+	// is available — the UI can then either hide the column or render
+	// "disabled" depending on whether the operator advertises scrub support.
+	ScrubStatus       string `json:"scrubStatus,omitempty"`        // "ok" | "failed"
+	ScrubLastCheck    int64  `json:"scrubLastCheck,omitempty"`     // unix seconds
+	ScrubFailedTotal  int64  `json:"scrubFailedTotal,omitempty"`   // cumulative failures
 }
 
 func (s *Server) handleAPIDestinationHealth(w http.ResponseWriter, r *http.Request) {
@@ -1151,7 +1170,104 @@ func (s *Server) handleAPIDestinationHealth(w http.ResponseWriter, r *http.Reque
 			entries = append(entries, entry)
 		}
 	}
+
+	// Decorate with scrub status from our own metric registry. Done last so
+	// it's a no-op when STORAGE_SCRUB_ENABLED is off (the gauges are simply
+	// absent and the lookup returns zero values).
+	scrub := collectScrubStatus()
+	for i := range entries {
+		key := entries[i].Target + "\x00" + entries[i].Destination
+		if s, ok := scrub[key]; ok {
+			entries[i].ScrubStatus = s.status
+			entries[i].ScrubLastCheck = s.lastCheck
+			entries[i].ScrubFailedTotal = s.failedTotal
+		}
+	}
 	writeJSON(w, http.StatusOK, entries)
+}
+
+type scrubInfo struct {
+	status      string // "ok" | "failed"
+	lastCheck   int64
+	failedTotal int64
+}
+
+// collectScrubStatus walks the operator's own metric registry and indexes
+// scrub gauges by (target, destination). Used to decorate destination-health
+// entries without an extra storage round-trip — the scrub already touched
+// storage on its own schedule, so there is no point re-doing it per UI hit.
+func collectScrubStatus() map[string]scrubInfo {
+	out := map[string]scrubInfo{}
+	g := metrics.Gatherer()
+	if g == nil {
+		return out
+	}
+	families, err := g.Gather()
+	if err != nil {
+		return out
+	}
+	getOrInit := func(target, dest string) scrubInfo {
+		k := target + "\x00" + dest
+		return out[k]
+	}
+	put := func(target, dest string, info scrubInfo) {
+		out[target+"\x00"+dest] = info
+	}
+	for _, fam := range families {
+		switch fam.GetName() {
+		case "backup_operator_storage_scrub_passed":
+			for _, m := range fam.Metric {
+				target, dest := scrubLabels(m.Label)
+				if target == "" {
+					continue
+				}
+				info := getOrInit(target, dest)
+				if m.Gauge != nil && m.Gauge.GetValue() == 1 {
+					info.status = "ok"
+				} else {
+					info.status = "failed"
+				}
+				put(target, dest, info)
+			}
+		case "backup_operator_storage_scrub_last_check_timestamp_seconds":
+			for _, m := range fam.Metric {
+				target, dest := scrubLabels(m.Label)
+				if target == "" {
+					continue
+				}
+				info := getOrInit(target, dest)
+				if m.Gauge != nil {
+					info.lastCheck = int64(m.Gauge.GetValue())
+				}
+				put(target, dest, info)
+			}
+		case "backup_operator_storage_scrub_failed_total":
+			for _, m := range fam.Metric {
+				target, dest := scrubLabels(m.Label)
+				if target == "" {
+					continue
+				}
+				info := getOrInit(target, dest)
+				if m.Counter != nil {
+					info.failedTotal = int64(m.Counter.GetValue())
+				}
+				put(target, dest, info)
+			}
+		}
+	}
+	return out
+}
+
+func scrubLabels(pairs []*dto.LabelPair) (target, dest string) {
+	for _, p := range pairs {
+		switch p.GetName() {
+		case "target":
+			target = p.GetValue()
+		case "destination":
+			dest = p.GetValue()
+		}
+	}
+	return
 }
 
 // --- Backup consistency check ---

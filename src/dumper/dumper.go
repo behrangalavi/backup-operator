@@ -20,8 +20,16 @@ type Config struct {
 
 // Stats is captured before/independent of the dump so the analyzer can compare
 // the current database state to the previous run without re-parsing the dump.
+//
+// Charset / Collation are recorded on a best-effort basis (only meaningful
+// for engines that track them at the database level — postgres, mysql,
+// mariadb). Drift across runs flags servers being upgraded or migrated
+// without reconciling the new defaults, which silently breaks Umlauts /
+// emoji on restore.
 type Stats struct {
 	SchemaHash  string       `json:"schemaHash"`
+	Charset     string       `json:"charset,omitempty"`
+	Collation   string       `json:"collation,omitempty"`
 	Tables      []TableStats `json:"tables"`
 	GeneratedAt time.Time    `json:"generatedAt"`
 }

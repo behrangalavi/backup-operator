@@ -57,6 +57,13 @@ type DumpVerification struct {
 	PostStats *dumper.Stats      `json:"postStats,omitempty"`
 	DumpRowCounts map[string]int64 `json:"dumpRowCounts,omitempty"`
 	Tables   []TableVerification `json:"tables,omitempty"`
+
+	// LooksEmpty is true when the dump appears to contain no data despite the
+	// source DB having rows. Set when dump row counting is available, the
+	// pre-dump stats show > 0 total rows across user tables, and the dump
+	// itself shows 0 rows. The classic "mysqldump succeeded but only emitted
+	// DDL because the user lacked SELECT" failure mode.
+	LooksEmpty bool `json:"looksEmpty,omitempty"`
 }
 
 // TableVerification records per-table row counts from three sources.
@@ -83,6 +90,13 @@ type MetaFile struct {
 	Phase              string           `json:"phase,omitempty"`
 	EncryptedSizeBytes int64            `json:"encryptedSizeBytes,omitempty"`
 	SHA256             string           `json:"sha256,omitempty"`
+	// SchemaChangedAt is the timestamp of the most recent run where the
+	// schema fingerprint differed from the prior run. Carried forward from
+	// the previous meta when the schema is unchanged, so any single meta
+	// alone tells you "schema was last touched at ...". Lets PromQL queries
+	// like `time() - last_change_timestamp > 86400 * 180` flag backups whose
+	// schema is so old the application has likely diverged.
+	SchemaChangedAt    time.Time        `json:"schemaChangedAt,omitempty"`
 	Stats              *dumper.Stats    `json:"stats,omitempty"`
 	Report             *analyzer.Report `json:"report,omitempty"`
 	Verification       *DumpVerification `json:"verification,omitempty"`

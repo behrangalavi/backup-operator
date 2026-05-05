@@ -32,6 +32,20 @@ type targetSummary struct {
 	Destinations []string
 	CreatedAt    time.Time      // Secret CreationTimestamp; read off raw corev1 at access time
 	Latest       *meta.MetaFile // nil if no runs yet
+
+	// Analysis surfaces the per-source analyzer toggles. The UI uses this to
+	// render the "Analysis Coverage" card so an operator can see at a glance
+	// which validations are armed for this source — and which are off-by-
+	// design for the source's DB type (charset for mongo/redis, row counter
+	// for mongo/redis, etc.).
+	Analysis analysisFlags
+}
+
+type analysisFlags struct {
+	AnalyzerEnabled    bool    `json:"analyzerEnabled"`
+	EmptyDumpCheck     bool    `json:"emptyDumpCheck"`
+	RowDropThreshold   float64 `json:"rowDropThreshold"`  // -1 = default
+	SizeDropThreshold  float64 `json:"sizeDropThreshold"` // -1 = default
 }
 
 // targetDetail backs the per-source detail page.
@@ -111,6 +125,12 @@ func (d *k8sData) listTargets(ctx context.Context) ([]targetSummary, error) {
 			Destinations: destinationsAllowedFor(src, dests),
 			CreatedAt:    createdAt[src.SecretName],
 			Latest:       latestByTarget[src.TargetName],
+			Analysis: analysisFlags{
+				AnalyzerEnabled:   src.AnalyzerEnabled,
+				EmptyDumpCheck:    src.EmptyDumpCheck,
+				RowDropThreshold:  src.RowDropThreshold,
+				SizeDropThreshold: src.SizeDropThreshold,
+			},
 		}
 		out = append(out, summary)
 	}

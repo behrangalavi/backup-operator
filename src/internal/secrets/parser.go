@@ -32,6 +32,10 @@ type Source struct {
 	RowDropThreshold   float64 // -1 = use default
 	SizeDropThreshold  float64 // -1 = use default
 	AnonymizeTables    bool
+	// EmptyDumpCheck enables the hard-fail when pre-dump stats show rows but
+	// the dump itself contains zero INSERTs. Default true. Set the annotation
+	// to false on schema-only sources (e.g. an empty template DB).
+	EmptyDumpCheck     bool
 	Config             dumper.Config
 }
 
@@ -115,6 +119,7 @@ func ParseSource(s *corev1.Secret, defaultSchedule string) (*Source, error) {
 		RowDropThreshold:   parseFloatAnnotation(s.Annotations[labels.AnnotationRowDropThreshold], -1),
 		SizeDropThreshold:  parseFloatAnnotation(s.Annotations[labels.AnnotationSizeDropThreshold], -1),
 		AnonymizeTables:    parseBoolAnnotation(s.Annotations[labels.AnnotationAnonymizeTables], false),
+		EmptyDumpCheck:     parseBoolAnnotation(s.Annotations[labels.AnnotationEmptyDumpCheck], true),
 		Config: dumper.Config{
 			Name:     target,
 			Host:     host,

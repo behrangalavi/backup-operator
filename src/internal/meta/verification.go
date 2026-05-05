@@ -13,10 +13,16 @@ import (
 //
 // For MongoDB (or any DB where dump row counting is not feasible),
 // dumpCounts will be nil — the verification uses only pre/post comparison.
+//
+// encryptedSize is the size of the produced ciphertext on disk; it powers
+// engine-specific empty-dump heuristics for backends where row counting is
+// not available (mongo, redis). Pass 0 if not yet known — the heuristic is
+// then skipped.
 func BuildVerification(
 	preStats, postStats *dumper.Stats,
 	dumpCounts map[string]int64,
 	dbType string,
+	encryptedSize int64,
 ) *DumpVerification {
 	if preStats == nil {
 		return &DumpVerification{
@@ -145,7 +151,83 @@ func BuildVerification(
 		v.Summary = "insufficient data for verification"
 	}
 
+	// "Looks empty" detection has two paths:
+	//   - SQL (postgres/mysql/mariadb): the row counter saw the dump stream.
+	//     dumpCounts is non-nil; an empty map means the dump produced 0
+	//     INSERTs despite pre-stats showing rows.
+	//   - Non-SQL (mongo/redis): no row counter. We use encryptedSize as a
+	//     proxy — a healthy dump compresses to ~10-30% of source size, so a
+	//     dump that's <1% of the pre-dump source size with significant data
+	//     in the source is almost certainly broken.
+	if dumpCounts != nil {
+		var preRowTotal, dumpRowTotal int64
+		for _, t := range preStats.Tables {
+			preRowTotal += t.RowCount
+		}
+		for _, c := range normalizedDumpCounts {
+			dumpRowTotal += c
+		}
+		if preRowTotal > 0 && dumpRowTotal == 0 {
+			v.LooksEmpty = true
+			v.Summary = fmt.Sprintf(
+				"empty dump: pre-dump showed %d rows but dump contains 0 INSERTs (likely permission issue)",
+				preRowTotal,
+			)
+		}
+	} else if encryptedSize > 0 {
+		if reason := looksEmptyByHeuristic(dbType, preStats, encryptedSize); reason != "" {
+			v.LooksEmpty = true
+			v.Summary = reason
+		}
+	}
+
 	return v
+}
+
+// looksEmptyByHeuristic detects empty dumps for engines without a stream-level
+// row counter. Returns "" when the dump looks plausibly populated; returns a
+// human-readable reason otherwise.
+//
+// Mongo: BSON+gzip typically compresses to ~10-30% of source. A dump that's
+// less than 1% of preStats total size with > 1 MiB of source data is almost
+// certainly broken. Threshold tuned conservatively to avoid false-positives
+// on highly compressible / mostly-empty databases.
+//
+// Redis: RDB has a fixed 50-byte header + per-key serialisation. With any
+// keys present, the encrypted dump should clear ~200 bytes easily; anything
+// smaller means redis-cli emitted only the header.
+func looksEmptyByHeuristic(dbType string, preStats *dumper.Stats, encryptedSize int64) string {
+	if preStats == nil {
+		return ""
+	}
+	switch dbType {
+	case "mongo":
+		var preTotalSize int64
+		for _, t := range preStats.Tables {
+			preTotalSize += t.SizeBytes
+		}
+		const minSourceMiB = 1 << 20
+		const ratioThreshold = 0.01
+		if preTotalSize > minSourceMiB && float64(encryptedSize) < float64(preTotalSize)*ratioThreshold {
+			return fmt.Sprintf(
+				"empty dump heuristic: source has %d MiB across collections but encrypted dump is only %d bytes (<%.0f%% expected)",
+				preTotalSize>>20, encryptedSize, ratioThreshold*100,
+			)
+		}
+	case "redis":
+		var preTotalKeys int64
+		for _, t := range preStats.Tables {
+			preTotalKeys += t.RowCount
+		}
+		const minBytesWithKeys = 200
+		if preTotalKeys > 0 && encryptedSize < minBytesWithKeys {
+			return fmt.Sprintf(
+				"empty dump heuristic: source has %d keys but encrypted RDB is only %d bytes (header-only)",
+				preTotalKeys, encryptedSize,
+			)
+		}
+	}
+	return ""
 }
 
 func collectTableNames(pre, post *dumper.Stats, dumpCounts map[string]int64) []string {

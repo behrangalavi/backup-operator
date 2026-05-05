@@ -30,14 +30,17 @@ func NewLocalProvider(g prometheus.Gatherer) *LocalProvider {
 }
 
 // targetState collects every metric value we need per target/destination so
-// we can evaluate all six rules in one pass over the gathered families.
+// we can evaluate all rules in one pass over the gathered families.
 type targetState struct {
 	lastSuccessTs       map[string]float64 // dest → unix ts
 	destinationFailed   map[string]float64 // dest → 0/1
+	storageScrubPassed  map[string]float64 // dest → 0/1 (only present after a scrub ran)
 	dumpSizeChangeRatio float64
 	dumpSizeChangeKnown bool
 	schemaChanged       float64
 	schemaChangedKnown  bool
+	charsetChanged      float64
+	charsetChangedKnown bool
 	lastRunStatus       float64
 	lastRunStatusKnown  bool
 	lastRunAnomalies    float64
@@ -58,8 +61,9 @@ func (p *LocalProvider) List(ctx context.Context) ([]Alert, error) {
 		s, ok := states[target]
 		if !ok {
 			s = &targetState{
-				lastSuccessTs:     map[string]float64{},
-				destinationFailed: map[string]float64{},
+				lastSuccessTs:      map[string]float64{},
+				destinationFailed:  map[string]float64{},
+				storageScrubPassed: map[string]float64{},
 			}
 			states[target] = s
 		}
@@ -79,6 +83,8 @@ func (p *LocalProvider) List(ctx context.Context) ([]Alert, error) {
 				getState(target).lastSuccessTs[labels["destination"]] = val
 			case "backup_operator_destination_failed":
 				getState(target).destinationFailed[labels["destination"]] = val
+			case "backup_operator_storage_scrub_passed":
+				getState(target).storageScrubPassed[labels["destination"]] = val
 			case "backup_operator_dump_size_change_ratio":
 				s := getState(target)
 				s.dumpSizeChangeRatio = val
@@ -87,6 +93,10 @@ func (p *LocalProvider) List(ctx context.Context) ([]Alert, error) {
 				s := getState(target)
 				s.schemaChanged = val
 				s.schemaChangedKnown = true
+			case "backup_operator_charset_changed":
+				s := getState(target)
+				s.charsetChanged = val
+				s.charsetChangedKnown = true
 			case "backup_operator_last_run_status":
 				s := getState(target)
 				s.lastRunStatus = val
@@ -168,6 +178,21 @@ func (p *LocalProvider) List(ctx context.Context) ([]Alert, error) {
 			})
 		}
 
+		// 4b. BackupCharsetChanged — warning. utf8 → utf8mb4 drift silently
+		// truncates 4-byte chars on restore; treat with more weight than
+		// schema drift.
+		if s.charsetChangedKnown && s.charsetChanged == 1 {
+			out = append(out, Alert{
+				Alertname:   "BackupCharsetChanged",
+				Target:      target,
+				Severity:    "warning",
+				State:       "firing",
+				ActiveSince: now,
+				Summary:     fmt.Sprintf("Database charset/collation changed for backup target %s", target),
+				Source:      "local",
+			})
+		}
+
 		// 5. BackupAnomaliesAppearing
 		if s.anomaliesKnown && s.lastRunAnomalies > 0 {
 			out = append(out, Alert{
@@ -182,6 +207,24 @@ func (p *LocalProvider) List(ctx context.Context) ([]Alert, error) {
 				),
 				Source: "local",
 			})
+		}
+
+		// 5b. BackupStorageCorrupted — per destination. Critical because the
+		// stored dump's bytes no longer match the SHA256 in meta.json: the
+		// artifact is unrecoverable, period.
+		for dest, passed := range s.storageScrubPassed {
+			if passed == 0 {
+				out = append(out, Alert{
+					Alertname:   "BackupStorageCorrupted",
+					Target:      target,
+					Destination: dest,
+					Severity:    "critical",
+					State:       "firing",
+					ActiveSince: now,
+					Summary:     fmt.Sprintf("Storage scrub failed for %s on %s — dump SHA256 does not match meta.json", target, dest),
+					Source:      "local",
+				})
+			}
 		}
 
 		// 6. BackupLastRunFailed

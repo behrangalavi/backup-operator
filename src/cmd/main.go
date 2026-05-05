@@ -69,6 +69,23 @@ func main() {
 			return nil
 		}},
 
+		// Storage scrubber — re-hashes the most recent dump per
+		// (source, destination) on a schedule and compares against the
+		// SHA256 recorded in meta.json. Detects silent storage corruption.
+		// Off by default because each scrub re-streams a full encrypted
+		// dump from storage; enable once you've sized your egress.
+		{Key: "STORAGE_SCRUB_ENABLED", Optional: true, Default: "false"},
+		{Key: "STORAGE_SCRUB_INTERVAL_HOURS", Optional: true, Default: "24", Validate: func(v string) error {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return fmt.Errorf("'STORAGE_SCRUB_INTERVAL_HOURS' must be integer: %w", err)
+			}
+			if n < 1 {
+				return fmt.Errorf("'STORAGE_SCRUB_INTERVAL_HOURS' must be >= 1")
+			}
+			return nil
+		}},
+
 		// Worker pod template — these flow into every CronJob the reconciler
 		// produces. Set by Helm; required so CronJobs are runnable.
 		{Key: "WORKER_IMAGE", Optional: false},
@@ -184,6 +201,17 @@ func main() {
 		Interval:  time.Duration(refreshSec) * time.Second,
 	}
 	assert.NoError(mgr.Add(refresher), "failed to register metrics refresher")
+
+	if config.GetValue("STORAGE_SCRUB_ENABLED") == "true" {
+		scrubHours, _ := strconv.Atoi(config.GetValue("STORAGE_SCRUB_INTERVAL_HOURS"))
+		scrubber := &controllers.StorageScrubber{
+			Client:    mgr.GetClient(),
+			Logger:    ctrl.Log.WithName("storage-scrubber"),
+			Namespace: watchNs,
+			Interval:  time.Duration(scrubHours) * time.Hour,
+		}
+		assert.NoError(mgr.Add(scrubber), "failed to register storage scrubber")
+	}
 
 	if config.GetValue("UI_ENABLED") == "true" {
 		maxBody, _ := strconv.ParseInt(config.GetValue("UI_MAX_BODY_BYTES"), 10, 64)

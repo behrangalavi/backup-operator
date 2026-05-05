@@ -34,7 +34,7 @@ func NewRowCounter(w io.Writer, dbType string) *RowCounter {
 		counts: make(map[string]int64),
 		done:   make(chan struct{}),
 	}
-	if dbType == "postgres" || dbType == "mysql" {
+	if dbType == "postgres" || dbType == "mysql" || dbType == "mariadb" {
 		rc.pr, rc.pw = io.Pipe()
 		go rc.scan()
 	}
@@ -76,6 +76,12 @@ func (rc *RowCounter) Counts() map[string]int64 {
 	return out
 }
 
+// Active reports whether the row counter is parsing the dump stream. False
+// for dump formats it cannot parse (e.g. mongodump's BSON archive). When
+// Active is false, Counts() and TotalRows() are not meaningful — callers
+// must fall back to pre/post stats comparison.
+func (rc *RowCounter) Active() bool { return rc.pw != nil }
+
 // TotalRows returns the total number of rows counted across all tables.
 func (rc *RowCounter) TotalRows() int64 {
 	rc.mu.Lock()
@@ -96,7 +102,7 @@ func (rc *RowCounter) scan() {
 	switch rc.dbType {
 	case "postgres":
 		rc.scanPostgres(scanner)
-	case "mysql":
+	case "mysql", "mariadb":
 		rc.scanMySQL(scanner)
 	}
 	rc.scanErr = scanner.Err()

@@ -31,6 +31,20 @@ func New(cfg dumper.Config, logger logr.Logger) dumper.Dumper {
 func (d *mysqlDumper) Type() string { return "mysql" }
 
 func (d *mysqlDumper) Dump(ctx context.Context, w io.Writer) error {
+	// Flag rationale:
+	//   --single-transaction: InnoDB-consistent snapshot without locking.
+	//   --quick: stream rows without buffering — required for large tables.
+	//   --routines / --triggers / --events: include stored procs, triggers,
+	//     and the MySQL Event Scheduler. Without these, restore loses
+	//     server-side logic the application may depend on.
+	//   --default-character-set=utf8mb4: emit dump in utf8mb4 so umlauts
+	//     and emoji round-trip correctly. The pre-utf8mb4 default ("utf8"
+	//     in MySQL <8) is actually 3-byte and silently truncates 4-byte
+	//     characters at restore time.
+	//   --column-statistics=0: MySQL 8 mysqldump tries to read
+	//     information_schema.column_statistics, which doesn't exist on
+	//     MariaDB or MySQL <8 — fails the dump even when everything else
+	//     would work. Disabling is the documented compatibility flag.
 	args := []string{
 		"-h", d.cfg.Host,
 		"-P", strconv.Itoa(d.cfg.Port),
@@ -39,6 +53,9 @@ func (d *mysqlDumper) Dump(ctx context.Context, w io.Writer) error {
 		"--quick",
 		"--routines",
 		"--triggers",
+		"--events",
+		"--default-character-set=utf8mb4",
+		"--column-statistics=0",
 		d.cfg.Database,
 	}
 	cmd := exec.CommandContext(ctx, "mysqldump", args...)
@@ -84,11 +101,27 @@ func (d *mysqlDumper) CollectStats(ctx context.Context) (*dumper.Stats, error) {
 		return nil, fmt.Errorf("query schema: %w", err)
 	}
 
+	// Best-effort encoding capture: drift between runs flags a server upgrade
+	// or migration that may silently break utf8 → utf8mb4 on restore.
+	charset, collation := d.queryEncoding(ctx, db)
+
 	return &dumper.Stats{
 		SchemaHash:  hash,
+		Charset:     charset,
+		Collation:   collation,
 		Tables:      tables,
 		GeneratedAt: time.Now().UTC(),
 	}, nil
+}
+
+func (d *mysqlDumper) queryEncoding(ctx context.Context, db *sql.DB) (string, string) {
+	const q = `SELECT @@character_set_database, @@collation_database`
+	var charset, collation string
+	if err := db.QueryRowContext(ctx, q).Scan(&charset, &collation); err != nil {
+		d.logger.V(1).Info("query encoding skipped", "err", err.Error())
+		return "", ""
+	}
+	return charset, collation
 }
 
 // dsn builds a go-sql-driver/mysql DSN. TLS defaults to "preferred" so that

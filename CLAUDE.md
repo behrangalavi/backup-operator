@@ -213,7 +213,9 @@ src/
 │   └── restore/         # Restore CLI — out-of-cluster
 ├── config/              # Singleton env-var config with schema validation
 ├── controllers/
-│   └── cronjob_controller.go  # Source Secret → batch/v1.CronJob
+│   ├── cronjob_controller.go  # Source Secret → batch/v1.CronJob
+│   ├── metrics_refresher.go   # Reconstructs run-level Gauges from each destination's latest meta.json
+│   └── storage_scrub.go       # Periodic SHA256 verification of stored dumps (silent corruption detector)
 ├── crypto/              # age public-key encryption + private-key decryption
 ├── dumper/              # DB dump abstraction
 │   ├── factory/         # Creates the right Dumper from db-type label
@@ -341,6 +343,7 @@ backup-restore --storage-secret hetzner-sb -n backup --target prod-users \
 | `backup.mogenius.io/row-drop-threshold` | `0.5` | Analyzer anomaly threshold for row-count drops. `0.3` means flag when a table shrinks below 30% of its previous size. |
 | `backup.mogenius.io/size-drop-threshold` | `0.5` | Analyzer anomaly threshold for dump size drops. Same semantics as row-drop. |
 | `backup.mogenius.io/anonymize-tables` | `false` | `true` → hash table names in `meta.json` with SHA256 (16 hex chars). Row counts preserved. |
+| `backup.mogenius.io/empty-dump-check` | `true` | Hard-fail when the dump appears empty despite the source DB having data. Two detection paths: SQL (postgres/mysql/mariadb) compares dump-stream INSERT/COPY rows to pre-dump stats; mongo / redis use a size heuristic against pre-dump `collStats` / key counts. Set to `false` for sources that are intentionally schema-only (empty template DBs). |
 | `backup.mogenius.io/extra-<key>` | none | Surfaced into `dumper.Config.Extra[key]`. Used for DB-specific options (e.g. `extra-sslmode`, `extra-authSource`). |
 
 A typo on a feature-flag annotation falls back to the default rather than rejecting the Secret — backups must keep running even if a flag is misspelled.
@@ -413,6 +416,8 @@ The operator and the worker have separate (overlapping) config schemas. All valu
 | `WORKER_CPU_REQUEST` | no | `250m` | CPU request for worker pods |
 | `WORKER_MEMORY_REQUEST` | no | `256Mi` | Memory request for worker pods |
 | `METRICS_REFRESH_INTERVAL_SECONDS` | no | `30` | Tick interval of the `MetricsRefresher`. Floor: 5. Trade off frequency against destination read load. |
+| `STORAGE_SCRUB_ENABLED` | no | `false` | Enables the periodic storage scrubber that re-hashes the most recent dump per (target, destination) and compares with `meta.json`'s SHA256. Off by default because each scrub re-streams a full encrypted dump. Surfaces as `backup_operator_storage_scrub_passed` and the `BackupStorageCorrupted` alert. |
+| `STORAGE_SCRUB_INTERVAL_HOURS` | no | `24` | How often the scrubber runs. Lower bound: 1. Multiply by `(targets × destinations)` to estimate egress; for a fleet with large dumps that's a real bandwidth budget. |
 | `UI_ENABLED` | no | `false` | Enable the built-in web dashboard and management API on `UI_ADDR`. |
 | `UI_ADDR` | no | `:8081` | Listen address for the UI HTTP server. |
 | `UI_MAX_BODY_BYTES` | no | `1048576` | Per-request body cap applied via `http.MaxBytesReader` to every UI route. Without this an unauthenticated POST of a multi-GB body OOMs the operator. |
@@ -642,12 +647,17 @@ The histograms (`dump_duration_seconds`, `upload_duration_seconds`, `run_duratio
 | `backup_operator_table_count` | Gauge | `target` | Tables/collections in the most recent run's stats |
 | `backup_operator_table_row_count` | Gauge | `target`, `table` | Per-table row count (estimate) from the most recent run |
 | `backup_operator_schema_changed` | Gauge | `target` | 1 if schema hash differs from the previous run |
+| `backup_operator_charset_changed` | Gauge | `target` | 1 if the database's character_set or collation differs from the previous run |
+| `backup_operator_schema_last_change_timestamp_seconds` | Gauge | `target` | Unix ts of the most recent run where the schema fingerprint actually changed. Carried forward across unchanged runs. Lets queries flag "schema older than N days" |
 | `backup_operator_last_run_anomalies` | Gauge | `target` | Analyzer anomaly count in the most recent run |
 | `backup_operator_last_run_status` | Gauge | `target` | 1 = most recent run produced a meta.json, 0 otherwise |
 | `backup_operator_last_success_timestamp_seconds` | Gauge | `target`, `destination` | Unix ts parsed from the most recent meta.json found at that destination |
 | `backup_operator_destination_failed` | Gauge | `target`, `destination` | 1 if the destination's storage cannot be initialised, 0 once a meta.json was successfully read |
 | `backup_operator_retention_deleted_total` | Counter | `target`, `destination`, `kind` | Worker-only; not visible to Prometheus |
 | `backup_operator_retention_failed_total` | Counter | `target`, `destination` | Worker-only; not visible to Prometheus |
+| `backup_operator_storage_scrub_passed` | Gauge | `target`, `destination` | 1 if the most recent scrub of this pair matched the recorded SHA256, 0 otherwise. Only present when `STORAGE_SCRUB_ENABLED=true` and at least one scrub has run. |
+| `backup_operator_storage_scrub_last_check_timestamp_seconds` | Gauge | `target`, `destination` | Unix ts of the most recent scrub attempt for this pair |
+| `backup_operator_storage_scrub_failed_total` | Counter | `target`, `destination` | Cumulative scrub failures (mismatch or unreachable). Operator-side, scraped normally. |
 
 ---
 
@@ -661,6 +671,8 @@ Shipped in the Helm chart's `values.yaml` under `prometheusRule.rules`. The char
 | `BackupDestinationFailing` | `destination_failed == 1` for 15m | warning |
 | `BackupDumpSizeCollapsed` | `dump_size_change_ratio < 0.5` for 5m | **critical** |
 | `BackupSchemaChanged` | `schema_changed == 1` | info |
+| `BackupCharsetChanged` | `charset_changed == 1` | warning |
+| `BackupStorageCorrupted` | `storage_scrub_passed == 0` | **critical** |
 | `BackupAnomaliesAppearing` | `last_run_anomalies > 0` for 5m | warning |
 | `BackupLastRunFailed` | `last_run_status == 0` for 5m | warning |
 | `BackupSucceeded` | `time() - last_success_timestamp_seconds < 120` | info |
@@ -682,7 +694,11 @@ These same conditions also surface in the operator UI under `/api/alerts` and `#
 | All destinations down | Worker exits 1 (no successful upload) | Job failed; no destination has a fresh meta → `BackupOverdue` after 36h |
 | `CollectStats` fails (no perms) | Analyzer skips, dump still succeeds | meta.json still written without stats; `schema_changed` / `table_count` stay at their last values |
 | Dump shrinks 90% | Run succeeds (dump is what it is) | `BackupDumpSizeCollapsed` fires within 5 min |
-| Schema changed | Run succeeds | `BackupSchemaChanged` fires |
+| Schema changed | Run succeeds | `BackupSchemaChanged` fires; `schema_last_change_timestamp_seconds` jumps to current run |
+| Charset/collation drift | Run succeeds | `BackupCharsetChanged` fires (warning) — restore may silently truncate multibyte chars |
+| `mysqldump` exits 0 with empty data (perm denial) | Pipeline detects dump rows == 0 vs pre-stats > 0, fails with `dump-empty-content`, persists failure-meta | `BackupLastRunFailed` fires; Verification has `looksEmpty=true`; opt out per source via `backup.mogenius.io/empty-dump-check=false` |
+| `mongodump` / `redis-cli --rdb` exit 0 with tiny output | Heuristic: encrypted size < 1% of preStats source size (mongo) or < 200 bytes with > 0 keys (redis) → `dump-empty-content` failure | Same as above; opt-out annotation works identically |
+| Stored dump bit-rots | Scrubber re-hash mismatches meta SHA256 | `storage_scrub_passed=0` → `BackupStorageCorrupted` (critical); only fires when `STORAGE_SCRUB_ENABLED=true` |
 | Run takes >`RUN_TIMEOUT_SECONDS` | K8s kills the pod via `activeDeadlineSeconds` | Job failed; configure higher timeout for big DBs |
 | Two cron ticks overlap (long run) | Second tick is **skipped** by `concurrencyPolicy: Forbid` | No second Job created; run continues |
 | Source Secret deleted | `OwnerReference` cascades; CronJob deleted by GC | No more runs; existing artifacts in storage untouched |
@@ -1034,6 +1050,18 @@ The notable ones, with the reasoning that future readers should preserve.
 - **Retention cleans empty ancestor directories.** Date-partitioned paths like `target/2024/01/15/dump-*.age` leave empty parent directories after file deletion. The retention loop now walks `path.Dir()` upward from deleted files to collect all ancestor directories (not just the immediate parent), then removes them deepest-first via an optional `RemoveDirectory` interface. S3 backends (which don't have directories) are unaffected — the interface check is a type assertion. `RemoveDirectory` errors are silently ignored because non-empty directories will correctly fail to delete.
 
 - **Operator now calls Alertmanager directly for status checks and test alerts.** Previously, `ALERTMANAGER_URL` was purely cosmetic (an "open in Alertmanager" link). Two new UI endpoints call Alertmanager: `GET /api/alerts/status` queries `/api/v2/status` for connectivity and version info, and `POST /api/alerts/test` sends a self-resolving test alert via `/api/v2/alerts`. Rationale: users need to verify the full notification pipeline works before relying on it in production. The test alert auto-resolves after 2 minutes. Error responses are sanitized (no raw `err.Error()` in HTTP responses) to prevent leaking cluster topology through the unauthenticated UI.
+
+- **Empty-dump hard-fail driven by row counter, not byte count.** `encryptedSize == 0` already failed the run, but mysqldump emits hundreds of bytes of headers/comments even when SELECT silently returns nothing — the artifact is "successful" by every byte-level measure yet contains zero data. The fix uses the existing `dumper.RowCounter` (sees the dump stream pre-gzip) and the existing pre-dump `Stats`: when pre-rows > 0 and dump-rows == 0, fail the run via `LooksEmpty`. Distinguishing "counter inactive" (mongo, no nil counts) from "counter active and empty" (SQL with no INSERTs) required a new `RowCounter.Active()` accessor — without it, an empty `map[string]int64{}` is indistinguishable from `nil` and the detector misfires on mongo. Annotation `backup.mogenius.io/empty-dump-check=false` is a deliberate escape hatch for legitimately empty schema-only sources; flagging that as a hard fail would be a worse failure mode than the silent emptiness we're catching.
+
+- **Dual-path empty-dump detection: row counter for SQL, size heuristic for mongo/redis.** Mongo's BSON archive and Redis's RDB binary are not parsed in-stream, so the row counter cannot speak. Rather than write per-engine archive parsers (heavy, fragile), the second path compares `encryptedSize` against pre-dump `Stats`: mongo flags when `preTotalSize > 1 MiB` and the encrypted dump is < 1% of source (typical compression+encryption produces ~10-30%); redis flags when `preTotalKeys > 0` and the encrypted RDB is < 200 bytes (header-only). Thresholds are tuned conservatively — false-positives on real dumps are worse than missing the rare edge case, because operators learn to distrust noisy alerts. Both paths route through the same `verification.LooksEmpty` flag and the same `empty-dump-check` annotation, so the user contract is uniform across engines.
+
+- **mysqldump flag hardening: `--events --column-statistics=0 --default-character-set=utf8mb4`.** `--events` was missing — restoring a dump made without it loses any MySQL Event Scheduler entries the application depends on, with no warning. `--column-statistics=0` disables a MySQL 8 client probe of `information_schema.column_statistics` that fails outright against MariaDB / MySQL <8 — without it, the dump aborts on perfectly healthy targets. `--default-character-set=utf8mb4` forces a 4-byte session charset; the legacy "utf8" default in MySQL <8 is 3-byte and silently truncates emoji and some CJK characters at restore time.
+
+- **Charset/collation captured into `dumper.Stats` and analyzed for drift.** Postgres `pg_database.datcollate`/`encoding` and MySQL `@@character_set_database`/`@@collation_database` are recorded into the meta. The analyzer flags drift between consecutive runs (`CharsetChanged`) and the operator exposes `backup_operator_charset_changed`, alert `BackupCharsetChanged` (severity warning, not info — utf8 → utf8mb4 transitions silently truncate at restore, so they need real attention). Mongo / Redis don't have a database-level charset, so the field stays empty and the drift detector skips them — the gauge is absent entirely rather than stuck at 0, matching how the rest of our optional metrics behave.
+
+- **Storage scrubber re-hashes stored dumps periodically.** SHA256 has been written into `meta.json` since the integrity work; the scrubber finally consumes it. Operator-side controller (leader-elected, 24h default tick) lists each source's allowed destinations, fetches the most recent dump, streams it through `crypto/sha256`, and compares the hex against the meta. Failure → `storage_scrub_passed=0` + `BackupStorageCorrupted` (critical). Off by default because each scrub re-streams the full encrypted dump from storage — at scale that's a serious egress bill. Trade-off vs. a server-side checksum API (S3 `ETag`, `x-amz-content-sha256`): client-side re-hash catches storage backends that lie about their own content, and works uniformly across SFTP and S3 without per-backend code paths. The scrubber respects `Source.AllowsDestination` so destination allow-lists narrow scrub scope automatically.
+
+- **Schema-change timestamp carried forward across runs.** The previous setup answered "did schema change since the last run?" but not "how old is the current schema?". Each meta now stores `schemaChangedAt`: bumped only when `SchemaHash` actually drifts, copied forward otherwise. Exposed as `backup_operator_schema_last_change_timestamp_seconds` so PromQL can answer "schema older than N days" — relevant when an old backup is being restored against a much newer application that no longer matches the dump's structure. Choice of "carry forward" over a counter / drift-rate metric: a single meta is self-describing without needing history, and the metric refresher reconstructs the value from any single recent meta rather than aggregating across the retention window.
 
 ---
 

@@ -222,14 +222,33 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		}
 	}
 
-	// Build dump verification result
+	// Build dump verification result.
+	// When the row counter ran (SQL dumpers), pass its counts even if empty —
+	// an empty map signals "the dump produced 0 INSERTs", which the empty-dump
+	// detector needs to distinguish from "we cannot count rows on this format"
+	// (mongo). For inactive counters (mongo, redis), pass nil so the
+	// verification falls back to pre/post stats comparison.
 	var dumpCounts map[string]int64
-	if rowCounter.TotalRows() > 0 {
+	if rowCounter.Active() {
 		dumpCounts = rowCounter.Counts()
 	}
-	verification := meta.BuildVerification(preStats, postStats, dumpCounts, src.DBType)
+	verification := meta.BuildVerification(preStats, postStats, dumpCounts, src.DBType, encryptedSize)
 	if verification.Verdict == meta.VerificationMismatch {
 		log.Info("dump verification mismatch detected", "summary", verification.Summary)
+	}
+
+	// Hard-fail when the dump appears to be empty despite the source DB having
+	// rows. Without this, mysqldump exits 0 on permission failures (it can list
+	// the database but can't SELECT) and we'd happily store DDL-only artifacts.
+	// Opt-out via backup.mogenius.io/empty-dump-check=false for schema-only
+	// sources (e.g. an empty template DB).
+	if src.EmptyDumpCheck && verification.LooksEmpty {
+		metrics.SetLastRunStatus(src.TargetName, false)
+		emptyErr := fmt.Errorf("empty dump detected: %s", verification.Summary)
+		p.events.Emit("Warning", "BackupFailed",
+			fmt.Sprintf("Backup failed for target %s: %s", src.TargetName, emptyErr.Error()))
+		p.recordFailure(ctx, dests, src, timestamp, "dump-empty-content", emptyErr, log)
+		return emptyErr
 	}
 
 	if len(dests) == 0 {
@@ -251,11 +270,32 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	// Use preStats for analyzer comparison (same as before)
 	stats := preStats
 	var report *analyzer.Report
+	var schemaChangedAt time.Time
 	if src.AnalyzerEnabled {
-		prevStats, prevSize := p.loadPreviousStats(ctx, dests, src.TargetName)
+		prevMeta := p.loadPreviousMeta(ctx, dests, src.TargetName)
+		var prevStats *dumper.Stats
+		var prevSize int64
+		var prevSchemaChangedAt time.Time
+		if prevMeta != nil {
+			prevStats = prevMeta.Stats
+			prevSize = prevMeta.EncryptedSizeBytes
+			prevSchemaChangedAt = prevMeta.SchemaChangedAt
+		}
 		an := p.analyzerForSource(src)
 		report = an.Compare(prevStats, stats, prevSize, encryptedSize)
 		emitAnalyzerMetrics(src.TargetName, report)
+		// Carry forward the schema-change timestamp: only bump it on real
+		// drift, otherwise the caller can use the recorded value to age the
+		// schema. First run with no prev: pin to current run timestamp.
+		switch {
+		case report != nil && report.SchemaChanged:
+			schemaChangedAt = runStart.UTC()
+		case !prevSchemaChangedAt.IsZero():
+			schemaChangedAt = prevSchemaChangedAt
+		default:
+			schemaChangedAt = runStart.UTC()
+		}
+		metrics.SetSchemaLastChange(src.TargetName, schemaChangedAt)
 	}
 
 	metaStats := stats
@@ -302,7 +342,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	}
 
 	// Phase 2: build meta with destination results, upload to successful destinations.
-	metaBytes := metaJSON(src, metaStats, metaReport, metaVerification, encryptedSize, sha256sum, timestamp, destResults)
+	metaBytes := metaJSON(src, metaStats, metaReport, metaVerification, encryptedSize, sha256sum, timestamp, schemaChangedAt, destResults)
 	p.uploadMeta(ctx, dests, destResults, metaPath, metaBytes, log)
 
 	metrics.SetLastRunStatus(src.TargetName, true)
@@ -616,7 +656,10 @@ func verifyUploadSize(ctx context.Context, st storage.Storage, objectPath string
 	return nil
 }
 
-func (p *Pipeline) loadPreviousStats(ctx context.Context, dests []*secrets.Destination, target string) (*dumper.Stats, int64) {
+// loadPreviousMeta returns the most recent successful meta across destinations.
+// Failure-metas are skipped so a transient failure does not blank the analyzer's
+// baseline. Returns nil when no successful run is yet stored anywhere.
+func (p *Pipeline) loadPreviousMeta(ctx context.Context, dests []*secrets.Destination, target string) *meta.MetaFile {
 	for _, d := range dests {
 		st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, p.logger)
 		if err != nil {
@@ -626,9 +669,6 @@ func (p *Pipeline) loadPreviousStats(ctx context.Context, dests []*secrets.Desti
 		if err != nil || len(objs) == 0 {
 			continue
 		}
-		// Walk metas newest-first and skip failure-metas: they carry no
-		// stats and would otherwise blank the analyzer's comparison
-		// baseline after a single failed run.
 		for _, p := range sortedMetaPaths(objs) {
 			rc, err := st.Get(ctx, p)
 			if err != nil {
@@ -646,10 +686,10 @@ func (p *Pipeline) loadPreviousStats(ctx context.Context, dests []*secrets.Desti
 			if m.IsFailure() {
 				continue
 			}
-			return m.Stats, m.EncryptedSizeBytes
+			return &m
 		}
 	}
-	return nil, 0
+	return nil
 }
 
 // sortedMetaPaths returns meta paths newest-first by LastModified.
@@ -671,7 +711,7 @@ func sortedMetaPaths(objs []storage.Object) []string {
 	return out
 }
 
-func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report, verification *meta.DumpVerification, size int64, sha256sum, timestamp string, destResults []meta.DestinationResult) []byte {
+func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report, verification *meta.DumpVerification, size int64, sha256sum, timestamp string, schemaChangedAt time.Time, destResults []meta.DestinationResult) []byte {
 	m := meta.MetaFile{
 		Target:             src.TargetName,
 		Timestamp:          timestamp,
@@ -679,6 +719,7 @@ func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report,
 		Status:             meta.StatusSuccess,
 		EncryptedSizeBytes: size,
 		SHA256:             sha256sum,
+		SchemaChangedAt:    schemaChangedAt,
 		Stats:              stats,
 		Report:             report,
 		Verification:       verification,
@@ -716,6 +757,7 @@ func emitAnalyzerMetrics(target string, r *analyzer.Report) {
 		metrics.SetDumpSizeChangeRatio(target, r.SizeChangeRatio)
 	}
 	metrics.SetSchemaChanged(target, r.SchemaChanged)
+	metrics.SetCharsetChanged(target, r.CharsetChanged)
 	if r.Current != nil {
 		metrics.SetTableCount(target, len(r.Current.Tables))
 		for _, t := range r.Current.Tables {

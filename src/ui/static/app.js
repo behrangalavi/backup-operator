@@ -331,7 +331,8 @@ async function renderDashboard(loading = true) {
               const label = h.status === 'ok' ? 'OK' : h.status === 'failed' ? 'Failed' : h.status === 'missing' ? 'No data' : 'Unreachable';
               const tip = h.error ? ' title="' + escHTML(h.error) + '"' : '';
               return '<td style="text-align:center"><span class="badge ' + badge + '"' + tip + '>' + label + '</span>' +
-                (h.latestRun ? '<div style="font-size:10px;color:var(--text-muted)">' + timeAgo(h.latestRun) + '</div>' : '') + '</td>';
+                (h.latestRun ? '<div style="font-size:10px;color:var(--text-muted)">' + timeAgo(h.latestRun) + '</div>' : '') +
+                renderScrubChip(h) + '</td>';
             }).join('')}
           </tr>`).join('');
         })()}</tbody>
@@ -434,7 +435,7 @@ window.openSourceForm = function(secretName) {
         <div class="hint">Required for all types except Redis (Redis &lt; 6 has no usernames; ACL usernames came in 6.0)</div></div>
       <div class="form-group"><label>Password</label><input name="password" type="password" placeholder="${isEdit ? '(unchanged if empty)' : ''}"></div>
     </div>
-    <div class="form-section"><h4>Retention & Analysis</h4>
+    <div class="form-section"><h4>Retention</h4>
       <div class="form-row">
         <div class="form-group"><label>Retention Days</label><input name="retentionDays" placeholder="30"></div>
         <div class="form-group"><label>Min Keep</label><input name="minKeep" placeholder="3"></div>
@@ -445,6 +446,33 @@ window.openSourceForm = function(secretName) {
           <div class="hint">Leave empty to fan out to all destinations</div></div>
         <div class="form-group"><label>Anonymize Tables</label>
           <select name="anonymizeTables"><option value="">No</option><option value="true">Yes</option></select></div>
+      </div>
+    </div>
+    <div class="form-section"><h4>Analysis &amp; Validation</h4>
+      <div class="hint" style="margin-bottom:12px">Each toggle controls one safety net. Defaults are on; switch off only for sources where the check produces noise (e.g. an intentionally empty schema-only DB).</div>
+      <div class="form-row">
+        <div class="form-group"><label>Analyzer</label>
+          <select name="analyzerEnabled">
+            <option value="">Default (on)</option>
+            <option value="true">Enabled</option>
+            <option value="false">Disabled</option>
+          </select>
+          <div class="hint">Off → skip stats collection: no schema-drift / charset-drift / row-count anomaly detection.</div></div>
+        <div class="form-group"><label>Empty-Dump Check</label>
+          <select name="emptyDumpCheck">
+            <option value="">Default (on)</option>
+            <option value="true">Enabled</option>
+            <option value="false">Disabled</option>
+          </select>
+          <div class="hint">Off → don't fail when a dump appears empty. Use only for legitimately empty schema-only sources.</div></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Row-Drop Threshold</label>
+          <input name="rowDropThreshold" placeholder="0.5">
+          <div class="hint">Anomaly fires when a table shrinks below this fraction of its previous size. 0..1.</div></div>
+        <div class="form-group"><label>Size-Drop Threshold</label>
+          <input name="sizeDropThreshold" placeholder="0.5">
+          <div class="hint">Anomaly fires when the dump shrinks below this fraction of its previous size. 0..1.</div></div>
       </div>
     </div>
     <div class="form-actions">
@@ -469,6 +497,14 @@ window.openSourceForm = function(secretName) {
       f.minKeep.value = src.minKeep || '';
       f.destinations.value = src.destinations || '';
       if (src.anonymizeTables === 'true') f.anonymizeTables.value = 'true';
+      // Annotation values come back as the literal string the user wrote
+      // ("true" / "false" / ""). Empty == "use default" — leave the select on
+      // its first option so the next save doesn't pin a value the user
+      // didn't intentionally choose.
+      f.analyzerEnabled.value = (src.analyzerEnabled === 'true' || src.analyzerEnabled === 'false') ? src.analyzerEnabled : '';
+      f.emptyDumpCheck.value = (src.emptyDumpCheck === 'true' || src.emptyDumpCheck === 'false') ? src.emptyDumpCheck : '';
+      f.rowDropThreshold.value = src.rowDropThreshold || '';
+      f.sizeDropThreshold.value = src.sizeDropThreshold || '';
     }).catch(e => toast('Failed to load source: ' + e.message, 'error'));
   }
 };
@@ -476,6 +512,10 @@ window.openSourceForm = function(secretName) {
 window.submitSourceForm = async function(e, secretName) {
   e.preventDefault();
   const f = e.target;
+  // Tri-state selects: empty string = "use default" → don't send the field at
+  // all so the operator falls back to chart defaults. "true"/"false" pin the
+  // annotation explicitly. Same pattern as anonymizeTables above.
+  const triState = v => v === 'true' ? true : v === 'false' ? false : null;
   const body = {
     name: f.name.value,
     dbType: f.dbType.value,
@@ -489,6 +529,10 @@ window.submitSourceForm = async function(e, secretName) {
     minKeep: f.minKeep.value,
     destinations: f.destinations.value,
     anonymizeTables: f.anonymizeTables.value === 'true' ? true : null,
+    analyzerEnabled: triState(f.analyzerEnabled.value),
+    emptyDumpCheck: triState(f.emptyDumpCheck.value),
+    rowDropThreshold: f.rowDropThreshold.value,
+    sizeDropThreshold: f.sizeDropThreshold.value,
   };
   try {
     if (secretName) {
@@ -1579,10 +1623,13 @@ async function renderTargetDetail(name, loading = true) {
         <div class="detail-row"><span class="key">Size</span><span class="val">${humanBytes(target.Latest.encryptedSizeBytes)}</span></div>
         <div class="detail-row"><span class="key">SHA256</span><code class="val" style="font-size:11px">${escHTML((target.Latest.sha256 || '—').substring(0, 16))}${target.Latest.sha256 ? '...' : ''}</code></div>
         <div class="detail-row"><span class="key">Verification</span><span class="val">${renderVerificationBadge(target.Latest.verification)}</span></div>
+        ${renderCharsetRow(target.Latest)}
+        ${renderSchemaAgeRow(target.Latest)}
         `) : '<div style="color:var(--text-muted);padding:12px 0">No runs recorded</div>'}
       </div>
     </div>
     ${renderVerificationDetail(target.Latest)}
+    ${renderAnalysisCoverageCard(target)}
     ${runs.length > 0 ? `
     <div class="chart-grid-2">
       <div class="chart-card">
@@ -1624,7 +1671,7 @@ async function renderTargetDetail(name, loading = true) {
               }).join('')
             : '<span style="color:var(--text-muted)">—</span>'}</td>
           <td>${renderVerificationBadge(r.verification)}</td>
-          <td>${r.report ? (r.report.schemaChanged ? '<span class="badge badge-failed">Changed</span>' : '<span class="badge badge-ok">Stable</span>') : '—'}</td>
+          <td>${renderSchemaCharsetCell(r)}</td>
           <td class="num" style="font-size:12px">${r.stats && r.stats.tables ? r.stats.tables.length : '—'}</td>
           <td>${r.status === 'failed'
             ? `<span style="color:var(--danger);font-size:12px;word-break:break-word" title="${escHTML(r.error || '')}">${escHTML(truncate(r.error, 120) || '(no message)')}</span>`
@@ -1716,6 +1763,145 @@ window.copyToClipboard = async function(btn, text) {
     toast('Copy failed: ' + e.message, 'error');
   }
 };
+
+// Per-DB-type capability matrix for analysis features. "active" means the
+// check is wired and meaningful; "n/a" means the engine doesn't model the
+// concept (e.g. mongo has no DB-level charset). The matrix is the source of
+// truth for what the Analysis Coverage card renders — keep in sync with the
+// dumper / analyzer code paths.
+const ANALYSIS_CAPS = {
+  postgres: { schema: true, charset: true,  rowCounter: true,  emptyDump: true, sizeDrop: true, scrub: true },
+  mysql:    { schema: true, charset: true,  rowCounter: true,  emptyDump: true, sizeDrop: true, scrub: true },
+  mariadb:  { schema: true, charset: true,  rowCounter: true,  emptyDump: true, sizeDrop: true, scrub: true },
+  mongo:    { schema: true, charset: false, rowCounter: false, emptyDump: true, sizeDrop: true, scrub: true },
+  redis:    { schema: true, charset: false, rowCounter: false, emptyDump: true, sizeDrop: true, scrub: true },
+};
+
+// Three-state status per check, rendered as a colored badge.
+//   active   → check is on for this source (toggle on, DB type supports it)
+//   disabled → toggle is off (operator opted out)
+//   n/a      → DB type doesn't support this check at all
+function analysisStatus(toggleOn, supported) {
+  if (!supported) return { cls: 'badge-pending', label: 'n/a', icon: '—' };
+  if (!toggleOn)  return { cls: 'badge-warn',    label: 'disabled', icon: '⊘' };
+  return                 { cls: 'badge-ok',      label: 'active', icon: '✓' };
+}
+
+function renderAnalysisCoverageCard(target) {
+  if (!target) return '';
+  const caps = ANALYSIS_CAPS[target.DBType] || {};
+  const a = target.Analysis || {};
+  const analyzerOn = a.analyzerEnabled !== false; // default true
+  const emptyOn = a.emptyDumpCheck !== false;     // default true
+
+  // Each row pairs a check with a single status. We tie the analyzer-driven
+  // signals (schema/charset/row-drop/size-drop) to the analyzerEnabled
+  // toggle because turning the analyzer off skips stats collection entirely
+  // — the underlying gauges go absent and no alert can fire.
+  const rows = [
+    { name: 'Empty-Dump Check',
+      desc: caps.rowCounter ? 'fail when dump rows == 0 vs pre-stats > 0' : 'fail when encrypted dump < heuristic threshold for source size',
+      status: analysisStatus(emptyOn, caps.emptyDump) },
+    { name: 'Schema Drift',
+      desc: 'compare schema fingerprint across runs',
+      status: analysisStatus(analyzerOn, caps.schema) },
+    { name: 'Charset / Collation Drift',
+      desc: 'flag database character_set or collation changes',
+      status: analysisStatus(analyzerOn, caps.charset) },
+    { name: 'Row-Drop Anomaly',
+      desc: 'fire when a table shrinks below threshold (default 0.5)',
+      status: analysisStatus(analyzerOn, caps.rowCounter) },
+    { name: 'Dump-Size Collapse',
+      desc: 'fire when the encrypted dump shrinks below threshold (default 0.5)',
+      status: analysisStatus(analyzerOn, caps.sizeDrop) },
+    { name: 'Storage Scrub',
+      desc: 'periodic SHA256 re-hash of stored dump (cluster-wide, opt-in)',
+      status: analysisStatus(true, caps.scrub) }, // scrub is opt-in cluster-wide, not per source
+  ];
+
+  return `
+    <div class="table-card">
+      <div class="table-card-header"><h2>Analysis Coverage</h2></div>
+      <div style="padding:8px 16px 4px;color:var(--text-muted);font-size:12px">Which validations are armed for this <strong>${escHTML(target.DBType)}</strong> source. "n/a" means the engine doesn't model the concept; "disabled" means an annotation has switched the check off.</div>
+      <table>
+        <thead><tr>
+          <th class="num row-num">#</th>
+          <th>Check</th>
+          <th>Status</th>
+          <th>Notes</th>
+        </tr></thead>
+        <tbody>${rows.map((r, i) => `<tr>
+          <td class="num row-num">${i + 1}</td>
+          <td><strong>${escHTML(r.name)}</strong></td>
+          <td><span class="badge ${r.status.cls}">${r.status.icon} ${r.status.label}</span></td>
+          <td style="color:var(--text-muted);font-size:12px">${escHTML(r.desc)}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>`;
+}
+
+// Storage-scrub chip rendered under a destination-health badge. Hidden when
+// the operator has no scrub data for this (target, destination) pair —
+// either because STORAGE_SCRUB_ENABLED is false or because the scrubber
+// hasn't run yet. ScrubLastCheck=0 means "never scrubbed".
+function renderScrubChip(h) {
+  if (!h || !h.scrubStatus) return '';
+  const ok = h.scrubStatus === 'ok';
+  const cls = ok ? 'badge-ok' : 'badge-failed';
+  const icon = ok ? '&#10003;' : '&#10007;';
+  const when = h.scrubLastCheck
+    ? ' (' + timeAgo(new Date(h.scrubLastCheck * 1000).toISOString()) + ')'
+    : '';
+  const tip = ok
+    ? 'SHA256 scrub matched meta.json' + when
+    : 'SHA256 scrub failed' + (h.scrubFailedTotal ? ' — ' + h.scrubFailedTotal + ' total failures' : '') + when;
+  return '<div style="font-size:10px;margin-top:2px"><span class="badge ' + cls + '" style="font-size:9px;padding:1px 4px" title="' + escHTML(tip) + '">' + icon + ' scrub</span></div>';
+}
+
+// Run-history "Schema" cell. Combines schema-fingerprint drift and charset
+// drift into one column to keep table width sane. The two are independent
+// signals (schema = column shape; charset = encoding) but in practice a
+// reviewer scanning history wants both at a glance.
+function renderSchemaCharsetCell(r) {
+  if (!r.report) return '—';
+  const schemaBadge = r.report.schemaChanged
+    ? '<span class="badge badge-failed">Schema</span>'
+    : '<span class="badge badge-ok">Stable</span>';
+  const charsetBadge = r.report.charsetChanged
+    ? ' <span class="badge badge-warn" style="font-size:10px" title="charset/collation changed since previous run">CS</span>'
+    : '';
+  return schemaBadge + charsetBadge;
+}
+
+// Charset / collation row. Renders nothing for runs without recorded encoding
+// (mongo, redis, legacy metas) — keeps the detail card uncluttered for DB
+// types where the field doesn't apply. Drift indicator pulls from
+// report.charsetChanged so it lines up with the BackupCharsetChanged alert.
+function renderCharsetRow(run) {
+  if (!run || !run.stats) return '';
+  const cs = run.stats.charset || '';
+  const co = run.stats.collation || '';
+  if (!cs && !co) return '';
+  const drift = run.report && run.report.charsetChanged;
+  const value = escHTML(cs) + (co ? ' / ' + escHTML(co) : '');
+  const badge = drift
+    ? '<span class="badge badge-warn" style="margin-left:8px;font-size:10px" title="character_set or collation differs from previous run — multibyte chars may truncate on restore">drift</span>'
+    : '';
+  return `<div class="detail-row"><span class="key">Charset</span><span class="val" style="font-family:var(--font-mono,monospace);font-size:12px">${value}${badge}</span></div>`;
+}
+
+// "Schema unchanged for N days" — leverages meta.schemaChangedAt which is
+// carried forward across runs, so a single meta tells you the schema's age.
+// Hidden when the field is absent (legacy metas, mongo without schema hash).
+function renderSchemaAgeRow(run) {
+  if (!run || !run.schemaChangedAt) return '';
+  const t = new Date(run.schemaChangedAt);
+  if (isNaN(t.getTime())) return '';
+  const days = Math.floor((Date.now() - t.getTime()) / 86400000);
+  const label = days <= 0 ? 'today' : days === 1 ? '1 day' : `${days} days`;
+  const tip = ' title="Schema fingerprint last changed at ' + escHTML(t.toISOString()) + '. Old schemas may not match the current application."';
+  return `<div class="detail-row"><span class="key">Schema age</span><span class="val"${tip}>unchanged for ${label}</span></div>`;
+}
 
 // --- Verification ---
 function renderVerificationBadge(v) {

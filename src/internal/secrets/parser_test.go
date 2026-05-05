@@ -66,6 +66,28 @@ func TestParseSource_AnalyzerEnabled_TypoFallsBackToDefault(t *testing.T) {
 	}
 }
 
+func TestParseSource_EmptyDumpCheck_DefaultTrue(t *testing.T) {
+	src, err := ParseSource(newSourceSecret(nil), "0 2 * * *")
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if !src.EmptyDumpCheck {
+		t.Error("EmptyDumpCheck default should be true")
+	}
+}
+
+func TestParseSource_EmptyDumpCheck_ExplicitFalse(t *testing.T) {
+	src, err := ParseSource(newSourceSecret(map[string]string{
+		labels.AnnotationEmptyDumpCheck: "false",
+	}), "0 2 * * *")
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if src.EmptyDumpCheck {
+		t.Error("EmptyDumpCheck explicit false must be honored")
+	}
+}
+
 func TestParseSource_DestinationAllow(t *testing.T) {
 	src, err := ParseSource(newSourceSecret(map[string]string{
 		labels.AnnotationDestinations: "s3-offsite, sftp-local ,, ",

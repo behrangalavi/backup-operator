@@ -34,7 +34,7 @@ func TestBuildVerification_AllMatch(t *testing.T) {
 		"orders": 500,
 	}
 
-	v := BuildVerification(pre, post, dumpCounts2, "postgres")
+	v := BuildVerification(pre, post, dumpCounts2, "postgres", 0)
 	if v.Verdict != VerificationMatch {
 		t.Errorf("verdict: want %q, got %q (%s)", VerificationMatch, v.Verdict, v.Summary)
 	}
@@ -57,14 +57,14 @@ func TestBuildVerification_Mismatch(t *testing.T) {
 		"users": 100, // 90% drop
 	}
 
-	v := BuildVerification(pre, nil, dumpCounts, "postgres")
+	v := BuildVerification(pre, nil, dumpCounts, "postgres", 0)
 	if v.Verdict != VerificationMismatch {
 		t.Errorf("verdict: want %q, got %q (%s)", VerificationMismatch, v.Verdict, v.Summary)
 	}
 }
 
 func TestBuildVerification_NilPreStats(t *testing.T) {
-	v := BuildVerification(nil, nil, nil, "postgres")
+	v := BuildVerification(nil, nil, nil, "postgres", 0)
 	if v.Verdict != VerificationSkipped {
 		t.Errorf("verdict: want %q, got %q", VerificationSkipped, v.Verdict)
 	}
@@ -84,7 +84,7 @@ func TestBuildVerification_MongoPrePost(t *testing.T) {
 		GeneratedAt: time.Now(),
 	}
 
-	v := BuildVerification(pre, post, nil, "mongo")
+	v := BuildVerification(pre, post, nil, "mongo", 0)
 	if v.Verdict != VerificationMatch {
 		t.Errorf("verdict: want %q, got %q (%s)", VerificationMatch, v.Verdict, v.Summary)
 	}
@@ -101,7 +101,7 @@ func TestBuildVerification_ConcurrentInserts(t *testing.T) {
 		"events": 1050, // more rows in dump than pre-stats
 	}
 
-	v := BuildVerification(pre, nil, dumpCounts, "postgres")
+	v := BuildVerification(pre, nil, dumpCounts, "postgres", 0)
 	if v.Verdict != VerificationMatch {
 		t.Errorf("verdict: want %q, got %q (%s)", VerificationMatch, v.Verdict, v.Summary)
 	}
@@ -121,9 +121,130 @@ func TestBuildVerification_WithinTolerance(t *testing.T) {
 		"logs": 9950, // 0.5% less, within 1% tolerance
 	}
 
-	v := BuildVerification(pre, nil, dumpCounts, "postgres")
+	v := BuildVerification(pre, nil, dumpCounts, "postgres", 0)
 	if v.Verdict != VerificationMatch {
 		t.Errorf("verdict: want %q, got %q (%s)", VerificationMatch, v.Verdict, v.Summary)
+	}
+}
+
+func TestBuildVerification_LooksEmpty(t *testing.T) {
+	// Pre-dump showed rows, but dump produced 0 INSERTs across all tables —
+	// classic "permission denied on SELECT, only DDL emitted" failure.
+	pre := &dumper.Stats{
+		Tables: []dumper.TableStats{
+			{Name: "mydb.users", RowCount: 1000},
+			{Name: "mydb.orders", RowCount: 500},
+		},
+		GeneratedAt: time.Now(),
+	}
+	dumpCounts := map[string]int64{} // empty: dump had no INSERTs
+
+	v := BuildVerification(pre, nil, dumpCounts, "mysql", 0)
+	if !v.LooksEmpty {
+		t.Errorf("expected LooksEmpty=true, got false (summary=%q)", v.Summary)
+	}
+}
+
+func TestBuildVerification_NotEmpty_WhenPreEmpty(t *testing.T) {
+	// Pre-dump had no rows — an empty DB is a legitimate state.
+	pre := &dumper.Stats{
+		Tables: []dumper.TableStats{
+			{Name: "mydb.users", RowCount: 0},
+		},
+		GeneratedAt: time.Now(),
+	}
+	v := BuildVerification(pre, nil, map[string]int64{}, "mysql", 0)
+	if v.LooksEmpty {
+		t.Error("LooksEmpty must be false when pre-stats also showed 0 rows")
+	}
+}
+
+func TestBuildVerification_NotEmpty_WhenNoDumpCounter(t *testing.T) {
+	// Mongo and similar dumpers don't supply dumpCounts; LooksEmpty must
+	// stay false to avoid a false-positive on those dumpers.
+	pre := &dumper.Stats{
+		Tables: []dumper.TableStats{
+			{Name: "mydb.users", RowCount: 1000},
+		},
+		GeneratedAt: time.Now(),
+	}
+	v := BuildVerification(pre, nil, nil, "mongo", 0)
+	if v.LooksEmpty {
+		t.Error("LooksEmpty must be false when dump row counts are unavailable and encrypted size is unknown")
+	}
+}
+
+func TestBuildVerification_Mongo_LooksEmpty_BySize(t *testing.T) {
+	// Mongo source has 100 MiB across collections but the encrypted dump is
+	// only 200 bytes — almost certainly mongodump silently dumped nothing.
+	pre := &dumper.Stats{
+		Tables: []dumper.TableStats{
+			{Name: "app.users", RowCount: 5000, SizeBytes: 50 * 1024 * 1024},
+			{Name: "app.orders", RowCount: 2000, SizeBytes: 50 * 1024 * 1024},
+		},
+		GeneratedAt: time.Now(),
+	}
+	v := BuildVerification(pre, nil, nil, "mongo", 200)
+	if !v.LooksEmpty {
+		t.Errorf("expected mongo LooksEmpty=true for 100 MiB source vs 200 byte dump (summary=%q)", v.Summary)
+	}
+}
+
+func TestBuildVerification_Mongo_NotEmpty_HealthyRatio(t *testing.T) {
+	// 100 MiB source → 8 MiB encrypted dump (~8% — typical BSON+gzip+age).
+	pre := &dumper.Stats{
+		Tables: []dumper.TableStats{
+			{Name: "app.users", RowCount: 5000, SizeBytes: 100 * 1024 * 1024},
+		},
+		GeneratedAt: time.Now(),
+	}
+	v := BuildVerification(pre, nil, nil, "mongo", 8*1024*1024)
+	if v.LooksEmpty {
+		t.Errorf("LooksEmpty must be false for healthy compression ratio (summary=%q)", v.Summary)
+	}
+}
+
+func TestBuildVerification_Mongo_NotEmpty_TinySource(t *testing.T) {
+	// Source under the threshold — heuristic deliberately skips so a tiny
+	// real dump isn't flagged just because compression looks suspicious.
+	pre := &dumper.Stats{
+		Tables: []dumper.TableStats{
+			{Name: "app.tiny", RowCount: 5, SizeBytes: 1024},
+		},
+		GeneratedAt: time.Now(),
+	}
+	v := BuildVerification(pre, nil, nil, "mongo", 50)
+	if v.LooksEmpty {
+		t.Error("LooksEmpty must skip the heuristic for source < 1 MiB to avoid false positives")
+	}
+}
+
+func TestBuildVerification_Redis_LooksEmpty_HeaderOnly(t *testing.T) {
+	// Redis has 10000 keys but the dump is only 80 bytes — RDB header only.
+	pre := &dumper.Stats{
+		Tables: []dumper.TableStats{
+			{Name: "db0", RowCount: 10000},
+		},
+		GeneratedAt: time.Now(),
+	}
+	v := BuildVerification(pre, nil, nil, "redis", 80)
+	if !v.LooksEmpty {
+		t.Errorf("expected redis LooksEmpty=true for 10000 keys vs 80 byte dump (summary=%q)", v.Summary)
+	}
+}
+
+func TestBuildVerification_Redis_NotEmpty_NoKeys(t *testing.T) {
+	// An empty Redis is a legitimate state — the heuristic must not fire
+	// when pre.totalKeys == 0.
+	pre := &dumper.Stats{
+		Tables: []dumper.TableStats{
+			{Name: "db0", RowCount: 0},
+		},
+		GeneratedAt: time.Now(),
+	}
+	v := BuildVerification(pre, nil, nil, "redis", 80)
+	if v.LooksEmpty {
+		t.Error("LooksEmpty must be false when redis source has no keys")
 	}
 }
 
@@ -141,7 +262,7 @@ func TestBuildVerification_MySQLUnqualifiedNames(t *testing.T) {
 		"orders": 200,
 	}
 
-	v := BuildVerification(pre, nil, dumpCounts, "mysql")
+	v := BuildVerification(pre, nil, dumpCounts, "mysql", 0)
 	if v.Verdict != VerificationMatch {
 		t.Errorf("verdict: want %q, got %q (%s)", VerificationMatch, v.Verdict, v.Summary)
 	}

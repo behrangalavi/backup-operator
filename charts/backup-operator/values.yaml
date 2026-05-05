@@ -63,6 +63,19 @@ service:
   type: ClusterIP
   port: 8080      # /metrics
 
+# Storage scrubber — periodically re-streams the most recent encrypted
+# dump per (target, destination) and compares its SHA256 with the value
+# recorded in meta.json. Detects silent storage corruption / bit rot.
+#
+# Off by default because a scrub re-downloads the full encrypted dump from
+# storage; at scale that is real egress (multiply dump size × number of
+# (target, destination) pairs / interval). Enable once you've sized your
+# bandwidth budget and verified your storage backend supports streaming
+# reads at the expected throughput.
+storageScrub:
+  enabled: false
+  intervalHours: 24
+
 # Read-only HTML/JSON dashboard served by the operator pod itself.
 # Disabled by default — flip `enabled: true` to expose it on a second
 # container port + Service port. The dashboard never writes to the
@@ -167,6 +180,18 @@ prometheusRule:
       labels: { severity: info }
       annotations:
         summary: "Schema changed for backup target {{ $labels.target }}"
+    - alert: BackupCharsetChanged
+      expr: backup_operator_charset_changed == 1
+      for: 1m
+      labels: { severity: warning }
+      annotations:
+        summary: "Database charset/collation changed for backup target {{ $labels.target }} — restore may silently truncate multibyte characters"
+    - alert: BackupStorageCorrupted
+      expr: max by (target, destination) (backup_operator_storage_scrub_passed) == 0
+      for: 1m
+      labels: { severity: critical }
+      annotations:
+        summary: "Storage scrub failed for backup target {{ $labels.target }} on {{ $labels.destination }} — stored dump SHA256 does not match meta.json (corruption or unreachable)"
     - alert: BackupAnomaliesAppearing
       expr: backup_operator_last_run_anomalies > 0
       for: 5m

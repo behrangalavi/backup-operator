@@ -76,6 +76,22 @@ var (
 		[]string{"target"},
 	)
 
+	charsetChanged = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "backup_operator_charset_changed",
+			Help: "1 if database character_set or collation differs from the previous run, 0 otherwise",
+		},
+		[]string{"target"},
+	)
+
+	schemaLastChange = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "backup_operator_schema_last_change_timestamp_seconds",
+			Help: "Unix timestamp of the most recent run where the schema fingerprint changed (carried forward across unchanged runs)",
+		},
+		[]string{"target"},
+	)
+
 	// Gauges (not counters): the operator-side aggregator reconstructs these
 	// from the latest meta.json found in each destination, so they reflect
 	// the most recent known state rather than a monotonic count. Counters
@@ -129,6 +145,34 @@ var (
 		},
 		[]string{"target", "destination"},
 	)
+
+	// Storage scrub metrics — produced by the operator-side scrubber that
+	// re-hashes stored dumps to detect silent corruption. The operator pod is
+	// long-lived and Prometheus-scraped, so a Counter is well-defined here
+	// (unlike the worker-side counters which need Gauge reconstruction).
+	storageScrubPassed = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "backup_operator_storage_scrub_passed",
+			Help: "1 if the most recent storage scrub of the pair (target, destination) matched the recorded SHA256, 0 if it failed",
+		},
+		[]string{"target", "destination"},
+	)
+
+	storageScrubLastCheck = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "backup_operator_storage_scrub_last_check_timestamp_seconds",
+			Help: "Unix timestamp of the most recent scrub attempt for the pair (target, destination)",
+		},
+		[]string{"target", "destination"},
+	)
+
+	storageScrubFailedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "backup_operator_storage_scrub_failed_total",
+			Help: "Cumulative storage scrub failures (checksum mismatch or unreachable dump) per pair",
+		},
+		[]string{"target", "destination"},
+	)
 )
 
 // gatherer holds the same registry we registered to, so the alerts package
@@ -146,12 +190,17 @@ func Register(registry prometheus.Registerer) {
 		tableCount,
 		tableRowCount,
 		schemaChanged,
+		charsetChanged,
+		schemaLastChange,
 		lastRunAnomalies,
 		lastRunStatus,
 		lastSuccessTimestamp,
 		destinationFailed,
 		retentionDeletedTotal,
 		retentionFailedTotal,
+		storageScrubPassed,
+		storageScrubLastCheck,
+		storageScrubFailedTotal,
 	)
 	if g, ok := registry.(prometheus.Gatherer); ok {
 		gatherer = g
@@ -206,6 +255,21 @@ func SetSchemaChanged(target string, changed bool) {
 	schemaChanged.WithLabelValues(target).Set(v)
 }
 
+func SetCharsetChanged(target string, changed bool) {
+	v := 0.0
+	if changed {
+		v = 1.0
+	}
+	charsetChanged.WithLabelValues(target).Set(v)
+}
+
+func SetSchemaLastChange(target string, t time.Time) {
+	if t.IsZero() {
+		return
+	}
+	schemaLastChange.WithLabelValues(target).Set(float64(t.Unix()))
+}
+
 func SetLastRunAnomalies(target string, count int) {
 	lastRunAnomalies.WithLabelValues(target).Set(float64(count))
 }
@@ -230,11 +294,29 @@ func SetDestinationFailed(target, destination string, failed bool) {
 	destinationFailed.WithLabelValues(target, destination).Set(v)
 }
 
+func SetStorageScrubPassed(target, destination string, passed bool) {
+	v := 0.0
+	if passed {
+		v = 1.0
+	}
+	storageScrubPassed.WithLabelValues(target, destination).Set(v)
+}
+
+func SetStorageScrubLastCheck(target, destination string, t time.Time) {
+	storageScrubLastCheck.WithLabelValues(target, destination).Set(float64(t.Unix()))
+}
+
+func IncStorageScrubFailed(target, destination string) {
+	storageScrubFailedTotal.WithLabelValues(target, destination).Inc()
+}
+
 func DeleteTargetMetrics(target string) {
 	dumpSizeBytes.DeleteLabelValues(target)
 	dumpSizeChangeRatio.DeleteLabelValues(target)
 	tableCount.DeleteLabelValues(target)
 	schemaChanged.DeleteLabelValues(target)
+	charsetChanged.DeleteLabelValues(target)
+	schemaLastChange.DeleteLabelValues(target)
 	tableRowCount.DeletePartialMatch(prometheus.Labels{"target": target})
 	lastSuccessTimestamp.DeletePartialMatch(prometheus.Labels{"target": target})
 	destinationFailed.DeletePartialMatch(prometheus.Labels{"target": target})
@@ -243,4 +325,7 @@ func DeleteTargetMetrics(target string) {
 	runDurationSeconds.DeletePartialMatch(prometheus.Labels{"target": target})
 	dumpDurationSeconds.DeletePartialMatch(prometheus.Labels{"target": target})
 	uploadDurationSeconds.DeletePartialMatch(prometheus.Labels{"target": target})
+	storageScrubPassed.DeletePartialMatch(prometheus.Labels{"target": target})
+	storageScrubLastCheck.DeletePartialMatch(prometheus.Labels{"target": target})
+	storageScrubFailedTotal.DeletePartialMatch(prometheus.Labels{"target": target})
 }

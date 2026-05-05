@@ -28,9 +28,11 @@ func NewDumper(dbType string, cfg dumper.Config, logger logr.Logger) (dumper.Dum
 	case TypePostgres:
 		return postgres.New(cfg, logger.WithName("postgres")), nil
 	case TypeMySQL, TypeMariaDB:
-		// MariaDB speaks the MySQL wire protocol; mysqldump (shipped as the
-		// mariadb-client package in our image) handles both.
-		return mysql.New(cfg, logger.WithName(dbType)), nil
+		// Both speak the MySQL wire protocol but the canonical dump
+		// tools differ: Oracle's mysqldump for MySQL, mariadb-dump for
+		// MariaDB. The worker image ships both — passing dbType in lets
+		// the dumper pick the right binary at exec time.
+		return mysql.New(dbType, cfg, logger.WithName(dbType)), nil
 	case TypeMongo:
 		return mongo.New(cfg, logger.WithName("mongo")), nil
 	case TypeRedis:

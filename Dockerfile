@@ -21,18 +21,78 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOARM=${TARGETVARIANT#v} \
     -ldflags="-s -w" \
     -o backup-worker ./cmd/worker
 
-# Final image needs pg_dump, mysqldump, mongodump, redis-cli for the worker —
-# these are the actual backup tools we exec. The operator does not need them
-# but the image is shared, which is fine: simpler distribution, no duplicate
-# registry. mariadb-client provides mysqldump for both MySQL and MariaDB.
-FROM alpine:3.21
-RUN apk add --no-cache \
-    ca-certificates \
-    postgresql17-client \
-    mariadb-client \
-    mongodb-tools \
-    redis \
-    && adduser -D -u 1000 backup
+# Final image needs pg_dump, mysqldump, mariadb-dump, mongodump, redis-cli
+# for the worker — these are the actual backup tools we exec. The operator
+# does not need them but the image is shared, which is fine: simpler
+# distribution, no duplicate registry.
+#
+# Runtime is debian-slim (not alpine) because Oracle's MySQL-8 client is
+# only available glibc-linked through the official MySQL APT repo —
+# alpine's `mysql-client` is a dummy alias for mariadb-client. Shipping
+# both `mysql-community-client` (Oracle, for dbType=mysql sources) and
+# `mariadb-client` (for dbType=mariadb sources) lets the dumper pick the
+# canonical tool per source rather than papering over differences with
+# wire-protocol compatibility tricks.
+FROM debian:bookworm-slim AS runtime
+ARG MONGO_TOOLS_VERSION=100.16.1
+ARG TARGETARCH
+
+# Install once: trust the four upstream repos (debian main, MySQL,
+# Mongo) before the package install so the apt-update covers them all.
+# `--no-install-recommends` keeps the image lean (~280MB).
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
+    install -d /usr/share/keyrings; \
+    EXTRA_PKGS=""; \
+    # Oracle's MySQL Community APT ships amd64 only; arm64 is not in
+    # any of their repos. On arm64 we install mariadb-client only and
+    # let the dumper's binary-probe pick mariadb-dump for both mysql
+    # and mariadb sources — same situation as the pre-debian image.
+    # The code path stays identical; only the binary's identity differs.
+    case "${TARGETARCH}" in \
+      amd64) \
+        # MySQL rotates GPG keys yearly; pin to a specific year so
+        # failed rotations don't surface as silent unsigned-repo
+        # warnings. Bump when the upstream key expires.
+        curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2025 | gpg --dearmor -o /usr/share/keyrings/mysql.gpg; \
+        echo "deb [signed-by=/usr/share/keyrings/mysql.gpg] http://repo.mysql.com/apt/debian bookworm mysql-8.4-lts" > /etc/apt/sources.list.d/mysql.list; \
+        apt-get update; \
+        EXTRA_PKGS="mysql-community-client"; \
+        ;; \
+      arm64) \
+        echo "arm64: Oracle MySQL community packages unavailable, using mariadb-client only" >&2; \
+        ;; \
+    esac; \
+    apt-get install -y --no-install-recommends \
+        postgresql-client-15 \
+        mariadb-client \
+        redis-tools \
+        ${EXTRA_PKGS}; \
+    # MongoDB Database Tools as a static tarball — keeps us off Mongo's
+    # APT repo (which lags arm64 / has its own GPG ceremony) and gives a
+    # single self-contained binary set. Pinned via build-arg so the
+    # image is reproducible.
+    #
+    # Mongo ships debian12-x86_64 but no debian12-arm64; we use the
+    # ubuntu2204-arm64 build for arm64 — same glibc generation, same
+    # static binaries, works fine on debian-bookworm.
+    case "${TARGETARCH}" in \
+      amd64) MONGO_PKG="debian12-x86_64" ;; \
+      arm64) MONGO_PKG="ubuntu2204-arm64" ;; \
+      *) echo "unsupported arch: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://fastdl.mongodb.org/tools/db/mongodb-database-tools-${MONGO_PKG}-${MONGO_TOOLS_VERSION}.tgz" \
+      | tar -xz --strip-components=2 -C /usr/local/bin --wildcards '*/bin/mongodump' '*/bin/mongorestore' '*/bin/bsondump'; \
+    apt-get purge -y curl gnupg; \
+    apt-get autoremove -y; \
+    rm -rf /var/lib/apt/lists/* /etc/apt/sources.list.d/mysql.list /usr/share/keyrings/mysql.gpg; \
+    # `backup` is already taken in debian-slim (system uid 34); use
+    # `backupop` for the unprivileged runtime user. Pod manifests
+    # reference uid 1000, not the name, so this rename is invisible
+    # to Kubernetes.
+    useradd -u 1000 -m -s /bin/bash backupop
+
 WORKDIR /app
 COPY --from=builder /workspace/backup-operator /app/backup-operator
 COPY --from=builder /workspace/backup-worker /app/backup-worker

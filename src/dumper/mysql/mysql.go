@@ -21,47 +21,62 @@ import (
 	gomysql "github.com/go-sql-driver/mysql"
 )
 
-// mysqldumpSupportsColumnStatistics returns true iff the `mysqldump`
-// binary in PATH understands `--column-statistics`. MySQL 8's official
-// mysqldump does; mariadb-dump (which the alpine `mariadb-client`
-// package symlinks as mysqldump) does not. We probe the binary's help
-// output once per process and cache the result — the dumper is invoked
-// inside a one-shot worker pod, so "once per process" is "once per
-// backup run", which is fine.
-var mysqldumpColumnStatsOnce struct {
-	once    sync.Once
-	support bool
-}
+// supportsColumnStatistics reports whether the given dump binary
+// recognises `--column-statistics`. Oracle's MySQL-8 `mysqldump` does
+// (and uses it to silence its column_statistics probe against older
+// MySQL / MariaDB targets); `mariadb-dump` does not and aborts with
+// "unknown variable 'column-statistics=0'" when given the flag.
+//
+// We probe `<binary> --help` once per binary path per worker process
+// and cache the result. The worker is one-shot, so "once per process"
+// is "once per backup run". Probe failure (binary missing) returns
+// false — the dump call that follows will surface the real error if
+// the tool is unreachable.
+var binaryProbeCache sync.Map // key: binary path, value: bool
 
-func mysqldumpSupportsColumnStatistics() bool {
-	mysqldumpColumnStatsOnce.once.Do(func() {
-		// `--help` exits 0 on both mysqldump and mariadb-dump and prints
-		// the option list to stdout. Wall-clock budget is tight (~50ms)
-		// so a 5s timeout is generous.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		out, err := exec.CommandContext(ctx, "mysqldump", "--help").CombinedOutput()
-		if err != nil {
-			// Probe failure (binary missing entirely?) — assume not
-			// supported, the dump call itself will surface the real
-			// error if mysqldump is unavailable.
-			return
-		}
-		mysqldumpColumnStatsOnce.support = strings.Contains(string(out), "column-statistics")
-	})
-	return mysqldumpColumnStatsOnce.support
+func supportsColumnStatistics(binary string) bool {
+	if v, ok := binaryProbeCache.Load(binary); ok {
+		return v.(bool)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, binary, "--help").CombinedOutput()
+	supports := false
+	if err == nil && strings.Contains(string(out), "column-statistics") {
+		supports = true
+	}
+	binaryProbeCache.Store(binary, supports)
+	return supports
 }
 
 type mysqlDumper struct {
 	cfg    dumper.Config
+	dbType string // "mysql" or "mariadb" — picks the dump binary
 	logger logr.Logger
 }
 
-func New(cfg dumper.Config, logger logr.Logger) dumper.Dumper {
-	return &mysqlDumper{cfg: cfg, logger: logger}
+// New returns a dumper that talks the MySQL wire protocol. dbType picks
+// the dump binary: "mysql" → Oracle's `mysqldump` (mysql-community-client),
+// "mariadb" → `mariadb-dump`. For backwards-compat, an empty dbType
+// defaults to "mysql".
+func New(dbType string, cfg dumper.Config, logger logr.Logger) dumper.Dumper {
+	if dbType == "" {
+		dbType = "mysql"
+	}
+	return &mysqlDumper{cfg: cfg, dbType: dbType, logger: logger}
 }
 
-func (d *mysqlDumper) Type() string { return "mysql" }
+func (d *mysqlDumper) Type() string { return d.dbType }
+
+// dumpBinary returns the per-engine dump tool name. Oracle's MySQL-8
+// client ships `mysqldump`; MariaDB's preferred name is `mariadb-dump`.
+// Both binaries live alongside each other in the worker image.
+func (d *mysqlDumper) dumpBinary() string {
+	if d.dbType == "mariadb" {
+		return "mariadb-dump"
+	}
+	return "mysqldump"
+}
 
 func (d *mysqlDumper) Dump(ctx context.Context, w io.Writer) error {
 	// Flag rationale:
@@ -74,15 +89,14 @@ func (d *mysqlDumper) Dump(ctx context.Context, w io.Writer) error {
 	//     and emoji round-trip correctly. The pre-utf8mb4 default ("utf8"
 	//     in MySQL <8) is actually 3-byte and silently truncates 4-byte
 	//     characters at restore time.
-	//   --column-statistics=0: MySQL 8 mysqldump tries to read
-	//     information_schema.column_statistics, which doesn't exist on
-	//     MariaDB or MySQL <8 — fails the dump even when everything else
-	//     would work. Disabling is the documented compatibility flag.
-	//     BUT: mariadb-dump (the binary that ships under the name
-	//     mysqldump in alpine's mariadb-client package) does not know
-	//     this flag and aborts with "unknown variable
-	//     'column-statistics=0'". We probe `mysqldump --help` once at
-	//     startup and only pass the flag when the binary recognises it.
+	//   --column-statistics=0: Oracle's MySQL-8 mysqldump probes
+	//     information_schema.column_statistics by default and fails
+	//     when the target lacks the table (older MySQL, MariaDB).
+	//     Setting =0 disables the probe — Oracle's documented compat
+	//     flag. mariadb-dump does not know the flag and aborts with
+	//     "unknown variable" if given it. supportsColumnStatistics()
+	//     probes `<binary> --help` once per binary so we pass the flag
+	//     only when it's actually accepted.
 	args := []string{
 		"-h", d.cfg.Host,
 		"-P", strconv.Itoa(d.cfg.Port),
@@ -95,11 +109,12 @@ func (d *mysqlDumper) Dump(ctx context.Context, w io.Writer) error {
 		"--default-character-set=utf8mb4",
 		d.cfg.Database,
 	}
-	if mysqldumpSupportsColumnStatistics() {
+	bin := d.dumpBinary()
+	if supportsColumnStatistics(bin) {
 		// Insert before the trailing database arg.
 		args = append(args[:len(args)-1], append([]string{"--column-statistics=0"}, args[len(args)-1])...)
 	}
-	cmd := exec.CommandContext(ctx, "mysqldump", args...)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	// Pass the password via MYSQL_PWD instead of `-p<value>` on the command
 	// line. `-p` would be visible in `ps` output and any process-listing
 	// telemetry; the env var stays inside the worker pod.
@@ -111,9 +126,9 @@ func (d *mysqlDumper) Dump(ctx context.Context, w io.Writer) error {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	d.logger.V(1).Info("running mysqldump", "host", d.cfg.Host, "db", d.cfg.Database)
+	d.logger.V(1).Info("running dump tool", "binary", bin, "host", d.cfg.Host, "db", d.cfg.Database)
 	if err := cmd.Run(); err != nil {
-		return dumper.WrapExecError("mysqldump", err, stderr.String(), d.cfg.Password)
+		return dumper.WrapExecError(bin, err, stderr.String(), d.cfg.Password)
 	}
 	return nil
 }

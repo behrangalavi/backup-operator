@@ -44,12 +44,19 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
     install -d /usr/share/keyrings; \
-    EXTRA_PKGS=""; \
-    # Oracle's MySQL Community APT ships amd64 only; arm64 is not in
-    # any of their repos. On arm64 we install mariadb-client only and
-    # let the dumper's binary-probe pick mariadb-dump for both mysql
-    # and mariadb sources — same situation as the pre-debian image.
-    # The code path stays identical; only the binary's identity differs.
+    # mysql-community-client-core (Oracle, amd64) and mariadb-client-core
+    # both claim `virtual-mysql-client-core` and refuse to coexist —
+    # apt-get install -f cannot resolve it. We pick one per arch:
+    #   amd64: Oracle mysql-community-client-core. Real mysqldump for
+    #          MySQL sources, also dumps MariaDB targets via shared
+    #          wire protocol (with --column-statistics=0 to skip the
+    #          column_statistics probe — handled by the runtime probe).
+    #   arm64: mariadb-client. Oracle does not ship arm64 community
+    #          packages; mysqldump resolves to mariadb-dump.
+    # The dumper code calls `mysqldump` unconditionally; whichever
+    # binary the arch ships responds. Both speak the MySQL wire
+    # protocol so source dbType is independent of build arch.
+    DBCLIENT_PKG="mariadb-client"; \
     case "${TARGETARCH}" in \
       amd64) \
         # MySQL rotates GPG keys yearly; pin to a specific year so
@@ -58,17 +65,16 @@ RUN set -eux; \
         curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2025 | gpg --dearmor -o /usr/share/keyrings/mysql.gpg; \
         echo "deb [signed-by=/usr/share/keyrings/mysql.gpg] http://repo.mysql.com/apt/debian bookworm mysql-8.4-lts" > /etc/apt/sources.list.d/mysql.list; \
         apt-get update; \
-        EXTRA_PKGS="mysql-community-client"; \
+        DBCLIENT_PKG="mysql-community-client-core"; \
         ;; \
       arm64) \
-        echo "arm64: Oracle MySQL community packages unavailable, using mariadb-client only" >&2; \
+        echo "arm64: Oracle MySQL community packages unavailable, using mariadb-client" >&2; \
         ;; \
     esac; \
     apt-get install -y --no-install-recommends \
         postgresql-client-15 \
-        mariadb-client \
-        redis-tools \
-        ${EXTRA_PKGS}; \
+        ${DBCLIENT_PKG} \
+        redis-tools; \
     # MongoDB Database Tools as a static tarball — keeps us off Mongo's
     # APT repo (which lags arm64 / has its own GPG ceremony) and gives a
     # single self-contained binary set. Pinned via build-arg so the

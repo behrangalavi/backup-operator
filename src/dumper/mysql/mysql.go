@@ -68,13 +68,15 @@ func New(dbType string, cfg dumper.Config, logger logr.Logger) dumper.Dumper {
 
 func (d *mysqlDumper) Type() string { return d.dbType }
 
-// dumpBinary returns the per-engine dump tool name. Oracle's MySQL-8
-// client ships `mysqldump`; MariaDB's preferred name is `mariadb-dump`.
-// Both binaries live alongside each other in the worker image.
+// dumpBinary returns the dump tool name. The worker image ships
+// exactly one mysql-protocol dump binary per arch (mysql-community-
+// client-core on amd64, mariadb-client on arm64) because both
+// packages claim virtual-mysql-client-core and refuse to coexist.
+// Both speak the MySQL wire protocol, so a single binary handles
+// both `dbType=mysql` and `dbType=mariadb` sources. The probe-once
+// logic on `--column-statistics` keeps the flag correct regardless
+// of which binary is present.
 func (d *mysqlDumper) dumpBinary() string {
-	if d.dbType == "mariadb" {
-		return "mariadb-dump"
-	}
 	return "mysqldump"
 }
 

@@ -27,11 +27,18 @@ import (
 // MySQL / MariaDB targets); `mariadb-dump` does not and aborts with
 // "unknown variable 'column-statistics=0'" when given the flag.
 //
-// We probe `<binary> --help` once per binary path per worker process
-// and cache the result. The worker is one-shot, so "once per process"
-// is "once per backup run". Probe failure (binary missing) returns
-// false — the dump call that follows will surface the real error if
-// the tool is unreachable.
+// Detection runs `<binary> --version` once per binary path per worker
+// process and looks for the literal "MariaDB" — present in MariaDB's
+// version banner ("Distrib 10.11.x-MariaDB"), absent in Oracle's. We
+// invert from there: anything that does not self-identify as MariaDB
+// is treated as Oracle and gets the flag. Probing --version (vs --help)
+// is robust against future MariaDB versions adding compatibility
+// mentions of "column-statistics" to their help text.
+//
+// Probe failure (binary missing, exec error) returns false — the dump
+// call that follows will surface the real error if the tool is
+// unreachable. Result is cached per binary path; the worker is
+// one-shot so this is "once per backup run".
 var binaryProbeCache sync.Map // key: binary path, value: bool
 
 func supportsColumnStatistics(binary string) bool {
@@ -40,9 +47,9 @@ func supportsColumnStatistics(binary string) bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, binary, "--help").CombinedOutput()
+	out, err := exec.CommandContext(ctx, binary, "--version").CombinedOutput()
 	supports := false
-	if err == nil && strings.Contains(string(out), "column-statistics") {
+	if err == nil && !strings.Contains(string(out), "MariaDB") {
 		supports = true
 	}
 	binaryProbeCache.Store(binary, supports)

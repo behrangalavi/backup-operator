@@ -70,6 +70,34 @@ INSERT INTO ` + "`orders`" + ` VALUES (1,1,99.99);
 	}
 }
 
+func TestRowCounterMySQLMultiLine(t *testing.T) {
+	// mariadb-dump default extended-insert format: VALUES on its own line,
+	// each tuple on a separate line, statement terminated with `;`.
+	dump := `-- MariaDB dump
+INSERT INTO ` + "`users`" + ` VALUES
+(1,'Alice','alice@example.com'),
+(2,'Bob','bob@example.com'),
+(3,'Carol','carol@example.com');
+INSERT INTO ` + "`orders`" + ` VALUES
+(1,1,99.99),
+(2,2,149.50);
+`
+	rc := NewRowCounter(io.Discard, "mariadb")
+	_, _ = rc.Write([]byte(dump))
+	_ = rc.Close()
+
+	counts := rc.Counts()
+	if counts["users"] != 3 {
+		t.Errorf("users: want 3, got %d", counts["users"])
+	}
+	if counts["orders"] != 2 {
+		t.Errorf("orders: want 2, got %d", counts["orders"])
+	}
+	if rc.TotalRows() != 5 {
+		t.Errorf("total: want 5, got %d", rc.TotalRows())
+	}
+}
+
 func TestRowCounterMySQLEscapedStrings(t *testing.T) {
 	dump := `INSERT INTO ` + "`logs`" + ` VALUES (1,'it''s a test','ok'),(2,'hello\\nworld','ok');
 `

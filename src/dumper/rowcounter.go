@@ -145,33 +145,71 @@ func (rc *RowCounter) scanPostgres(scanner *bufio.Scanner) {
 	}
 }
 
-// scanMySQL parses mysqldump output looking for INSERT statements:
+// scanMySQL parses mysqldump output looking for INSERT statements.
+// Two layouts in the wild:
 //
-//	INSERT INTO `table` VALUES (row1),(row2),(row3);
+//	Oracle mysqldump (single-line, default extended-insert):
+//	  INSERT INTO `table` VALUES (row1),(row2),(row3);
 //
-// Each VALUES tuple is one row.
+//	mariadb-dump (multi-line, default extended-insert):
+//	  INSERT INTO `table` VALUES
+//	  (row1),
+//	  (row2),
+//	  (row3);
+//
+// We track INSERT state across lines: enter when "INSERT INTO ... VALUES"
+// appears, count "(...)"-tuples on every line while inside, exit on a
+// line that ends with ";".
 func (rc *RowCounter) scanMySQL(scanner *bufio.Scanner) {
+	var currentTable string
+	inInsert := false
+
+	endsStatement := func(line string) bool {
+		return strings.HasSuffix(strings.TrimRight(line, " \t\r"), ";")
+	}
+
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "INSERT INTO ") {
+		if !inInsert {
+			if !strings.HasPrefix(line, "INSERT INTO ") {
+				continue
+			}
+			rest := line[12:]
+			tableName := extractMySQLTable(rest)
+			if tableName == "" {
+				continue
+			}
+			// Locate VALUES; tolerate trailing newline (multi-line) and
+			// trailing space (single-line) by matching " VALUES" without
+			// requiring a following character.
+			valIdx := strings.Index(line, " VALUES")
+			if valIdx < 0 {
+				continue
+			}
+			currentTable = tableName
+			valPart := line[valIdx+len(" VALUES"):]
+			rows := countMySQLRows(valPart)
+			rc.mu.Lock()
+			rc.counts[currentTable] += rows
+			rc.mu.Unlock()
+			if endsStatement(line) {
+				currentTable = ""
+				continue
+			}
+			inInsert = true
 			continue
 		}
-		// Extract table name: INSERT INTO `table` VALUES ...
-		rest := line[12:]
-		tableName := extractMySQLTable(rest)
-		if tableName == "" {
-			continue
+		// Continuation line of a multi-line INSERT.
+		rows := countMySQLRows(line)
+		if rows > 0 && currentTable != "" {
+			rc.mu.Lock()
+			rc.counts[currentTable] += rows
+			rc.mu.Unlock()
 		}
-		// Count rows by counting top-level "(" in VALUES section
-		valIdx := strings.Index(line, " VALUES ")
-		if valIdx < 0 {
-			continue
+		if endsStatement(line) {
+			inInsert = false
+			currentTable = ""
 		}
-		valPart := line[valIdx+8:]
-		rows := countMySQLRows(valPart)
-		rc.mu.Lock()
-		rc.counts[tableName] += rows
-		rc.mu.Unlock()
 	}
 }
 

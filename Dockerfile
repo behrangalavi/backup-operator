@@ -44,6 +44,14 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
     install -d /usr/share/keyrings; \
+    # PostgreSQL: debian-bookworm only ships postgresql-client-15.
+    # pg_dump refuses to dump from a server two major versions newer
+    # than itself (PG 17 server vs pg_dump 15 → "server version
+    # mismatch"), so we pull pg_dump 17 from the official PGDG repo.
+    # pg_dump 17 is backward-compatible and dumps PG 9.2+ correctly,
+    # so a single client version covers every supported source.
+    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgres.gpg; \
+    echo "deb [signed-by=/usr/share/keyrings/postgres.gpg] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list; \
     # mysql-community-client-core (Oracle, amd64) and mariadb-client-core
     # both claim `virtual-mysql-client-core` and refuse to coexist —
     # apt-get install -f cannot resolve it. We pick one per arch:
@@ -64,15 +72,15 @@ RUN set -eux; \
         # warnings. Bump when the upstream key expires.
         curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2025 | gpg --dearmor -o /usr/share/keyrings/mysql.gpg; \
         echo "deb [signed-by=/usr/share/keyrings/mysql.gpg] http://repo.mysql.com/apt/debian bookworm mysql-8.4-lts" > /etc/apt/sources.list.d/mysql.list; \
-        apt-get update; \
         DBCLIENT_PKG="mysql-community-client-core"; \
         ;; \
       arm64) \
         echo "arm64: Oracle MySQL community packages unavailable, using mariadb-client" >&2; \
         ;; \
     esac; \
+    apt-get update; \
     apt-get install -y --no-install-recommends \
-        postgresql-client-15 \
+        postgresql-client-17 \
         ${DBCLIENT_PKG} \
         redis-tools; \
     # MongoDB Database Tools as a static tarball — keeps us off Mongo's
@@ -92,7 +100,9 @@ RUN set -eux; \
       | tar -xz --strip-components=2 -C /usr/local/bin --wildcards '*/bin/mongodump' '*/bin/mongorestore' '*/bin/bsondump'; \
     apt-get purge -y curl gnupg; \
     apt-get autoremove -y; \
-    rm -rf /var/lib/apt/lists/* /etc/apt/sources.list.d/mysql.list /usr/share/keyrings/mysql.gpg; \
+    rm -rf /var/lib/apt/lists/* \
+           /etc/apt/sources.list.d/mysql.list /usr/share/keyrings/mysql.gpg \
+           /etc/apt/sources.list.d/pgdg.list /usr/share/keyrings/postgres.gpg; \
     # `backup` is already taken in debian-slim (system uid 34); use
     # `backupop` for the unprivileged runtime user. Pod manifests
     # reference uid 1000, not the name, so this rename is invisible

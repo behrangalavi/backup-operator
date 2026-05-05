@@ -17,6 +17,8 @@ A Kubernetes-native backup operator in Go for **PostgreSQL**, **MySQL**, **Maria
 - [The Dashboard UI](#the-dashboard-ui)
 - [Settings Wizard](#settings-wizard)
 - [Restore](#restore)
+- [Restore Verification](#restore-verification)
+- [Documentation Portal](#documentation-portal)
 - [Alerting & Monitoring](#alerting--monitoring)
 - [Encryption Model](#encryption-model)
 - [CI/CD](#cicd)
@@ -474,7 +476,7 @@ kubectl -n backup port-forward svc/backup-operator 8081:8081
 - **Dashboard (`#/`):** overview with stats cards (source count, healthy/failed, running jobs), target table with status badges, manual trigger button per target.
 - **Sources (`#/sources`):** card grid of all backup sources. Create, edit, and delete database backup sources via forms. Supports PostgreSQL, MySQL, MariaDB, MongoDB, and Redis with all configuration options.
 - **Destinations (`#/destinations`):** manage storage destinations (SFTP, S3). Create, edit, and delete with full field support. Sensitive fields (passwords, SSH keys) are masked in API responses.
-- **Jobs (`#/jobs`):** running and recent backup jobs with status and timing.
+- **Jobs (`#/jobs`):** running and recent backup jobs with status and timing. For currently-running jobs, the Duration column shows a live progress bar driven by the median of past successful runs (last 10) for that target. The bar caps at 99 % until the run actually completes; if the run is overdue, the bar turns orange with a "länger als üblich" hint. Estimate-free fallback when no past runs are available yet.
 - **Target detail (`#/target/<name>`):** full run history table — timestamps, sizes, SHA256 checksums, schema status, anomaly counts, and download buttons per run. Failed runs surface phase + full error message inline.
 - **Alerts (`#/alerts`):** currently-firing backup alerts with severity counters and a sidebar pill counter. Pulls from Prometheus when configured (`alerts.prometheusURL`), otherwise re-evaluates the same conditions locally — see [Surfacing alerts in the operator UI](#surfacing-alerts-in-the-operator-ui).
 - **Settings (`#/settings`):** configuration wizard (see [Settings Wizard](#settings-wizard) below).
@@ -605,6 +607,95 @@ gunzip dump.sql.gz   # or pipe `--decompress` directly
 
 ---
 
+## Restore Verification
+
+> A backup that hasn't been restored is not a backup.
+
+The operator can prove that an encrypted dump can actually be decrypted and parsed, on a configurable cadence, **without ever sending the age private key into the cluster**. It does this by generating a fresh X25519 keypair in the worker pod's process memory at the moment it decides to verify, encrypting the dump for both the long-lived disaster-recovery recipient *and* the ephemeral recipient, then doing the verification in-process. When the pod terminates, the ephemeral private half is gone — the offline DR key is unaffected and remains the only path that can decrypt the artifact for real recovery.
+
+### Modes
+
+Set on a source via `backup.mogenius.io/restore-verification-mode`. Off by default.
+
+| Mode | What it does | RBAC needed | Cost |
+|---|---|---|---|
+| `off` | No verification (default) | none | — |
+| `stream-validate` | In-process: decrypt → gunzip → engine-aware parser. Catches: bit rot, broken encryption, corrupt gzip, truncated dumps, "looks like a dump but isn't" garbage. | none | seconds; no extra pods |
+| `schema-only` | Spawns an ephemeral DB pod, restores schema only (SQL engines stream-filter `INSERT`/`COPY` data lines). Catches everything `stream-validate` does plus DDL the engine actually rejects. | `pods: create/delete` in worker namespace | a small DB pod for ~30 s |
+| `sample` | Spawns an ephemeral DB pod, restores a small sample of data alongside the full schema. Catches data-encoding issues. | same as above | small pod, modest disk |
+| `full` | Spawns an ephemeral DB pod, restores the entire dump, runs smoke queries. Highest fidelity. | same as above | full-size pod and emptyDir; node needs the headroom |
+
+### Annotations
+
+| Annotation | Default | Effect |
+|---|---|---|
+| `backup.mogenius.io/restore-verification-mode` | `off` | Mode (see above) |
+| `backup.mogenius.io/restore-verification-interval` | `168h` (weekly) | Minimum gap between verifier runs. State-driven: the worker reads `latestMeta.restoreVerification.completedAt` and skips if the interval hasn't elapsed. Manual runs verify whenever overdue, regardless of cron drift. |
+| `backup.mogenius.io/verification-image` | per-DB-type default (e.g. `postgres:15.5-alpine`) | Container image for the verifier pod. Pin to the source DB's exact major version when restore semantics depend on it. Phase-2 modes only. |
+| `backup.mogenius.io/verification-volume-size` | `1Gi` (schema-only), `5Gi` (sample), `50Gi` (full) | `emptyDir.sizeLimit` for the verifier pod's data volume. Override when one source's restore needs more headroom. |
+
+### Enabling Phase 2 in the chart
+
+Phase-2 modes need the worker ServiceAccount to manage Pods in its namespace. Off by default; flip on with:
+
+```yaml
+# values.yaml
+restoreVerification:
+  enableEphemeralPodSpawn: true
+```
+
+This grants `pods: create/delete` on the worker SA, scoped to its own namespace.
+
+### Alerts
+
+Two new rules ship with the chart:
+
+| Alert | Condition | Severity |
+|---|---|---|
+| `BackupRestoreVerificationFailed` | `restore_verification_passed == 0` for 5 m | critical |
+| `BackupRestoreVerificationStale` | `time() - restore_verification_last_timestamp > 14 d` | warning |
+
+A failed verification does **not** fail the backup run itself — verification is observability, not a gate. The dump still uploads, the artifact remains decryptable with the DR key, and downstream integrations are unaffected. The alert exists so an operator can investigate.
+
+### What the UI shows
+
+The Target Detail page (`#/target/<name>`) renders a verification badge per run. The Settings → "Restore Verification" wizard step lets operators toggle the mode and interval per source without a `helm upgrade`.
+
+---
+
+## Documentation Portal
+
+The operator can serve `CLAUDE.md`, `README.md`, and a generated tech-stack page (built from `go.mod`) on a separate port. Off by default. The portal is **read-only** — it has no Kubernetes client, no Secret access, no ability to mutate state. That's what justifies exposing it more loosely than the management UI.
+
+### Enable it
+
+```yaml
+# values.yaml
+docs:
+  enabled: true
+  port: 8083  # default
+```
+
+### Access locally
+
+```bash
+kubectl -n backup port-forward svc/backup-operator 8083:8083
+# Browser: http://localhost:8083
+```
+
+### What you get
+
+- **`/`** — README (this file), rendered with goldmark.
+- **`/claude`** — CLAUDE.md (operator reference + architectural decisions).
+- **`/tech-stack`** — direct dependencies from `go.mod`, with version + purpose.
+- **In-page search** — Ctrl+K opens a dropdown with snippet highlighting across all pages. Client-side only; no server-side index, so the portal works on read-only mounts.
+
+### Why a separate port
+
+The management UI mutates Secrets, ConfigMaps, and Jobs; it must be SSO-gated in production. The docs portal renders Markdown files. Splitting them onto separate ports lets cluster admins write two distinct ingress rules — public docs, gated UI — without code changes.
+
+---
+
 ## Alerting & Monitoring
 
 ### Metrics
@@ -618,15 +709,23 @@ The **operator pod** exposes Prometheus metrics on `:8080/metrics`. Run-level si
 | `backup_operator_table_count` | Gauge | `target` | Tables/collections in the most recent successful run |
 | `backup_operator_table_row_count` | Gauge | `target`, `table` | Per-table row count (estimate) at the most recent run |
 | `backup_operator_schema_changed` | Gauge | `target` | 1 if schema hash differs from previous run, 0 otherwise |
+| `backup_operator_charset_changed` | Gauge | `target` | 1 if database character set or collation differs from previous run; warns about silent multibyte truncation at restore time |
+| `backup_operator_schema_last_change_timestamp_seconds` | Gauge | `target` | Unix ts of the most recent run where the schema fingerprint actually changed; carried forward across unchanged runs |
 | `backup_operator_last_run_anomalies` | Gauge | `target` | Analyzer anomaly count in the most recent run |
 | `backup_operator_last_run_status` | Gauge | `target` | 1 = most recent run wrote a usable artifact, 0 = failure |
 | `backup_operator_last_success_timestamp_seconds` | Gauge | `target`, `destination` | Unix ts of last successful upload to that destination |
 | `backup_operator_destination_failed` | Gauge | `target`, `destination` | 1 if the destination is unreadable / last upload failed |
+| `backup_operator_storage_scrub_passed` | Gauge | `target`, `destination` | 1 if the most recent scrub matched the recorded SHA256, 0 if mismatch. Only present when `STORAGE_SCRUB_ENABLED=true`. |
+| `backup_operator_storage_scrub_last_check_timestamp_seconds` | Gauge | `target`, `destination` | Unix ts of the most recent scrub attempt |
+| `backup_operator_storage_scrub_failed_total` | Counter | `target`, `destination` | Cumulative scrub failures (mismatch or unreachable). Operator-side, scraped normally. |
+| `backup_operator_restore_verification_passed` | Gauge | `target`, `mode` | 1 if the most recent restore-verifier run produced verdict `match`, 0 for `mismatch`/`skipped`. Absent until at least one verifier has run. |
+| `backup_operator_restore_verification_last_timestamp_seconds` | Gauge | `target`, `mode` | Unix ts of the most recent restore-verifier completion. Drives the stale alert. |
 | `backup_operator_retention_deleted_total` | Counter | `target`, `destination`, `kind` | Worker-only — see caveat below |
 | `backup_operator_retention_failed_total` | Counter | `target`, `destination` | Worker-only — see caveat below |
 | `backup_operator_dump_duration_seconds` | Histogram | `target`, `db_type` | Worker-only — see caveat below |
 | `backup_operator_upload_duration_seconds` | Histogram | `target`, `destination`, `storage_type` | Worker-only — see caveat below |
 | `backup_operator_run_duration_seconds` | Histogram | `target`, `db_type` | Worker-only — see caveat below |
+| `backup_operator_restore_verification_duration_seconds` | Histogram | `target`, `mode` | Worker-only — see caveat below |
 
 **Caveat — "worker-only" metrics:** the histograms and `retention_*` counters are observed inside the worker pod, but worker pods finish in seconds and Prometheus's scrape interval (≥15s) cannot catch them. They live in the codebase for future use (e.g. an aggregator that pushes to Pushgateway or rebuilds them from meta.json). For timing alerts today, rely on Job duration via `kube-state-metrics`.
 
@@ -654,16 +753,23 @@ If you don't run Prometheus Operator, set `serviceMonitor.enabled=false` and con
 
 ### Default Alert Rules
 
-The chart ships a `PrometheusRule` with six default alerts. They're rendered only when `monitoring.coreos.com/v1` is present, and they live under `prometheusRule.rules` in `values.yaml` so you can override or add your own at install time.
+The chart ships a `PrometheusRule` with eleven default alerts. They're rendered only when `monitoring.coreos.com/v1` is present, and they live under `prometheusRule.rules` in `values.yaml` so you can override or add your own at install time.
 
-| Alert | Expression | For | Severity |
+| Alert | Expression (simplified) | For | Severity |
 |---|---|---|---|
 | `BackupOverdue` | `time() - max by (target) (last_success_timestamp_seconds) > 86400 * 1.5` | 10m | warning |
 | `BackupDestinationFailing` | `max by (target, destination) (destination_failed) == 1` | 15m | warning |
 | `BackupDumpSizeCollapsed` | `dump_size_change_ratio < 0.5` | 5m | **critical** |
-| `BackupSchemaChanged` | `schema_changed == 1` | — | info |
-| `BackupAnomaliesAppearing` | `increase(anomalies_total[1h]) > 0` | — | warning |
-| `BackupRetentionFailing` | `increase(retention_failed_total[1h]) > 0` | 30m | warning |
+| `BackupSchemaChanged` | `schema_changed == 1` | 1m | info |
+| `BackupCharsetChanged` | `charset_changed == 1` | 1m | warning |
+| `BackupStorageCorrupted` | `max by (target, destination) (storage_scrub_passed) == 0` | 1m | **critical** |
+| `BackupAnomaliesAppearing` | `last_run_anomalies > 0` | 5m | warning |
+| `BackupLastRunFailed` | `last_run_status == 0` | 5m | warning |
+| `BackupSucceeded` | `time() - max by (target) (last_success_timestamp_seconds) < 120` | — | info |
+| `BackupRestoreVerificationFailed` | `max by (target, mode) (restore_verification_passed) == 0` | 5m | **critical** |
+| `BackupRestoreVerificationStale` | `time() - max by (target, mode) (restore_verification_last_timestamp_seconds) > 86400 * 14` | 1h | warning |
+
+`BackupSucceeded` is a heartbeat-style positive signal — every successful run produces one firing + one resolved notification (Alertmanager has `send_resolved: true`). With a frequent cron this is intentionally noisy; silence it if you only want failure alerts.
 
 The semantic alerts (`BackupDumpSizeCollapsed`, `BackupSchemaChanged`, `BackupAnomaliesAppearing`) are this project's main differentiator. They alert on *what's actually in the dump*, not on whether the job exited cleanly. A backup that succeeds with empty tables silently in another tool will page you here.
 

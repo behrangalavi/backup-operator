@@ -238,18 +238,24 @@ src/
 │   ├── stream/          # ModeStreamValidate: in-process decrypt → gunzip → parser, no DB-pod-spawn
 │   ├── ephemeral/       # K8s Spawner — creates short-lived DB pods with emptyDir; ownerRef-cascade-cleaned
 │   └── restore/         # ModeSchemaOnly / Sample / Full: spawn DB → restore → smoke queries (Phase 2)
-└── ui/                  # Built-in web dashboard and management API
-    ├── cache.go         # Cached Secret data for dashboard rendering
-    ├── data.go          # Data aggregation helpers for templates
-    ├── handlers.go      # Legacy HTML template handlers (backward compat)
-    ├── handlers_api.go  # REST API: CRUD sources/destinations, trigger, SSE
-    ├── handlers_settings.go  # Settings API: GET/PUT /api/settings, values.yaml export
-    ├── server.go        # HTTP server, routing, SPA handler, SSE broker
-    ├── static/          # SPA frontend (vanilla JS, no build step)
-    │   ├── index.html   # SPA shell with sidebar, modal, toast containers
-    │   ├── style.css    # Dark theme, responsive layout, component styles
-    │   └── app.js       # Hash-router, API helpers, page renderers, forms
-    └── templates/       # Legacy Go HTML templates (kept for backward compat)
+├── ui/                  # Built-in web dashboard and management API
+│   ├── cache.go         # Cached Secret data for dashboard rendering
+│   ├── data.go          # Data aggregation helpers for templates; estimateDuration for the progress-bar feed
+│   ├── handlers.go      # Legacy HTML template handlers (backward compat)
+│   ├── handlers_api.go  # REST API: CRUD sources/destinations, trigger, SSE; /api/jobs embeds duration estimate for running jobs
+│   ├── handlers_settings.go  # Settings API: GET/PUT /api/settings, values.yaml export
+│   ├── server.go        # HTTP server, routing, SPA handler, SSE broker
+│   ├── static/          # SPA frontend (vanilla JS, no build step)
+│   │   ├── index.html   # SPA shell with sidebar, modal, toast containers
+│   │   ├── style.css    # Dark theme, responsive layout, component styles
+│   │   └── app.js       # Hash-router, API helpers, page renderers, forms; renders Jobs progress bar
+│   └── templates/       # Legacy Go HTML templates (kept for backward compat)
+└── docs/                # Read-only docs portal: serves CLAUDE.md + README.md + generated tech stack
+    ├── server.go        # HTTP server on DOCS_ADDR (default :8083); separate process from UI
+    ├── render.go        # goldmark Markdown renderer; in-page search dropdown injected into shell
+    ├── shell.go         # HTML shell + sidebar nav (no K8s client, no Secret access)
+    ├── tech_stack.go    # Generates "tech stack" page from go.mod direct deps
+    └── static/          # CSS/JS for the docs portal (vanilla, embedded)
 charts/backup-operator/   # Helm chart (Deployment, RBAC, Service, ServiceMonitor, PrometheusRule)
 test/local/              # Manifests for the Docker Desktop test stack (see section 16)
 Dockerfile               # Builds operator + worker into one alpine image with DB clients
@@ -435,6 +441,9 @@ The operator and the worker have separate (overlapping) config schemas. All valu
 | `PROMETHEUS_URL` | no | — | When set (e.g. `http://prometheus-operated.alert.svc:9090`), `/api/alerts` proxies `/api/v1/alerts` filtered to `alertname=~"^Backup.*"` so the UI mirrors what Alertmanager will route. When unset, the UI falls back to a local heuristic over the operator's own metric registry — useful during onboarding but does not honor the rule's `for:` duration. |
 | `ALERTMANAGER_URL` | no | — | Used for the "open in Alertmanager" link on the Alerts page, the `/api/alerts/status` connectivity check (`GET /api/v2/status`), and the `/api/alerts/test` endpoint that sends a test alert (`POST /api/v2/alerts`). |
 | `SETTINGS_CONFIGMAP` | no | — | Name of the ConfigMap for runtime-configurable settings via the UI wizard. Set automatically by Helm when `ui.enabled=true`. |
+| `DOCS_ENABLED` | no | `false` | Enable the read-only documentation portal on `DOCS_ADDR`. Off by default — flip on to expose CLAUDE.md / README.md / generated tech-stack page. The docs server holds no credentials and reads no Kubernetes state, so it is safe to expose to a wider audience than the management UI. |
+| `DOCS_ADDR` | no | `:8083` | Listen address for the docs portal. Distinct port so cluster admins can scope ingress separately from the mutating UI. |
+| `DOCS_DIR` | no | `/app/docs` | Directory holding `CLAUDE.md`, `README.md`, `go.mod`. Populated by the Dockerfile at image build time. Locally, point at the repo root via `DOCS_DIR=..` for `just run`. |
 
 ### Worker (`cmd/worker/main.go`)
 
@@ -631,7 +640,7 @@ Every dump produces **two** objects per run:
 | Object | Contents | Why this format |
 |---|---|---|
 | `dump-<ts>.sql.gz.age` | gzipped DB dump, age-encrypted | The actual backup payload |
-| `dump-<ts>.meta.json` | target name, db-type, encrypted size, full Stats, full analyzer Report, per-destination upload results (`destinations` array with name, storageType, status, error) | Lets the next run compute diffs without restoring; lets humans audit without the private key; per-destination results enable multi-storage health monitoring |
+| `dump-<ts>.meta.json` | target name, db-type, encrypted size, SHA256, run start (`timestamp`), `completedAt` + `durationSeconds` (wall-clock duration), full Stats, full analyzer Report, dump verification, restore verification, per-destination upload results (`destinations` array with name, storageType, status, error) | Lets the next run compute diffs without restoring; lets humans audit without the private key; per-destination results enable multi-storage health monitoring; `durationSeconds` feeds the UI's Jobs progress-bar estimate (median over last N successful runs) |
 
 **Timestamp format:** `20060102T150405Z` (Go reference time, ISO-like, lexically sortable).
 
@@ -1092,6 +1101,10 @@ The notable ones, with the reasoning that future readers should preserve.
   - **Engine-specific readiness probe runs after kubelet's Ready=true.** Stock postgres/mysql/mongo/redis images don't ship a meaningful `readinessProbe`, so `kubelet Ready` only tells us the container started. We poll an actual `SELECT 1` / `db.runCommand({ping:1})` / `PING` ourselves before declaring the pod restore-ready. Adds 0–10 seconds in practice and prevents the entire restore from racing the DB's startup phase.
   - **schema-only is implemented via stream-filtering for SQL engines, deferred for mongo/redis.** Postgres / mysql plain SQL streams can be filtered cheaply (drop everything between `COPY ... FROM stdin;` and `\.`; drop `INSERT INTO` lines), giving real "schema only" without parsing the SQL. mongo's BSON archive and redis's RDB don't decompose like that — schema-only on those engines is a label, not a meaningfully cheaper restore. Documented in the engine source files; users with cost concerns should pick `stream-validate` instead on those engines.
   - **redis Phase-2 verification is intentionally minimal in this iteration.** redis-cli has no clean "load this RDB into a running server" path; the supported routes are all "restart with `dbfilename=...`", which doesn't fit our spawn-then-restore model. Phase 2 redis verification confirms the verifier-pod is reachable and authenticatable; Phase 1 stream-validate already confirms decryptability + RDB header. Real RDB load is a follow-up.
+
+- **Read-only docs portal on its own port (`:8083`).** The `/docs` portal serves the same `CLAUDE.md` and `README.md` you're reading now, plus a generated tech-stack page from `go.mod`. It runs in the operator pod but on a separate listener so cluster admins can scope ingress separately from the mutating UI: docs can be public or wide-internal while the management UI stays SSO-gated. The docs server holds **no Kubernetes client** and **no Secret access** — it's a static-file renderer. If it gets compromised, an attacker reads the same Markdown files anyone with the GitHub URL can read. That property is what justifies exposing it more loosely. Off by default (`docs.enabled=false`); the Dockerfile populates `/app/docs` at build time so the portal works out of the box once the flag flips. The in-page search dropdown is client-side only — no server-side indexing means the portal works on any read-only mount and survives ConfigMap-level configuration drift.
+
+- **Job duration estimate from past meta.json, not Prometheus.** The UI's Jobs page renders a per-row progress bar for `status=running`. Three options were considered for sourcing the estimate: (a) Prometheus query on `run_duration_seconds`, (b) Kubernetes Job `status.startTime` plus a server-side rolling histogram, (c) median over the last N `meta.json` files for that target. We picked (c). Prometheus is out because the run-duration histogram is worker-only and never reaches the scrape (see §12 caveat); we'd be adding the same Pushgateway dependency we already rejected. A server-side rolling histogram in the operator would duplicate state Prometheus is supposed to own. Reading meta files is consistent with the rest of the operator-side aggregation pattern (the MetricsRefresher does exactly this), reuses the existing 30s `runsCache`, and works without any monitoring stack at all. **Median over last 10 successful runs**, not mean: a single index-rebuild outlier shouldn't double the estimate. **Failed runs excluded**: failures usually fail fast (connection refused in <1 s) and would systematically underestimate. **Cap at 99 %**: until `meta.json` lands, the run isn't actually done; showing 100 % would lie about state. Trade-off — the estimate is wrong precisely when it matters: a database that grew 3× since the last successful run will mispredict for one cycle. Stratifying by `dump_size_bytes` is the obvious next step but adds enough complexity that we shipped the simple version first.
 
 - **Restore-verification uses an ephemeral keypair generated inside the worker pod.** The "a backup that hasn't been restored is not a backup" gap was real — the existing `DumpVerification` only validates the stream as it's *being produced*, never the encrypted artifact at rest. The classical fix (auto-restore against an ephemeral DB) requires the age private key inside the cluster, which §10 forbids. Resolution: **the worker generates a fresh X25519 identity in process memory at the moment it decides to verify**, encrypts the dump with both the long-lived DR recipient AND the ephemeral one (age supports multi-recipient natively, ~200 bytes header overhead per recipient), runs the in-process verifier, the pod terminates and the private half is gone. The DR key is unaffected — it can decrypt the same artifact for years. Trade-offs considered: a static "verifier-recipient" K8s Secret would have been simpler but exposes ALL backups if compromised (whereas an ephemeral keypair only exposes ONE run); a "schema-only without decrypt" mode would have skipped the key problem but doesn't actually prove the encryption layer works. The chosen design dominates both on security AND on coverage. Scheduling is **state-driven** (`shouldVerify` reads `latestMeta.restoreVerification.completedAt` and compares with `interval`) rather than time-window-matched against cron, so manual runs verify when overdue and cron drift is irrelevant. Phase 1 ships only `stream-validate` (no DB-pod-spawn, no RBAC expansion); Phase 2 will add `schema-only`/`sample`/`full` against an ephemerally-spawned DB pod and require Worker SA `pods: create/delete` in own namespace.
 

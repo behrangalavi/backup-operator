@@ -72,7 +72,10 @@ rules:
     resources: ["events"]
     verbs: ["create", "patch"]
 
-  {{- if .Values.restoreVerification.enableEphemeralPodSpawn }}
+  {{- /* (deref) form short-circuits to nil when `restoreVerification:`
+         is absent, e.g. helm upgrade --reuse-values from a release that
+         predates Phase 2. Same pattern as the docs/alerts blocks. */}}
+  {{- if (.Values.restoreVerification).enableEphemeralPodSpawn }}
   # Phase-2 restore verifier (schema-only / sample / full): worker
   # spawns a short-lived DB Pod in this namespace, owns it via
   # OwnerReference (cascade-delete on worker exit), and tears it down.

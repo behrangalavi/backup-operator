@@ -10,6 +10,7 @@ const state = {
   pages: [],
   current: null,
   pageCache: new Map(),
+  pendingHighlight: null, // search term to scroll/highlight after next render
 };
 
 async function api(path) {
@@ -76,7 +77,15 @@ function renderMarkdownPage(p) {
     <div class="md-body">${p.html}</div>
   `;
   renderTOC(p.headings || []);
-  // After insertion, scroll to a heading if the URL had one.
+  // Apply a pending search highlight (set by a search-hit click) before
+  // honouring an explicit heading anchor — the highlight does its own
+  // scrollIntoView, and a later anchor would override it.
+  if (state.pendingHighlight) {
+    const q = state.pendingHighlight;
+    state.pendingHighlight = null;
+    highlightInArticle(q);
+    return;
+  }
   const parts = location.hash.slice(1).split('/');
   if (parts.length >= 2 && parts[1]) {
     const target = document.getElementById(parts[1]);
@@ -124,6 +133,12 @@ function renderTechStack(tech) {
     { level: 2, text: 'Operational dependencies', id: 'operational' },
     { level: 2, text: 'Build & release tooling', id: 'build' },
   ]);
+  if (state.pendingHighlight) {
+    const q = state.pendingHighlight;
+    state.pendingHighlight = null;
+    highlightInArticle(q);
+    return;
+  }
   window.scrollTo(0, 0);
 }
 
@@ -156,44 +171,134 @@ async function primeSearch() {
   }));
 }
 
+// Build up to `max` snippets per page so a single page with many matches
+// surfaces multiple jump points instead of just the first.
+function collectMatches(plain, q, max) {
+  const out = [];
+  const lower = plain.toLowerCase();
+  let from = 0;
+  while (out.length < max) {
+    const idx = lower.indexOf(q, from);
+    if (idx < 0) break;
+    const start = Math.max(0, idx - 40);
+    const end = Math.min(plain.length, idx + q.length + 40);
+    out.push({
+      idx,
+      snippet: (start > 0 ? '…' : '') + plain.slice(start, end) + (end < plain.length ? '…' : ''),
+    });
+    from = idx + q.length;
+  }
+  return out;
+}
+
+function highlightSnippet(snippet, q) {
+  const lower = snippet.toLowerCase();
+  const ql = q.toLowerCase();
+  let i = 0;
+  let out = '';
+  while (i < snippet.length) {
+    const idx = lower.indexOf(ql, i);
+    if (idx < 0) { out += escapeHTML(snippet.slice(i)); break; }
+    if (idx > i) out += escapeHTML(snippet.slice(i, idx));
+    out += '<mark>' + escapeHTML(snippet.slice(idx, idx + ql.length)) + '</mark>';
+    i = idx + ql.length;
+  }
+  return out;
+}
+
 function runSearch(q) {
-  q = q.trim().toLowerCase();
-  const nav = $('#nav');
-  if (!q) { renderNav(); return; }
+  q = q.trim();
+  const results = $('#search-results');
+  if (!q) { results.classList.remove('open'); results.innerHTML = ''; return; }
+  const ql = q.toLowerCase();
   const hits = [];
   for (const p of state.pages) {
     if (p.kind !== 'markdown') {
-      if (p.title.toLowerCase().includes(q)) {
+      if (p.title.toLowerCase().includes(ql)) {
         hits.push({ slug: p.slug, title: p.title, snippet: '' });
       }
       continue;
     }
     const cached = state.pageCache.get(p.slug);
     if (!cached) continue;
-    // strip HTML tags for the snippet match
     const plain = cached.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
-    const idx = plain.toLowerCase().indexOf(q);
-    if (idx >= 0) {
-      const start = Math.max(0, idx - 40);
-      const end = Math.min(plain.length, idx + q.length + 40);
-      hits.push({
-        slug: p.slug,
-        title: p.title,
-        snippet: (start > 0 ? '…' : '') + plain.slice(start, end) + (end < plain.length ? '…' : ''),
-      });
-    } else if (p.title.toLowerCase().includes(q)) {
+    const matches = collectMatches(plain, ql, 5);
+    if (matches.length > 0) {
+      for (const m of matches) {
+        hits.push({ slug: p.slug, title: p.title, snippet: m.snippet });
+      }
+    } else if (p.title.toLowerCase().includes(ql)) {
       hits.push({ slug: p.slug, title: p.title, snippet: '' });
     }
   }
+  results.classList.add('open');
   if (hits.length === 0) {
-    nav.innerHTML = '<div class="search-empty">No matches.</div>';
+    results.innerHTML = '<div class="search-empty">No matches.</div>';
     return;
   }
-  nav.innerHTML = hits.map(h => `
-    <a href="#${escapeHTML(h.slug)}" class="search-hit">
+  results.innerHTML = hits.map(h => `
+    <a href="#${escapeHTML(h.slug)}" class="search-hit" data-slug="${escapeHTML(h.slug)}" data-q="${escapeHTML(q)}">
       <div class="hit-title">${escapeHTML(h.title)}</div>
-      ${h.snippet ? '<div class="hit-snippet">' + escapeHTML(h.snippet) + '</div>' : ''}
+      ${h.snippet ? '<div class="hit-snippet">' + highlightSnippet(h.snippet, q) + '</div>' : ''}
     </a>`).join('');
+}
+
+function clearArticleHighlights() {
+  const article = $('#page');
+  if (!article) return;
+  $$('mark.search-highlight', article).forEach(m => {
+    const parent = m.parentNode;
+    parent.replaceChild(document.createTextNode(m.textContent), m);
+    parent.normalize();
+  });
+}
+
+// Walk the article's text nodes, wrap every occurrence of `q` in
+// <mark class="search-highlight">, and scroll the first match into view.
+// Skips text inside <script>/<style>/existing marks so we don't recurse.
+function highlightInArticle(q) {
+  if (!q) return;
+  clearArticleHighlights();
+  const article = $('#page');
+  if (!article) return;
+  const ql = q.toLowerCase();
+  const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT, {
+    acceptNode(n) {
+      if (!n.nodeValue || !n.nodeValue.toLowerCase().includes(ql)) return NodeFilter.FILTER_REJECT;
+      let p = n.parentNode;
+      while (p && p !== article) {
+        const tag = p.nodeName;
+        if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'MARK') return NodeFilter.FILTER_REJECT;
+        p = p.parentNode;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const targets = [];
+  let n;
+  while ((n = walker.nextNode())) targets.push(n);
+  let firstMark = null;
+  for (const tn of targets) {
+    const text = tn.nodeValue;
+    const lower = text.toLowerCase();
+    const frag = document.createDocumentFragment();
+    let i = 0;
+    while (i < text.length) {
+      const idx = lower.indexOf(ql, i);
+      if (idx < 0) { frag.appendChild(document.createTextNode(text.slice(i))); break; }
+      if (idx > i) frag.appendChild(document.createTextNode(text.slice(i, idx)));
+      const mark = document.createElement('mark');
+      mark.className = 'search-highlight';
+      mark.textContent = text.slice(idx, idx + ql.length);
+      frag.appendChild(mark);
+      if (!firstMark) firstMark = mark;
+      i = idx + ql.length;
+    }
+    tn.parentNode.replaceChild(frag, tn);
+  }
+  if (firstMark) {
+    firstMark.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
 }
 
 async function init() {
@@ -209,13 +314,50 @@ async function init() {
   window.addEventListener('hashchange', navigate);
 
   let searchTimer = null;
-  $('#search').addEventListener('input', e => {
+  const searchInput = $('#search');
+  searchInput.addEventListener('input', e => {
     const v = e.target.value;
     clearTimeout(searchTimer);
     searchTimer = setTimeout(async () => {
       await primeSearch();
       runSearch(v);
     }, 150);
+  });
+  searchInput.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      searchInput.value = '';
+      $('#search-results').classList.remove('open');
+      $('#search-results').innerHTML = '';
+      clearArticleHighlights();
+    }
+  });
+
+  // Event delegation: a single click handler on the results container
+  // covers all current and future hits without re-binding on each render.
+  $('#search-results').addEventListener('click', ev => {
+    const a = ev.target.closest('.search-hit');
+    if (!a) return;
+    ev.preventDefault();
+    const slug = a.dataset.slug;
+    const q = a.dataset.q;
+    if (slug === state.current) {
+      highlightInArticle(q);
+    } else {
+      // Stash the term so renderMarkdownPage / renderTechStack can apply
+      // it after the new article is in the DOM.
+      state.pendingHighlight = q;
+      location.hash = slug;
+    }
+  });
+
+  // A click outside the search area closes the dropdown without losing
+  // the typed query — re-focusing the input re-opens it.
+  document.addEventListener('click', ev => {
+    if (ev.target.closest('.search-wrap')) return;
+    $('#search-results').classList.remove('open');
+  });
+  searchInput.addEventListener('focus', () => {
+    if (searchInput.value.trim()) $('#search-results').classList.add('open');
   });
 }
 

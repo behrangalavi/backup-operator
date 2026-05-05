@@ -25,7 +25,10 @@ func (s *Server) shellHTML() string {
       <span>Backup Operator</span>
       <span class="version">` + escapeHTML(version) + `</span>
     </div>
-    <input id="search" type="search" placeholder="Search…" aria-label="Search documentation"/>
+    <div class="search-wrap">
+      <input id="search" type="search" placeholder="Search…" aria-label="Search documentation"/>
+      <div id="search-results" role="listbox" aria-label="Search results"></div>
+    </div>
     <nav id="nav"></nav>
     <div class="sidebar-foot">
       <a href="/api/pages" target="_blank">JSON</a> ·

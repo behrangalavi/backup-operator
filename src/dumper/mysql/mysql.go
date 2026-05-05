@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"backup-operator/dumper"
@@ -18,6 +20,37 @@ import (
 	"github.com/go-logr/logr"
 	gomysql "github.com/go-sql-driver/mysql"
 )
+
+// mysqldumpSupportsColumnStatistics returns true iff the `mysqldump`
+// binary in PATH understands `--column-statistics`. MySQL 8's official
+// mysqldump does; mariadb-dump (which the alpine `mariadb-client`
+// package symlinks as mysqldump) does not. We probe the binary's help
+// output once per process and cache the result — the dumper is invoked
+// inside a one-shot worker pod, so "once per process" is "once per
+// backup run", which is fine.
+var mysqldumpColumnStatsOnce struct {
+	once    sync.Once
+	support bool
+}
+
+func mysqldumpSupportsColumnStatistics() bool {
+	mysqldumpColumnStatsOnce.once.Do(func() {
+		// `--help` exits 0 on both mysqldump and mariadb-dump and prints
+		// the option list to stdout. Wall-clock budget is tight (~50ms)
+		// so a 5s timeout is generous.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "mysqldump", "--help").CombinedOutput()
+		if err != nil {
+			// Probe failure (binary missing entirely?) — assume not
+			// supported, the dump call itself will surface the real
+			// error if mysqldump is unavailable.
+			return
+		}
+		mysqldumpColumnStatsOnce.support = strings.Contains(string(out), "column-statistics")
+	})
+	return mysqldumpColumnStatsOnce.support
+}
 
 type mysqlDumper struct {
 	cfg    dumper.Config
@@ -45,6 +78,11 @@ func (d *mysqlDumper) Dump(ctx context.Context, w io.Writer) error {
 	//     information_schema.column_statistics, which doesn't exist on
 	//     MariaDB or MySQL <8 — fails the dump even when everything else
 	//     would work. Disabling is the documented compatibility flag.
+	//     BUT: mariadb-dump (the binary that ships under the name
+	//     mysqldump in alpine's mariadb-client package) does not know
+	//     this flag and aborts with "unknown variable
+	//     'column-statistics=0'". We probe `mysqldump --help` once at
+	//     startup and only pass the flag when the binary recognises it.
 	args := []string{
 		"-h", d.cfg.Host,
 		"-P", strconv.Itoa(d.cfg.Port),
@@ -55,8 +93,11 @@ func (d *mysqlDumper) Dump(ctx context.Context, w io.Writer) error {
 		"--triggers",
 		"--events",
 		"--default-character-set=utf8mb4",
-		"--column-statistics=0",
 		d.cfg.Database,
+	}
+	if mysqldumpSupportsColumnStatistics() {
+		// Insert before the trailing database arg.
+		args = append(args[:len(args)-1], append([]string{"--column-statistics=0"}, args[len(args)-1])...)
 	}
 	cmd := exec.CommandContext(ctx, "mysqldump", args...)
 	// Pass the password via MYSQL_PWD instead of `-p<value>` on the command

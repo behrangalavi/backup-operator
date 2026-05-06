@@ -1342,6 +1342,7 @@ function sortRuns(runs) {
     tables:    r => (r.stats && r.stats.tables) ? r.stats.tables.length : null,
     anomalies: r => (r.report && r.report.anomalies) ? r.report.anomalies.length : 0,
     verification: r => r.verification ? r.verification.verdict : '',
+    restoreVerification: r => r.restoreVerification ? r.restoreVerification.verdict : '',
   };
   const s = sortState.runs;
   return sortBy(runs, g[s.col] || g.timestamp, s.dir);
@@ -1739,12 +1740,14 @@ async function renderTargetDetail(name, loading = true) {
         <div class="detail-row"><span class="key">Size</span><span class="val">${humanBytes(target.Latest.encryptedSizeBytes)}</span></div>
         <div class="detail-row"><span class="key">SHA256</span><code class="val" style="font-size:11px">${escHTML((target.Latest.sha256 || '—').substring(0, 16))}${target.Latest.sha256 ? '...' : ''}</code></div>
         <div class="detail-row"><span class="key">Verification</span><span class="val">${renderVerificationBadge(target.Latest.verification)}</span></div>
+        ${target.Latest.restoreVerification ? `<div class="detail-row"><span class="key">Restore Verify</span><span class="val">${renderRestoreVerificationBadge(target.Latest.restoreVerification)}</span></div>` : ''}
         ${renderCharsetRow(target.Latest)}
         ${renderSchemaAgeRow(target.Latest)}
         `) : '<div style="color:var(--text-muted);padding:12px 0">No runs recorded</div>'}
       </div>
     </div>
     ${renderVerificationDetail(target.Latest)}
+    ${renderRestoreVerificationDetail(target.Latest)}
     ${renderAnalysisCoverageCard(target)}
     ${runs.length > 0 ? `
     <div class="chart-grid-2">
@@ -1769,6 +1772,7 @@ async function renderTargetDetail(name, loading = true) {
           <th class="num sortable" onclick="toggleSort('runs','size')">Size${sortIndicator('runs','size')}</th>
           <th>Destinations</th>
           <th class="sortable" onclick="toggleSort('runs','verification')">Verification${sortIndicator('runs','verification')}</th>
+          <th class="sortable" onclick="toggleSort('runs','restoreVerification')">Restore Verify${sortIndicator('runs','restoreVerification')}</th>
           <th class="sortable" onclick="toggleSort('runs','schema')">Schema${sortIndicator('runs','schema')}</th>
           <th class="num sortable" onclick="toggleSort('runs','tables')">Tables${sortIndicator('runs','tables')}</th>
           <th class="sortable" onclick="toggleSort('runs','anomalies')">Anomalies / Error${sortIndicator('runs','anomalies')}</th>
@@ -1787,6 +1791,7 @@ async function renderTargetDetail(name, loading = true) {
               }).join('')
             : '<span style="color:var(--text-muted)">—</span>'}</td>
           <td>${renderVerificationBadge(r.verification)}</td>
+          <td>${renderRestoreVerificationBadge(r.restoreVerification)}</td>
           <td>${renderSchemaCharsetCell(r)}</td>
           <td class="num" style="font-size:12px">${r.stats && r.stats.tables ? r.stats.tables.length : '—'}</td>
           <td>${r.status === 'failed'
@@ -2031,6 +2036,46 @@ function renderVerificationBadge(v) {
   const info = verdictMap[v.verdict] || { cls: 'badge-pending', label: v.verdict };
   const tip = v.summary ? ' title="' + escHTML(v.summary) + '"' : '';
   return `<span class="badge ${info.cls}"${tip}>${info.label}</span>`;
+}
+
+// renderRestoreVerificationBadge renders the verdict for a single run's
+// restoreVerification block (or "—" when absent). Distinct from
+// renderVerificationBadge — that one targets the in-stream DumpVerification
+// produced during the dump. This one targets the post-upload round-trip
+// proof (decrypt → parse / restore against an ephemeral DB pod).
+function renderRestoreVerificationBadge(rv) {
+  if (!rv) return '<span style="color:var(--text-muted)">—</span>';
+  const verdictMap = {
+    'match':    { cls: 'badge-ok',     label: 'Verified' },
+    'mismatch': { cls: 'badge-failed', label: 'Mismatch' },
+    'partial':  { cls: 'badge-warn',   label: 'Partial' },
+    'skipped':  { cls: 'badge-pending',label: 'Skipped' }
+  };
+  const info = verdictMap[rv.verdict] || { cls: 'badge-pending', label: rv.verdict || '?' };
+  const mode = rv.mode ? ' · ' + escHTML(rv.mode) : '';
+  const tip = rv.summary ? ' title="' + escHTML(rv.summary) + '"' : '';
+  return `<span class="badge ${info.cls}"${tip}>${info.label}${mode}</span>`;
+}
+
+function renderRestoreVerificationDetail(run) {
+  if (!run || !run.restoreVerification || run.status === 'failed') return '';
+  const rv = run.restoreVerification;
+  const dur = (rv.durationSeconds != null && !isNaN(rv.durationSeconds))
+    ? rv.durationSeconds.toFixed(1) + 's' : '—';
+  const completed = rv.completedAt ? new Date(rv.completedAt).toLocaleString() : '—';
+  return `
+    <div class="table-card verification-card">
+      <div class="table-card-header">
+        <h2>Restore Verification</h2>
+        ${renderRestoreVerificationBadge(rv)}
+      </div>
+      ${rv.summary ? `<div class="verification-summary">${escHTML(rv.summary)}</div>` : ''}
+      <div class="detail-row"><span class="key">Mode</span><span class="val">${escHTML(rv.mode || '—')}</span></div>
+      <div class="detail-row"><span class="key">Completed</span><span class="val">${completed}</span></div>
+      <div class="detail-row"><span class="key">Duration</span><span class="val">${dur}</span></div>
+      ${rv.ephemeralRecipientFingerprint ? `<div class="detail-row"><span class="key">Ephemeral recipient</span><code class="val" style="font-size:11px">${escHTML(rv.ephemeralRecipientFingerprint)}</code></div>` : ''}
+      ${rv.error ? `<div class="detail-row" style="align-items:flex-start"><span class="key">Error</span><pre class="val" style="color:var(--danger);font-size:12px;white-space:pre-wrap;word-break:break-word;margin:0;background:var(--bg-input);padding:8px;border-radius:4px;max-height:160px;overflow:auto">${escHTML(rv.error)}</pre></div>` : ''}
+    </div>`;
 }
 
 function renderVerificationDetail(run) {

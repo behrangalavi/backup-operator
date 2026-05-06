@@ -24,8 +24,27 @@ config:
   defaultRetentionDays: 30
   defaultMinKeep: 3
 
-# Public age recipient(s) — newline-separated for rotation.
-# Required: the chart will fail to render if this is empty.
+# Public age recipient(s). Required: the chart fails to render if empty.
+#
+# Two forms accepted:
+#
+#   1) Array (recommended for multi-key rotation):
+#        agePublicKeys:
+#          - age1qx...
+#          - age1yz...
+#      Avoids YAML multi-line indentation foot-guns. Works cleanly with
+#      `--set agePublicKeys[0]=age1qx...` from the CLI.
+#
+#   2) String (single key, or newline-separated for rotation):
+#        agePublicKeys: "age1qx..."
+#        agePublicKeys: |-
+#          age1qx...
+#          age1yz...
+#      Backwards-compatible with installs from before the array form
+#      existed.
+#
+# The worker always sees the same newline-separated env-var regardless
+# of which form is used.
 agePublicKeys: ""
 
 resources:

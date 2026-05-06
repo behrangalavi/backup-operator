@@ -95,7 +95,11 @@ age-keygen -o ~/age.key
 
 # 2. Install with the public recipient
 helm install backup-operator ./charts/backup-operator -n backup --create-namespace \
-  --set agePublicKeys="age1qx...your-recipient-here"
+  --set agePublicKeys[0]="age1qx...your-recipient-here"
+# Multi-key rotation:
+#   --set agePublicKeys[0]=age1qx...primary --set agePublicKeys[1]=age1yz...dr
+# String form is also accepted:
+#   --set agePublicKeys="age1qx..."  (single key only — CLI cannot pass a literal newline)
 
 # 3. Label a database Secret as a source
 kubectl -n backup apply -f - <<'EOF'
@@ -981,6 +985,8 @@ The notable ones, with the reasoning that future readers should preserve.
 
 - **`Storage.List()` returns logical paths.** Storage implementations apply `pathPrefix` internally on `Upload`/`Get`/`Delete`. Returning raw server-side paths from `List` would break the round-trip (caller passes `Object.Path` back to `Get`, gets double-prefixed). This is enforced by per-implementation `stripPrefix` helpers.
 
+- **`agePublicKeys` accepts both string and array in Helm values, normalised to newline-separated env-var.** The original interface was a single newline-separated string — clean for the worker (its env-var format is one big string anyway) but fragile at the operator-experience layer: `--set agePublicKeys="age1aaa\nage1bbb"` from the CLI silently produces a single bogus recipient because `\n` doesn't expand without double-quoting through several shells, and YAML multi-line block-scalar indentation is its own foot-gun. Worst case is loud (`crypto.NewFromPublicKeys` fails parse, worker crashes at startup) — not silent encryption to the wrong recipient — but "operator wrote two keys, only one took effect, runs all encrypt to one recipient" is plausible enough to be worth defending against. Fix: `secret-age.yaml` accepts either `string` or `[]string` via `kindIs "slice"`, joins arrays with `\n`, then `trimAll`s before the empty-check. Worker contract is unchanged. The string form is preserved for backward compatibility with installs that predate this; array form is recommended for multi-key rotation because `--set agePublicKeys[0]=age1qx... --set agePublicKeys[1]=age1yz...` works cleanly from any CI shell. The reviewer who flagged this also suggested making it array-only as a breaking change — the dual-form approach captures the ergonomic win at zero migration cost.
+
 - **`age` over GPG.** `age` is purpose-built for streaming public-key encryption, has a clean Go library, and produces compact recipients. GPG carries decades of legacy and a much larger attack surface for a problem we don't have.
 
 - **No notifier built-in.** The cluster already has Alertmanager. Building a Slack/Email notifier would re-invent routing, deduplication, and silencing. Shipping `PrometheusRule` defaults instead is the right interface.
@@ -1144,12 +1150,15 @@ The notable ones, with the reasoning that future readers should preserve.
 # From OCI registry (after release)
 helm install backup-operator oci://ghcr.io/behrangalavi/charts/backup-operator \
   -n backup --create-namespace \
-  --set agePublicKeys="age1qx...your-recipient"
+  --set agePublicKeys[0]="age1qx...your-recipient"
 
 # From local chart (development)
 helm install backup-operator ./charts/backup-operator \
   -n backup --create-namespace \
-  --set agePublicKeys="age1qx...your-recipient"
+  --set agePublicKeys[0]="age1qx...your-recipient"
+
+# Multi-key rotation:
+#   --set agePublicKeys[0]=age1qx...primary --set agePublicKeys[1]=age1yz...dr
 ```
 
 **Defaults to know:**

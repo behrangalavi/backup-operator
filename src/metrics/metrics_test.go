@@ -36,6 +36,7 @@ func TestSettersDoNotPanic(t *testing.T) {
 	SetSchemaChanged("t", true)
 	SetLastRunAnomalies("t", 2)
 	SetLastRunStatus("t", true)
+	SetLastRunDuration("t", "postgres", 42*time.Second)
 	SetLastSuccess("t", "dest", time.Now())
 	SetDestinationFailed("t", "dest", false)
 	IncRetentionDeleted("t", "dest", "dump")

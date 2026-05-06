@@ -208,6 +208,13 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 				metrics.SetTableRowCount(src.TargetName, t.Name, t.RowCount)
 			}
 		}
+		// Failed runs typically fail fast and would systematically
+		// underestimate the gauge, so it tracks the latest *successful* run
+		// only — same rationale as DumpSize and the UI's MedianDuration.
+		if success.DurationSeconds > 0 {
+			metrics.SetLastRunDuration(src.TargetName, success.DBType,
+				time.Duration(success.DurationSeconds*float64(time.Second)))
+		}
 	}
 
 	// Restore-verification: surfaced from the latest meta that carries a

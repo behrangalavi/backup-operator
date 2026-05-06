@@ -215,6 +215,16 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 			metrics.SetLastRunDuration(src.TargetName, success.DBType,
 				time.Duration(success.DurationSeconds*float64(time.Second)))
 		}
+		// Retention status per destination, captured during the pre-upload
+		// sweep. Every destination's latest meta carries the same Retention
+		// block (the sweep runs once across all destinations), so reading
+		// from the success pivot is sufficient. Skip when the run had
+		// retention disabled (Days=0) or no Retention block existed yet
+		// (legacy meta) — leaving the gauge absent is meaningful.
+		for _, rr := range success.Retention {
+			metrics.SetRetentionLastStatus(src.TargetName, rr.Name, rr.Status == meta.StatusSuccess)
+			metrics.SetRetentionLastDeleted(src.TargetName, rr.Name, rr.DeletedDumps)
+		}
 	}
 
 	// Restore-verification: surfaced from the latest meta that carries a

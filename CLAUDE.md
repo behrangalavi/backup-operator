@@ -348,6 +348,7 @@ backup-restore --storage-secret hetzner-sb -n backup --target prod-users \
 |---|---|---|
 | `backup.mogenius.io/name` | Secret name | Logical target name. Used in metrics labels, object paths, CronJob naming. |
 | `backup.mogenius.io/schedule` | `DEFAULT_SCHEDULE` (`0 2 * * *`) | Cron expression for the managed CronJob |
+| `backup.mogenius.io/suspended` | `false` | `true` → reconciler sets `Spec.Suspend=true` on the managed CronJob. Existing artifacts and source config are kept; manual triggers (`kubectl create job --from=cronjob/...` or the UI's Run button) ignore Suspend and still run. The Secret is the source of truth — manual `kubectl patch cronjob ... suspend=true` is overridden on the next reconcile. |
 | `backup.mogenius.io/analyzer-enabled` | `true` | `false` → skip `CollectStats` and analyzer for this source |
 | `backup.mogenius.io/destinations` | unset | Comma-separated allow-list of destination *names*. Empty = fan out to all. |
 | `backup.mogenius.io/retention-days` | `DEFAULT_RETENTION_DAYS` (30) | Delete dumps older than N days. `0` = keep forever. |
@@ -641,7 +642,7 @@ Every dump produces **two** objects per run:
 | Object | Contents | Why this format |
 |---|---|---|
 | `dump-<ts>.sql.gz.age` | gzipped DB dump, age-encrypted | The actual backup payload |
-| `dump-<ts>.meta.json` | target name, db-type, encrypted size, SHA256, run start (`timestamp`), `completedAt` + `durationSeconds` (wall-clock duration), full Stats, full analyzer Report, dump verification, restore verification, per-destination upload results (`destinations` array with name, storageType, status, error) | Lets the next run compute diffs without restoring; lets humans audit without the private key; per-destination results enable multi-storage health monitoring; `durationSeconds` feeds the UI's Jobs progress-bar estimate (median over last N successful runs) |
+| `dump-<ts>.meta.json` | target name, db-type, encrypted size, SHA256, run start (`timestamp`), `completedAt` + `durationSeconds` (wall-clock duration), full Stats, full analyzer Report, dump verification, restore verification, per-destination upload results (`destinations` array with name, storageType, status, error), per-destination retention sweep results (`retention` array with name, status, deletedDumps, deletedMetas, error — pre-upload sweep only) | Lets the next run compute diffs without restoring; lets humans audit without the private key; per-destination results enable multi-storage health monitoring; `durationSeconds` feeds the UI's Jobs progress-bar estimate (median over last N successful runs); `retention` feeds the operator's retention gauges and the `BackupRetentionFailing` alert |
 
 **Timestamp format:** `20060102T150405Z` (Go reference time, ISO-like, lexically sortable).
 
@@ -674,8 +675,8 @@ The histograms (`dump_duration_seconds`, `upload_duration_seconds`, `run_duratio
 | `backup_operator_last_run_duration_seconds` | Gauge | `target`, `db_type` | Wall-clock duration of the most recent **successful** run, reconstructed from `meta.json`'s `durationSeconds`. Failed runs are excluded (they fail fast and would systematically underestimate). The corresponding histogram (`run_duration_seconds`) is observed by the worker but never reaches Prometheus, so this gauge is the only run-timing signal scrape can see. Trade-off: no distribution (P95/P99); use `avg_over_time` / `quantile_over_time` over the gauge for trend analysis. |
 | `backup_operator_last_success_timestamp_seconds` | Gauge | `target`, `destination` | Unix ts parsed from the most recent meta.json found at that destination |
 | `backup_operator_destination_failed` | Gauge | `target`, `destination` | 1 if the destination's storage cannot be initialised, 0 once a meta.json was successfully read |
-| `backup_operator_retention_deleted_total` | Counter | `target`, `destination`, `kind` | Worker-only; not visible to Prometheus |
-| `backup_operator_retention_failed_total` | Counter | `target`, `destination` | Worker-only; not visible to Prometheus |
+| `backup_operator_retention_last_status` | Gauge | `target`, `destination` | 1 if the most recent pre-upload retention sweep for this pair succeeded, 0 otherwise. Reconstructed by the operator from the `retention` block in `meta.json`. Absent until at least one sweep has run. Drives the `BackupRetentionFailing` alert. |
+| `backup_operator_retention_last_deleted_count` | Gauge | `target`, `destination` | Number of dump artifacts deleted by the most recent sweep (excludes meta sidecars). Lets dashboards show "we are actively trimming" vs. "retention runs but nothing to do". |
 | `backup_operator_storage_scrub_passed` | Gauge | `target`, `destination` | 1 if the most recent scrub of this pair matched the recorded SHA256, 0 otherwise. Only present when `STORAGE_SCRUB_ENABLED=true` and at least one scrub has run. |
 | `backup_operator_storage_scrub_last_check_timestamp_seconds` | Gauge | `target`, `destination` | Unix ts of the most recent scrub attempt for this pair |
 | `backup_operator_storage_scrub_failed_total` | Counter | `target`, `destination` | Cumulative scrub failures (mismatch or unreachable). Operator-side, scraped normally. |
@@ -697,6 +698,7 @@ Shipped in the Helm chart's `values.yaml` under `prometheusRule.rules`. The char
 | `BackupSchemaChanged` | `schema_changed == 1` | info |
 | `BackupCharsetChanged` | `charset_changed == 1` | warning |
 | `BackupStorageCorrupted` | `storage_scrub_passed == 0` | **critical** |
+| `BackupRetentionFailing` | `retention_last_status == 0` for 24h | warning |
 | `BackupAnomaliesAppearing` | `last_run_anomalies > 0` for 5m | warning |
 | `BackupLastRunFailed` | `last_run_status == 0` for 5m | warning |
 | `BackupSucceeded` | `time() - last_success_timestamp_seconds < 120` | info |
@@ -732,7 +734,7 @@ These same conditions also surface in the operator UI under `/api/alerts` and `#
 | Source Secret deleted | `OwnerReference` cascades; CronJob deleted by GC | No more runs; existing artifacts in storage untouched |
 | Role label removed (Secret kept) | Reconciler observes label transition and deletes the CronJob | Same as above for scheduling |
 | Worker pod evicted mid-run | Job fails; next tick produces a fresh run | Partial uploads to destinations may exist (they have their own object names per timestamp, so no clashes) |
-| Retention can't delete (perms) | Old dumps remain | Worker logs the error; not visible to Prometheus today (worker-only counters) |
+| Retention can't delete (perms / list / session) | Old dumps remain; the run still succeeds (retention is best-effort) | Pipeline records the failure into the `retention` block of `meta.json`. Operator's `MetricsRefresher` reads it back and sets `retention_last_status{target,destination}=0`. After 24h of persistent failure → `BackupRetentionFailing` (warning) — long enough to ride out a single transient error, short enough to surface real problems before storage fills. |
 | `known-hosts` mismatch | `ssh.NewClientConn` fails before any data leaves | Run fails; worker logs the host-key error |
 | `known-hosts` missing | Worker logs `INSECURE` warning, accepts any host key | No automated alert (intentional — the user opted out) |
 
@@ -751,12 +753,18 @@ The Job runs the same worker code as a scheduled run; metrics, retention, fan-ou
 
 ### Suspend a backup temporarily
 
+Three equivalent ways:
+
 ```bash
-kubectl -n backup patch cronjob backup-prod-users-db \
-  -p '{"spec":{"suspend":true}}'
+# 1. Annotation on the source Secret (canonical — survives CronJob recreation)
+kubectl -n backup annotate secret prod-users-db \
+  backup.mogenius.io/suspended="true" --overwrite
+
+# 2. UI: Pause / Resume button on the source card
+# 3. UI API: POST /api/sources/{secret-name}/suspend  body: {"suspend": true}
 ```
 
-The reconciler does **not** revert this — `suspend` is intentionally something you toggle out-of-band. To resume, set back to `false`.
+The reconciler reads `backup.mogenius.io/suspended` and writes `Spec.Suspend` on the managed CronJob. **Manual `kubectl patch cronjob ... suspend=true` is overridden on the next reconcile** — the Secret is the source of truth. Use the annotation or the UI instead. Manual triggers (`kubectl create job --from=cronjob/...` and the UI's Run button) ignore Suspend, so paused sources can still be exercised on demand for restore drills. To resume: remove the annotation (preferred) or set it to `false`.
 
 ### Change the schedule
 
@@ -1007,6 +1015,8 @@ The notable ones, with the reasoning that future readers should preserve.
 
 - **Operator-side metric aggregation, not Pushgateway.** Backup metrics are produced by short-lived worker pods that Prometheus cannot scrape in time. Three options were considered: (a) Pushgateway, (b) operator aggregates from `meta.json`, (c) drop semantic alerts and rely on kube-state-metrics for Job status. We picked (b): the operator's `MetricsRefresher` controller polls each destination's latest meta.json and writes the result into the operator's local registry. Pushgateway adds a stateful component with known counter-staleness footguns; (c) sacrifices the project's core differentiator (semantic alerts on dump *content*). Aggregating from storage reuses the artifacts we already produce and keeps the system stateless apart from the operator pod itself. Counter-style metrics (`runs_total`, `anomalies_total`) are converted to Gauges (`last_run_status`, `last_run_anomalies`) because monotonic counters require a continuously running producer; reconstructing them from storage would require summing across the retention window and break whenever retention prunes a run.
 
+- **Retention status as Gauge from meta.json, not the worker-side Counter pair.** Two `retention_*_total` Counters used to live in `metrics/metrics.go` (`retention_deleted_total`, `retention_failed_total`). Both were incremented by short-lived worker pods that Prometheus cannot scrape — the metrics never reached Alertmanager. The visible-from-storage failure mode was "retention has been silently failing for weeks; storage fills up; all backups suddenly stop". The fix: pipeline records per-destination outcome (status, deletedDumps, deletedMetas, error) into a new `retention` block on `meta.json` during the pre-upload sweep, and the operator's `MetricsRefresher` reads it back into `retention_last_status{target,destination}` and `retention_last_deleted_count{target,destination}` Gauges. The Counters are deleted (not kept around as dead code). Only the **pre-upload sweep** is captured — the post-upload sweep runs after the meta is already in storage, so its outcome would arrive too late for the same artifact. That's an acceptable gap because the pre-upload sweep is the load-bearing path: if it fails, storage fills; if post-upload fails, the next run trims one extra cohort. New default alert `BackupRetentionFailing` fires after 24h of `retention_last_status==0` — long enough to ride out a single transient error, short enough to surface persistent problems before disk fills. The local-evaluator path (`internal/alerts.LocalProvider`) mirrors the rule but without the 24h debounce — same constraint already documented for the other rules. The retention CRUD events (`RetentionDelete`) on the source Secret remain unchanged, so the K8s-Event audit trail is unaffected.
+
 - **Run duration as a Gauge from meta.json, not as a histogram via Pushgateway.** Run timing was a known observability gap: `run_duration_seconds` (histogram) is observed in the worker but never reaches Prometheus. Reviewers naturally suggested filling it with Pushgateway or OTel. We picked the same pattern the operator-side aggregator already uses for `last_run_status` / `dump_size_bytes`: read `DurationSeconds` out of the most recent successful meta.json and expose it as `last_run_duration_seconds{target,db_type}`. Cost is one Gauge declaration plus three lines in `MetricsRefresher.refreshSource`; the meta.json field already existed (it powers the UI's progress-bar median estimate). Trade-off explicitly accepted: no distribution metric. P95/P99 across runs is not directly available — `quantile_over_time(0.95, last_run_duration_seconds[7d])` is a quantile *over time samples* of the last-run gauge, not over runs. For "is this run slower than usual" the gauge is sufficient (`last_run_duration_seconds / avg_over_time(last_run_duration_seconds[7d]) > 3`); for genuine SLO-style distribution analysis a future OTel export remains the right path. Failed runs are excluded — same logic as the UI's `MedianDuration` and `dump_size_bytes`: failures fail fast (connection refused in <1 s) and would systematically underestimate. The worker-side `dump_duration_seconds` and `upload_duration_seconds` histograms remain unexposed; they observe a phase the meta.json does not currently break out, so giving them the same treatment would require a meta.json schema extension. Deferred until a concrete need surfaces.
 
 - **Separate ServiceAccounts for operator and worker.** The operator SA retains Secret watch, CronJob CRUD, Job watch, Lease CRUD. The worker SA is reduced to Secret get/list + Event create/patch. A compromised worker pod can no longer modify CronJob schedules or leader election leases.
@@ -1121,6 +1131,8 @@ The notable ones, with the reasoning that future readers should preserve.
 - **Phase-2 readiness is engine-specific, not Pod `Ready`.** The stock postgres/mysql/mongo/redis container images don't ship a meaningful `readinessProbe`, and `kubelet Ready=true` only tells us the container started — not that the DB accepts connections. Each engine carries its own `Probe` function (`SELECT 1` via pgx, `mysqladmin ping`, `mongosh runCommand({ping:1})`, `redis-cli PING`) that runs after the kubelet probe passes. Adds 0–10 s in practice. Without it, the entire restore would race the DB's startup phase and produce flaky `psql: connection refused` mismatches.
 
 - **Redis Phase-2 verification is auth + roundtrip, not RDB load.** `redis-cli` has no clean "load this RDB into a running server" path: the supported routes are all "restart the server with `dbfilename=...`", which doesn't fit the spawn-then-restore model. The `DEBUG RELOAD` strategy is fragile across versions. Redis Phase-2 currently confirms the verifier-pod is reachable and authenticatable, plus a `SET`/`GET` roundtrip; Phase-1 `stream-validate` already confirms decryptability + RDB header magic. Real RDB load is a follow-up. The `Notes` field on `SmokeResult` carries a `"redis Phase-2 verification is auth+roundtrip only"` advisory string so operators see the limitation in the meta without having to read the source.
+
+- **Suspended state lives on the source Secret, not on the CronJob.** Pausing a backup used to mean either deleting the source (loses config + history) or `kubectl patch cronjob ... suspend=true` (the previous CLAUDE.md claimed the reconciler "doesn't revert this", but it does — `current.Spec = desired.Spec` in the reconcile loop unconditionally rebuilds the spec, so manual patches were silently lost on the next Secret reconcile). The fix: a new `backup.mogenius.io/suspended` annotation on the source Secret, parsed into `Source.Suspended`, which the reconciler translates into `Spec.Suspend = ptr(src.Suspended)` on every reconcile — deterministic in both directions. Considered alternatives: (a) leave the documented-but-broken kubectl-patch flow alone; (b) preserve manual patches by reading `current.Spec.Suspend` before overwriting; (c) Secret-as-truth (chosen). (a) ships a known foot-gun — operators who follow the doc lose their pause on the next innocuous Secret edit. (b) introduces a third source of truth (kubectl, annotation, code default) and makes "why is this paused?" un-answerable from the Secret alone, which is exactly the property §6.2 guarantees for every other knob. (c) makes the user contract uniform: every behavior toggle is an annotation on the source Secret. UI exposes Pause/Resume buttons that hit a dedicated endpoint (`POST /api/sources/{name}/suspend`) so a one-click pause does not require sending the full source body and risk overwriting a concurrent edit. Manual triggers (`kubectl create job --from=cronjob/...` and the UI's Run button) intentionally ignore Suspend — that is the documented escape hatch for restore drills against paused sources.
 
 ---
 

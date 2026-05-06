@@ -39,8 +39,8 @@ func TestSettersDoNotPanic(t *testing.T) {
 	SetLastRunDuration("t", "postgres", 42*time.Second)
 	SetLastSuccess("t", "dest", time.Now())
 	SetDestinationFailed("t", "dest", false)
-	IncRetentionDeleted("t", "dest", "dump")
-	IncRetentionFailure("t", "dest")
+	SetRetentionLastStatus("t", "dest", true)
+	SetRetentionLastDeleted("t", "dest", 3)
 }
 
 func TestDeleteTargetMetrics(t *testing.T) {

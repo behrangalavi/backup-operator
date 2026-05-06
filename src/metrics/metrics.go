@@ -143,18 +143,23 @@ var (
 		[]string{"target", "destination"},
 	)
 
-	retentionDeletedTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "backup_operator_retention_deleted_total",
-			Help: "Objects removed by the retention policy",
+	// Retention is reconstructed from the latest meta.json's pre-upload
+	// sweep results, same operator-side aggregation pattern as the rest of
+	// the run-level signals. The previous Counter pair was worker-only
+	// dead code: short-lived workers can't be scraped, so retention
+	// failures were invisible until storage filled up.
+	retentionLastStatus = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "backup_operator_retention_last_status",
+			Help: "1 if the most recent pre-upload retention sweep for this pair succeeded, 0 otherwise",
 		},
-		[]string{"target", "destination", "kind"}, // kind = dump | meta | other
+		[]string{"target", "destination"},
 	)
 
-	retentionFailedTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "backup_operator_retention_failed_total",
-			Help: "Retention operations that failed against a destination",
+	retentionLastDeleted = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "backup_operator_retention_last_deleted_count",
+			Help: "Number of dumps deleted by the most recent retention sweep (excludes meta sidecars)",
 		},
 		[]string{"target", "destination"},
 	)
@@ -244,8 +249,8 @@ func Register(registry prometheus.Registerer) {
 		lastRunDurationSeconds,
 		lastSuccessTimestamp,
 		destinationFailed,
-		retentionDeletedTotal,
-		retentionFailedTotal,
+		retentionLastStatus,
+		retentionLastDeleted,
 		storageScrubPassed,
 		storageScrubLastCheck,
 		storageScrubFailedTotal,
@@ -262,12 +267,16 @@ func Register(registry prometheus.Registerer) {
 // not been called (tests that bypass main wiring).
 func Gatherer() prometheus.Gatherer { return gatherer }
 
-func IncRetentionDeleted(target, destination, kind string) {
-	retentionDeletedTotal.WithLabelValues(target, destination, kind).Inc()
+func SetRetentionLastStatus(target, destination string, ok bool) {
+	v := 0.0
+	if ok {
+		v = 1.0
+	}
+	retentionLastStatus.WithLabelValues(target, destination).Set(v)
 }
 
-func IncRetentionFailure(target, destination string) {
-	retentionFailedTotal.WithLabelValues(target, destination).Inc()
+func SetRetentionLastDeleted(target, destination string, count int) {
+	retentionLastDeleted.WithLabelValues(target, destination).Set(float64(count))
 }
 
 func ObserveRunDuration(target, dbType string, d time.Duration) {
@@ -403,6 +412,8 @@ func DeleteTargetMetrics(target string) {
 	runDurationSeconds.DeletePartialMatch(prometheus.Labels{"target": target})
 	dumpDurationSeconds.DeletePartialMatch(prometheus.Labels{"target": target})
 	uploadDurationSeconds.DeletePartialMatch(prometheus.Labels{"target": target})
+	retentionLastStatus.DeletePartialMatch(prometheus.Labels{"target": target})
+	retentionLastDeleted.DeletePartialMatch(prometheus.Labels{"target": target})
 	storageScrubPassed.DeletePartialMatch(prometheus.Labels{"target": target})
 	storageScrubLastCheck.DeletePartialMatch(prometheus.Labels{"target": target})
 	storageScrubFailedTotal.DeletePartialMatch(prometheus.Labels{"target": target})

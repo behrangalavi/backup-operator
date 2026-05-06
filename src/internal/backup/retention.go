@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"backup-operator/internal/meta"
 	"backup-operator/internal/secrets"
-	"backup-operator/metrics"
 	"backup-operator/storage"
 	storageFactory "backup-operator/storage/factory"
 
@@ -40,9 +40,10 @@ type RetentionPolicy struct {
 // Disabled returns true when the policy should not delete anything.
 func (p RetentionPolicy) Disabled() bool { return p.Days <= 0 }
 
-// applyRetention enforces the policy against every destination of the source.
-// Errors against one destination do NOT abort the others — we record them via
-// metrics and move on. The backup run's success status is unaffected by
+// applyRetention enforces the policy against every destination of the source
+// and returns a per-destination result so callers can persist it (e.g. into
+// meta.json) for downstream observability. Errors against one destination
+// do NOT abort the others. The backup run's success status is unaffected by
 // retention failures: deleting old dumps is best-effort.
 func (p *Pipeline) applyRetention(
 	ctx context.Context,
@@ -51,19 +52,22 @@ func (p *Pipeline) applyRetention(
 	policy RetentionPolicy,
 	now time.Time,
 	log logr.Logger,
-) {
+) []meta.RetentionResult {
 	if policy.Disabled() {
 		log.V(1).Info("retention disabled", "target", target)
-		return
+		return nil
 	}
 
+	results := make([]meta.RetentionResult, 0, len(dests))
 	for _, dest := range dests {
-		p.retainForDestination(ctx, dest, target, policy, now, log)
+		results = append(results, p.retainForDestination(ctx, dest, target, policy, now, log))
 	}
+	return results
 }
 
-// retainForDestination handles retention for a single destination, scoped so
-// that defer properly closes any batch session at the end of this call.
+// retainForDestination handles retention for a single destination and returns
+// the structured outcome. Scoped so that defer closes any batch session at
+// the end of this call.
 func (p *Pipeline) retainForDestination(
 	ctx context.Context,
 	dest *secrets.Destination,
@@ -71,12 +75,15 @@ func (p *Pipeline) retainForDestination(
 	policy RetentionPolicy,
 	now time.Time,
 	log logr.Logger,
-) {
+) meta.RetentionResult {
+	res := meta.RetentionResult{Name: dest.Name, Status: meta.StatusSuccess}
+
 	st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, log)
 	if err != nil {
 		log.Error(err, "retention: init storage", "destination", dest.Name)
-		metrics.IncRetentionFailure(target, dest.Name)
-		return
+		res.Status = meta.StatusFailed
+		res.Error = "init storage: " + err.Error()
+		return res
 	}
 
 	// Reuse a single connection for the List + N×Delete batch when the
@@ -86,8 +93,9 @@ func (p *Pipeline) retainForDestination(
 		sess, closer, err := bs.WithSession(ctx)
 		if err != nil {
 			log.Error(err, "retention: open session", "destination", dest.Name)
-			metrics.IncRetentionFailure(target, dest.Name)
-			return
+			res.Status = meta.StatusFailed
+			res.Error = "open session: " + err.Error()
+			return res
 		}
 		defer func() { _ = closer() }()
 		active = sess
@@ -96,13 +104,14 @@ func (p *Pipeline) retainForDestination(
 	objs, err := active.List(ctx, target+"/")
 	if err != nil {
 		log.Error(err, "retention: list", "destination", dest.Name)
-		metrics.IncRetentionFailure(target, dest.Name)
-		return
+		res.Status = meta.StatusFailed
+		res.Error = "list: " + err.Error()
+		return res
 	}
 
 	victims := selectForDeletion(objs, policy, now)
 	if len(victims) == 0 {
-		return
+		return res
 	}
 	log.Info("retention deleting",
 		"destination", dest.Name,
@@ -115,17 +124,34 @@ func (p *Pipeline) retainForDestination(
 		fmt.Sprintf("Retention pruning %d artifacts for target %s from %s (policy: %d days, min-keep %d)",
 			len(victims), target, dest.Name, policy.Days, policy.MinKeep))
 
+	// Track the first delete error per destination — one bad path doesn't
+	// abort the rest, but the destination's overall verdict flips to
+	// failed so dashboards/alerts can act on it.
 	parentDirs := make(map[string]bool)
+	var firstDeleteErr string
 	for _, v := range victims {
 		if err := active.Delete(ctx, v); err != nil {
 			log.Error(err, "retention: delete", "destination", dest.Name, "path", v)
-			metrics.IncRetentionFailure(target, dest.Name)
+			if firstDeleteErr == "" {
+				firstDeleteErr = "delete: " + err.Error()
+			}
 			continue
 		}
-		metrics.IncRetentionDeleted(target, dest.Name, classifyKind(v))
+		switch classifyKind(v) {
+		case "dump":
+			res.DeletedDumps++
+		case "meta":
+			res.DeletedMetas++
+		default:
+			res.DeletedOther++
+		}
 		for dir := path.Dir(v); dir != "." && dir != "/" && dir != target; dir = path.Dir(dir) {
 			parentDirs[dir] = true
 		}
+	}
+	if firstDeleteErr != "" {
+		res.Status = meta.StatusFailed
+		res.Error = firstDeleteErr
 	}
 
 	// Best-effort cleanup of empty parent directories left by date-partitioned
@@ -140,6 +166,7 @@ func (p *Pipeline) retainForDestination(
 			_ = remover.RemoveDirectory(ctx, d)
 		}
 	}
+	return res
 }
 
 // selectForDeletion is the pure decision function — no I/O, fully testable.

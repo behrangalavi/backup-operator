@@ -35,6 +35,7 @@ type targetState struct {
 	lastSuccessTs       map[string]float64 // dest → unix ts
 	destinationFailed   map[string]float64 // dest → 0/1
 	storageScrubPassed  map[string]float64 // dest → 0/1 (only present after a scrub ran)
+	retentionPassed     map[string]float64 // dest → 0/1 (only present after a sweep ran)
 	dumpSizeChangeRatio float64
 	dumpSizeChangeKnown bool
 	schemaChanged       float64
@@ -64,6 +65,7 @@ func (p *LocalProvider) List(ctx context.Context) ([]Alert, error) {
 				lastSuccessTs:      map[string]float64{},
 				destinationFailed:  map[string]float64{},
 				storageScrubPassed: map[string]float64{},
+				retentionPassed:    map[string]float64{},
 			}
 			states[target] = s
 		}
@@ -85,6 +87,8 @@ func (p *LocalProvider) List(ctx context.Context) ([]Alert, error) {
 				getState(target).destinationFailed[labels["destination"]] = val
 			case "backup_operator_storage_scrub_passed":
 				getState(target).storageScrubPassed[labels["destination"]] = val
+			case "backup_operator_retention_last_status":
+				getState(target).retentionPassed[labels["destination"]] = val
 			case "backup_operator_dump_size_change_ratio":
 				s := getState(target)
 				s.dumpSizeChangeRatio = val
@@ -222,6 +226,26 @@ func (p *LocalProvider) List(ctx context.Context) ([]Alert, error) {
 					State:       "firing",
 					ActiveSince: now,
 					Summary:     fmt.Sprintf("Storage scrub failed for %s on %s — dump SHA256 does not match meta.json", target, dest),
+					Source:      "local",
+				})
+			}
+		}
+
+		// 5c. BackupRetentionFailing — per destination. The PrometheusRule
+		// has a 24h "for:" debounce because retention failures aren't
+		// instantly fatal; the local heuristic doesn't honor durations
+		// (documented constraint), so it fires immediately. Operators
+		// see "in-UI" but not "via Alertmanager" until 24h elapsed.
+		for dest, passed := range s.retentionPassed {
+			if passed == 0 {
+				out = append(out, Alert{
+					Alertname:   "BackupRetentionFailing",
+					Target:      target,
+					Destination: dest,
+					Severity:    "warning",
+					State:       "firing",
+					ActiveSince: now,
+					Summary:     fmt.Sprintf("Retention failing for %s on %s — storage will eventually fill", target, dest),
 					Source:      "local",
 				})
 			}

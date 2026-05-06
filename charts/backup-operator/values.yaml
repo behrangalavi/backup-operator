@@ -211,6 +211,17 @@ prometheusRule:
       labels: { severity: critical }
       annotations:
         summary: "Storage scrub failed for backup target {{ $labels.target }} on {{ $labels.destination }} — stored dump SHA256 does not match meta.json (corruption or unreachable)"
+    # Retention failures are individually best-effort (the run still
+    # succeeds), but cumulative failure means storage will eventually
+    # fill and ALL backups stop. 24h ride-out keeps this from firing on
+    # a single transient error while still catching real persistent
+    # problems before they hurt.
+    - alert: BackupRetentionFailing
+      expr: max by (target, destination) (backup_operator_retention_last_status) == 0
+      for: 24h
+      labels: { severity: warning }
+      annotations:
+        summary: "Retention has been failing for backup target {{ $labels.target }} on {{ $labels.destination }} for >24h — storage will eventually fill and block new backups"
     - alert: BackupAnomaliesAppearing
       expr: backup_operator_last_run_anomalies > 0
       for: 5m

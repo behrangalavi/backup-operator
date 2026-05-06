@@ -204,6 +204,67 @@ func (s *Server) handleAPIDeleteSource(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, apiResponse{OK: true})
 }
 
+// handleAPISuspendSource toggles the source's suspended annotation. The
+// reconciler observes the change and writes Spec.Suspend on the managed
+// CronJob. In-flight Jobs are unaffected — Suspend only blocks future ticks,
+// which matches K8s semantics. Body: {"suspend": true|false}.
+//
+// Separate from the regular update endpoint so a one-click pause does not
+// require sending the whole source body (and risk overwriting a concurrent
+// edit). The annotation is removed entirely on resume so cleared sources
+// don't carry a stale "suspended=false".
+func (s *Server) handleAPISuspendSource(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "POST required"})
+		return
+	}
+	rest := trimPrefixPath(r.URL.Path, "/api/sources/")
+	secretName := strings.TrimSuffix(rest, "/suspend")
+	if secretName == "" || strings.Contains(secretName, "/") {
+		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "secret name required"})
+		return
+	}
+
+	var body struct {
+		Suspend bool `json:"suspend"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "invalid JSON"})
+		return
+	}
+
+	existing := &corev1.Secret{}
+	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, existing); err != nil {
+		writeJSON(w, http.StatusNotFound, apiResponse{Message: "secret not found"})
+		return
+	}
+	if existing.Labels[labels.LabelRole] != labels.RoleSource {
+		writeJSON(w, http.StatusForbidden, apiResponse{Message: "not a backup source secret"})
+		return
+	}
+
+	if existing.Annotations == nil {
+		existing.Annotations = map[string]string{}
+	}
+	if body.Suspend {
+		existing.Annotations[labels.AnnotationSuspended] = "true"
+	} else {
+		delete(existing.Annotations, labels.AnnotationSuspended)
+	}
+
+	if err := s.cfg.Client.Update(r.Context(), existing); err != nil {
+		s.cfg.Logger.Error(err, "patch suspend annotation")
+		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "update failed"})
+		return
+	}
+	evType := "source_resumed"
+	if body.Suspend {
+		evType = "source_suspended"
+	}
+	s.broadcast(sseEvent{Type: evType, Data: secretName})
+	writeJSON(w, http.StatusOK, apiResponse{OK: true, Name: secretName})
+}
+
 // --- Destination CRUD ---
 
 func (s *Server) handleAPIListDestinations(w http.ResponseWriter, r *http.Request) {
@@ -820,6 +881,7 @@ func (s *Server) handleAPIGetSource(w http.ResponseWriter, r *http.Request) {
 		Name              string `json:"name"`
 		DBType            string `json:"dbType"`
 		Schedule          string `json:"schedule"`
+		Suspended         bool   `json:"suspended"`
 		Host              string `json:"host"`
 		Port              string `json:"port"`
 		Database          string `json:"database"`
@@ -850,6 +912,7 @@ func (s *Server) handleAPIGetSource(w http.ResponseWriter, r *http.Request) {
 		Name:              name,
 		DBType:            sec.Labels[labels.LabelDBType],
 		Schedule:          sec.Annotations[labels.AnnotationSchedule],
+		Suspended:         strings.EqualFold(strings.TrimSpace(sec.Annotations[labels.AnnotationSuspended]), "true"),
 		Host:              string(sec.Data["host"]),
 		Port:              string(sec.Data["port"]),
 		Database:          string(sec.Data["database"]),

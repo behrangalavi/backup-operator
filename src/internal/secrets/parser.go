@@ -43,6 +43,11 @@ type Source struct {
 	// the dump itself contains zero INSERTs. Default true. Set the annotation
 	// to false on schema-only sources (e.g. an empty template DB).
 	EmptyDumpCheck     bool
+	// Suspended pauses scheduled runs without deleting the source. The
+	// reconciler writes the value into the managed CronJob's Spec.Suspend.
+	// Manual triggers (kubectl create job --from=cronjob) ignore Suspend
+	// entirely — that's the intended escape hatch for one-off restores.
+	Suspended         bool
 	// RestoreVerificationMode is one of the labels.RestoreVerification* values.
 	// Empty annotation → "off". Unknown values fall back to "off" rather than
 	// rejecting the source — a typo on a feature flag must not stop backups.
@@ -143,6 +148,7 @@ func ParseSource(s *corev1.Secret, defaultSchedule string) (*Source, error) {
 		SizeDropThreshold:  parseFloatAnnotation(s.Annotations[labels.AnnotationSizeDropThreshold], -1),
 		AnonymizeTables:    parseBoolAnnotation(s.Annotations[labels.AnnotationAnonymizeTables], false),
 		EmptyDumpCheck:     parseBoolAnnotation(s.Annotations[labels.AnnotationEmptyDumpCheck], true),
+		Suspended:          parseBoolAnnotation(s.Annotations[labels.AnnotationSuspended], false),
 		RestoreVerificationMode:     parseRestoreVerificationMode(s.Annotations[labels.AnnotationRestoreVerificationMode]),
 		RestoreVerificationInterval: parseDurationAnnotation(s.Annotations[labels.AnnotationRestoreVerificationInterval]),
 		VerificationImage:           strings.TrimSpace(s.Annotations[labels.AnnotationVerificationImage]),

@@ -209,6 +209,11 @@ func (r *CronJobReconciler) buildCronJob(sec *corev1.Secret, src *secrets.Source
 		Spec: batchv1.CronJobSpec{
 			Schedule:                   src.Schedule,
 			ConcurrencyPolicy:          concurrency,
+			// Pointer (not bare bool): we want the reconciler to deterministically
+			// drive Suspend from the annotation, including back to false. Manual
+			// `kubectl patch cronjob ... suspend=true` is overridden on next
+			// reconcile — the Secret is the source of truth.
+			Suspend:                    ptr(src.Suspended),
 			SuccessfulJobsHistoryLimit: ptrInt32(3),
 			FailedJobsHistoryLimit:     ptrInt32(3),
 			JobTemplate: batchv1.JobTemplateSpec{

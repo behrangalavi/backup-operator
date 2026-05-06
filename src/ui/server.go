@@ -237,6 +237,11 @@ func limitBodyMiddleware(max int64, next http.Handler) http.Handler {
 }
 
 func (s *Server) routeSourceByMethod(w http.ResponseWriter, r *http.Request) {
+	rest := trimPrefixPath(r.URL.Path, "/api/sources/")
+	if strings.HasSuffix(rest, "/suspend") {
+		s.handleAPISuspendSource(w, r)
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		s.handleAPIGetSource(w, r)

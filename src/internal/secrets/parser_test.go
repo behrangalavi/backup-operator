@@ -89,6 +89,44 @@ func TestParseSource_EmptyDumpCheck_ExplicitFalse(t *testing.T) {
 	}
 }
 
+func TestParseSource_Suspended_DefaultFalse(t *testing.T) {
+	src, err := ParseSource(newSourceSecret(nil), "0 2 * * *")
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if src.Suspended {
+		t.Error("Suspended default should be false (annotation absent → run normally)")
+	}
+}
+
+func TestParseSource_Suspended_ExplicitTrue(t *testing.T) {
+	for _, v := range []string{"true", "TRUE", "1", "yes", "on"} {
+		src, err := ParseSource(newSourceSecret(map[string]string{
+			labels.AnnotationSuspended: v,
+		}), "0 2 * * *")
+		if err != nil {
+			t.Fatalf("value %q: %v", v, err)
+		}
+		if !src.Suspended {
+			t.Errorf("value %q: expected Suspended=true", v)
+		}
+	}
+}
+
+func TestParseSource_Suspended_TypoFallsBack(t *testing.T) {
+	// A typo on this flag must NOT silently pause backups — fall back to
+	// the documented default (false = run normally).
+	src, err := ParseSource(newSourceSecret(map[string]string{
+		labels.AnnotationSuspended: "trueeee",
+	}), "0 2 * * *")
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if src.Suspended {
+		t.Error("Suspended typo must fall back to false, not silently pause backups")
+	}
+}
+
 func TestParseSource_DestinationAllow(t *testing.T) {
 	src, err := ParseSource(newSourceSecret(map[string]string{
 		labels.AnnotationDestinations: "s3-offsite, sftp-local ,, ",

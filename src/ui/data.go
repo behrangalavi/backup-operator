@@ -30,6 +30,7 @@ type targetSummary struct {
 	SecretName   string
 	DBType       string
 	Schedule     string
+	Suspended    bool
 	Destinations []string
 	CreatedAt    time.Time      // Secret CreationTimestamp; read off raw corev1 at access time
 	Latest       *meta.MetaFile // nil if no runs yet
@@ -139,6 +140,7 @@ func (d *k8sData) listTargets(ctx context.Context) ([]targetSummary, error) {
 			SecretName:   src.SecretName,
 			DBType:       src.DBType,
 			Schedule:     src.Schedule,
+			Suspended:    src.Suspended,
 			Destinations: destinationsAllowedFor(src, dests),
 			CreatedAt:    createdAt[src.SecretName],
 			Latest:       latestByTarget[src.TargetName],

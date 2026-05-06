@@ -17,6 +17,12 @@ const (
 	AnnotationDestinations     = "backup.mogenius.io/destinations"
 	AnnotationRetentionDays    = "backup.mogenius.io/retention-days"
 	AnnotationMinKeep          = "backup.mogenius.io/min-keep"
+	// AnnotationSuspended pauses scheduled runs without deleting the source.
+	// True → reconciler writes Spec.Suspend=true on the managed CronJob;
+	// false / absent → Spec.Suspend=false. Source-of-truth lives on the
+	// Secret so manual `kubectl patch cronjob` is overridden on next
+	// reconcile (intentional — CRUD via UI / annotation is the contract).
+	AnnotationSuspended         = "backup.mogenius.io/suspended"
 	AnnotationRowDropThreshold  = "backup.mogenius.io/row-drop-threshold"
 	AnnotationSizeDropThreshold = "backup.mogenius.io/size-drop-threshold"
 	AnnotationAnonymizeTables   = "backup.mogenius.io/anonymize-tables"

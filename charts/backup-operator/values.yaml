@@ -1,5 +1,9 @@
 image:
-  repository: ghcr.io/mogenius/backup-operator
+  # Must match the GitHub-Actions push target. The release workflow uses
+  # `github.repository` for the image name, so `<owner>/<repo>` here has
+  # to track wherever the source lives. Override at install time if you
+  # mirror to another registry.
+  repository: ghcr.io/behrangalavi/backup-operator
   tag: ""           # defaults to chart appVersion
   digest: ""        # set to pin by digest, e.g. "sha256:abc123..." (overrides tag)
   pullPolicy: IfNotPresent

@@ -437,6 +437,53 @@ async function renderSources(loading = true) {
 }
 
 // --- Source Form ---
+
+// Lazy-loaded cluster capabilities. Cached for the page session so
+// every source-form open does not pay a SubjectAccessReview round-trip.
+// Cleared by the SSE 'refresh' tick path is unnecessary — RBAC changes
+// require a Helm upgrade and a page reload anyway.
+let _clusterCapabilitiesCache = null;
+async function getClusterCapabilities() {
+  if (_clusterCapabilitiesCache) return _clusterCapabilitiesCache;
+  try {
+    _clusterCapabilitiesCache = await api('/api/cluster/capabilities');
+  } catch (e) {
+    _clusterCapabilitiesCache = { phase2Allowed: false, reason: 'capability check failed: ' + e.message };
+  }
+  return _clusterCapabilitiesCache;
+}
+
+// Phase-2 modes spawn an ephemeral DB pod and therefore need pods/create
+// in the worker SA's namespace. Phase-1 (stream-validate) does not.
+function isPhase2VerificationMode(mode) {
+  return mode === 'schema-only' || mode === 'sample' || mode === 'full';
+}
+
+// Render the warning banner inside the open source form when the user
+// picks Phase-2 but the cluster currently won't allow it. We do not
+// block save — the source secret is still useful (RBAC may flip on
+// later, or the user may know the schedule won't run until a Helm
+// upgrade lands). The banner just stops the silent "pods is forbidden"
+// dead end.
+function refreshPhase2RBACWarning(formEl, caps) {
+  const select = formEl.elements['restoreVerificationMode'];
+  const banner = formEl.querySelector('#phase2-rbac-warning');
+  if (!select || !banner || !caps) return;
+  const phase2 = isPhase2VerificationMode(select.value);
+  if (!phase2 || caps.phase2Allowed) {
+    banner.style.display = 'none';
+    return;
+  }
+  banner.style.display = 'block';
+  banner.innerHTML =
+    '<strong>⚠ Cluster RBAC blocks Phase-2 verification.</strong> ' +
+    escHTML(caps.reason || 'pods/create is denied for the worker ServiceAccount.') +
+    ' Saving is allowed, but every backup run will fail with <code>pods is forbidden</code> ' +
+    'until a cluster admin sets <code>restoreVerification.enableEphemeralPodSpawn=true</code> ' +
+    'in the Helm values. To proceed without the RBAC change, pick <code>stream-validate</code> — ' +
+    'it does the same decrypt + parse round-trip in-process and needs no extra permissions.';
+}
+
 window.openSourceForm = function(secretName) {
   const isEdit = !!secretName;
   const title = isEdit ? 'Edit Source' : 'New Backup Source';
@@ -489,6 +536,7 @@ window.openSourceForm = function(secretName) {
     </div>
     <div class="form-section"><h4>Restore Verification</h4>
       <div class="hint" style="margin-bottom:12px">Periodically prove the encrypted dump can be restored. The worker generates a one-shot age keypair, encrypts the run with both the DR recipient and the ephemeral one, then re-streams or restores the artifact before the pod terminates. The DR key is unaffected.</div>
+      <div id="phase2-rbac-warning" style="display:none;margin-bottom:12px;padding:10px 12px;border-left:3px solid var(--warning);background:var(--warning-bg);color:var(--warning);font-size:12px;border-radius:4px"></div>
       <div class="form-row">
         <div class="form-group"><label>Mode</label>
           <select name="restoreVerificationMode">
@@ -548,6 +596,21 @@ window.openSourceForm = function(secretName) {
 
   openModal(title, formHTML);
 
+  // Hook the Phase-2 RBAC warning. Capabilities load asynchronously —
+  // when the answer arrives we evaluate against the current dropdown
+  // value, and we also re-evaluate on every change so the banner
+  // appears the moment a user picks schema-only / sample / full while
+  // the cluster has the flag off.
+  const formEl = document.getElementById('sourceForm');
+  if (formEl) {
+    const modeSelect = formEl.elements['restoreVerificationMode'];
+    getClusterCapabilities().then(caps => refreshPhase2RBACWarning(formEl, caps));
+    if (modeSelect) {
+      modeSelect.addEventListener('change',
+        () => getClusterCapabilities().then(caps => refreshPhase2RBACWarning(formEl, caps)));
+    }
+  }
+
   // In create mode we have no preselection to wait for — populate immediately.
   // In edit mode the source fetch below kicks off the picker so we don't fire
   // two fetches and risk the empty-preselection response overwriting the real
@@ -580,6 +643,9 @@ window.openSourceForm = function(secretName) {
       f.restoreVerificationInterval.value = src.restoreVerificationInterval || '';
       f.verificationImage.value = src.verificationImage || '';
       f.verificationVolumeSize.value = src.verificationVolumeSize || '';
+      // Programmatic value-set does not fire a change event, so the
+      // Phase-2 banner needs an explicit nudge after edit-mode populates.
+      getClusterCapabilities().then(caps => refreshPhase2RBACWarning(f, caps));
     }).catch(e => toast('Failed to load source: ' + e.message, 'error'));
   }
 };

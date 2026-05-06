@@ -269,6 +269,7 @@ func main() {
 			AlertsProvider:    alertsProvider,
 			PrometheusURL:     promURL,
 			AlertmanagerURL:   alertmanagerURL,
+			WorkerServiceAccount: config.GetValue("WORKER_SERVICE_ACCOUNT"),
 		})
 		assert.NoError(err, "failed to construct UI server")
 		// Register before manager start so the cache and HTTP listener share

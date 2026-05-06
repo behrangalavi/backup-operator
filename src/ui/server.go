@@ -62,6 +62,13 @@ type Config struct {
 	// for the /api/alerts/status connectivity check (GET /api/v2/status),
 	// and for the /api/alerts/test endpoint (POST /api/v2/alerts).
 	AlertmanagerURL string
+
+	// WorkerServiceAccount is the name of the worker SA in Namespace.
+	// Used by /api/cluster/capabilities to run a SubjectAccessReview
+	// against pods/create — the gate for Phase-2 restore-verification
+	// modes. Empty disables the capability check (the endpoint then
+	// reports "configuration unknown" rather than guessing).
+	WorkerServiceAccount string
 }
 
 // Conservative defaults sized for an enterprise deployment with thousands of
@@ -156,6 +163,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/alerts", s.handleAlerts)
 	mux.HandleFunc("/api/alerts/status", s.handleAlertsStatus)
 	mux.HandleFunc("/api/alerts/test", s.handleAlertsTest)
+
+	mux.HandleFunc("/api/cluster/capabilities", s.handleAPIClusterCapabilities)
 
 	// Downloads
 	mux.HandleFunc("/download/", s.handleDownload)

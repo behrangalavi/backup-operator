@@ -55,6 +55,37 @@ subjects:
     name: {{ include "backup-operator.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 ---
+# Operator ClusterRole — cluster-scoped permissions only. Currently the
+# UI's /api/cluster/capabilities endpoint runs a SubjectAccessReview
+# against the worker SA to answer "would Phase-2 restore-verification
+# actually work?". SubjectAccessReview is a virtual cluster-scoped
+# resource (Create returns the answer; nothing persists), so it cannot
+# live in a namespaced Role. This binding is pure read intent — the
+# operator never escalates a real privilege through it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "backup-operator.fullname" . }}-cluster
+  labels: {{- include "backup-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "backup-operator.fullname" . }}-cluster
+  labels: {{- include "backup-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "backup-operator.fullname" . }}-cluster
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "backup-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
 # Worker Role — minimal privileges: read Secrets, emit audit events.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

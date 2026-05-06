@@ -365,9 +365,19 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 			prevSize = prevMeta.EncryptedSizeBytes
 			prevSchemaChangedAt = prevMeta.SchemaChangedAt
 		}
+		// AnonymizeTables persists hashed table names into meta.json, so the
+		// previous run's Stats.Tables[].Name is already in hashed form.
+		// Compare against fresh real names would treat every prev-table as
+		// "disappeared" — hash the current stats too so prev/curr names line
+		// up and only real schema drift surfaces as anomalies. Real names
+		// stay available via the original `stats` for the metrics path.
+		cmpStats := stats
+		if src.AnonymizeTables && stats != nil {
+			cmpStats = anonymizeStats(stats)
+		}
 		an := p.analyzerForSource(src)
-		report = an.Compare(prevStats, stats, prevSize, encryptedSize)
-		emitAnalyzerMetrics(src.TargetName, report)
+		report = an.Compare(prevStats, cmpStats, prevSize, encryptedSize)
+		emitAnalyzerMetrics(src.TargetName, report, stats)
 		// Carry forward the schema-change timestamp: only bump it on real
 		// drift, otherwise the caller can use the recorded value to age the
 		// schema. First run with no prev: pin to current run timestamp.
@@ -389,9 +399,11 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		if stats != nil {
 			metaStats = anonymizeStats(stats)
 		}
-		if report != nil {
-			metaReport = anonymizeReport(report)
-		}
+		// `report` is already in hashed-name form because the analyzer was
+		// fed cmpStats above (hashed when AnonymizeTables=true). Calling
+		// anonymizeReport here would double-hash Anomalies subjects and
+		// re-process Current/Previous tables that are already hashed —
+		// metaReport keeps the report as-is.
 		if verification != nil {
 			metaVerification = anonymizeVerification(verification)
 		}
@@ -927,7 +939,7 @@ func failureMetaJSON(src *secrets.Source, timestamp, phase string, runStart time
 	return out
 }
 
-func emitAnalyzerMetrics(target string, r *analyzer.Report) {
+func emitAnalyzerMetrics(target string, r *analyzer.Report, realStats *dumper.Stats) {
 	if r == nil {
 		return
 	}
@@ -936,9 +948,12 @@ func emitAnalyzerMetrics(target string, r *analyzer.Report) {
 	}
 	metrics.SetSchemaChanged(target, r.SchemaChanged)
 	metrics.SetCharsetChanged(target, r.CharsetChanged)
-	if r.Current != nil {
-		metrics.SetTableCount(target, len(r.Current.Tables))
-		for _, t := range r.Current.Tables {
+	// Use realStats for table-row-count labels even when the source is
+	// anonymizing for storage. ADR §18: Prometheus stays scrape-only and
+	// keeps real table names; only meta.json gets hashed names.
+	if realStats != nil {
+		metrics.SetTableCount(target, len(realStats.Tables))
+		for _, t := range realStats.Tables {
 			metrics.SetTableRowCount(target, t.Name, t.RowCount)
 		}
 	}
@@ -961,45 +976,6 @@ func anonymizeStats(s *dumper.Stats) *dumper.Stats {
 			Name:      hashTableName(t.Name),
 			RowCount:  t.RowCount,
 			SizeBytes: t.SizeBytes,
-		}
-	}
-	return anon
-}
-
-func anonymizeReport(r *analyzer.Report) *analyzer.Report {
-	anon := &analyzer.Report{
-		SizeChangeRatio: r.SizeChangeRatio,
-		SchemaChanged:   r.SchemaChanged,
-	}
-	if r.Current != nil {
-		anon.Current = anonymizeStats(r.Current)
-	}
-	if r.Previous != nil {
-		anon.Previous = anonymizeStats(r.Previous)
-	}
-	if len(r.Anomalies) > 0 {
-		anon.Anomalies = make([]analyzer.Anomaly, len(r.Anomalies))
-		for i, a := range r.Anomalies {
-			subj := a.Subject
-			if subj != "" && subj != "<dump>" {
-				subj = hashTableName(subj)
-			}
-			anon.Anomalies[i] = analyzer.Anomaly{
-				Kind:    a.Kind,
-				Subject: subj,
-				Detail:  a.Detail,
-			}
-		}
-	}
-	if len(r.TableDiffs) > 0 {
-		anon.TableDiffs = make([]analyzer.TableDiff, len(r.TableDiffs))
-		for i, td := range r.TableDiffs {
-			anon.TableDiffs[i] = analyzer.TableDiff{
-				Name:           hashTableName(td.Name),
-				PrevRows:       td.PrevRows,
-				CurrRows:       td.CurrRows,
-				RowChangeRatio: td.RowChangeRatio,
-			}
 		}
 	}
 	return anon

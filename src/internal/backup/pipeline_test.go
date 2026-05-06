@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"backup-operator/analyzer"
+	"backup-operator/dumper"
 	"backup-operator/internal/meta"
 	"backup-operator/internal/secrets"
 	"backup-operator/storage"
@@ -307,6 +309,49 @@ func TestMetaJSON_WithVerification(t *testing.T) {
 }
 
 // --- anonymization tests ---
+
+// TestAnonymizeTables_NoFalsePositiveDisappeared regresses the bug where
+// AnonymizeTables=true caused every previous-run table to flag as
+// "table-disappeared" on every subsequent run. Root cause: the previous
+// meta's Stats already had hashed names, but the current run's stats had
+// real names, so the analyzer's name-keyed map never matched. Fix:
+// pipeline hashes the current stats (cmpStats) before passing to Compare
+// when AnonymizeTables is on.
+func TestAnonymizeTables_NoFalsePositiveDisappeared(t *testing.T) {
+	realStats := &dumper.Stats{
+		SchemaHash: "abc",
+		Tables: []dumper.TableStats{
+			{Name: "public.users", RowCount: 100, SizeBytes: 1024},
+			{Name: "public.orders", RowCount: 50, SizeBytes: 512},
+		},
+	}
+	// What gets persisted into prev meta.json when AnonymizeTables=true.
+	prevPersisted := anonymizeStats(realStats)
+	// Same DB on the next run — same real names, same row counts. No drift.
+	currReal := &dumper.Stats{
+		SchemaHash: "abc",
+		Tables: []dumper.TableStats{
+			{Name: "public.users", RowCount: 100, SizeBytes: 1024},
+			{Name: "public.orders", RowCount: 50, SizeBytes: 512},
+		},
+	}
+	// What the pipeline now feeds the analyzer instead of currReal.
+	cmpStats := anonymizeStats(currReal)
+
+	a := analyzer.NewAnalyzer()
+	report := a.Compare(prevPersisted, cmpStats, 1000, 1000)
+
+	for _, an := range report.Anomalies {
+		if an.Kind == "table-disappeared" {
+			t.Errorf("unexpected table-disappeared anomaly for %q — anonymized prev should match anonymized curr",
+				an.Subject)
+		}
+	}
+	if len(report.Anomalies) != 0 {
+		t.Errorf("expected zero anomalies for unchanged DB, got %d: %+v",
+			len(report.Anomalies), report.Anomalies)
+	}
+}
 
 func TestHashTableName_Deterministic(t *testing.T) {
 	a := hashTableName("public.users")

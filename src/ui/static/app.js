@@ -471,8 +471,11 @@ window.openSourceForm = function(secretName) {
       </div>
       <div class="form-row">
         <div class="form-group"><label>Destinations</label>
-          <input name="destinations" placeholder="comma-separated or empty for all">
-          <div class="hint">Leave empty to fan out to all destinations</div></div>
+          <div id="destinationsPicker" class="multi-select-list">
+            <div class="multi-select-empty">Loading destinations…</div>
+          </div>
+          <input type="hidden" name="destinations" value="">
+          <div class="hint">Leave all unchecked to fan out to every destination.</div></div>
         <div class="form-group"><label>Anonymize Tables</label>
           <select name="anonymizeTables"><option value="">No</option><option value="true">Yes</option></select></div>
       </div>
@@ -538,6 +541,12 @@ window.openSourceForm = function(secretName) {
 
   openModal(title, formHTML);
 
+  // In create mode we have no preselection to wait for — populate immediately.
+  // In edit mode the source fetch below kicks off the picker so we don't fire
+  // two fetches and risk the empty-preselection response overwriting the real
+  // one if it arrives second.
+  if (!isEdit) loadDestinationsPicker('');
+
   if (isEdit) {
     api('/api/sources/' + secretName).then(src => {
       const f = $('#sourceForm');
@@ -550,7 +559,7 @@ window.openSourceForm = function(secretName) {
       f.username.value = src.username || '';
       f.retentionDays.value = src.retentionDays || '';
       f.minKeep.value = src.minKeep || '';
-      f.destinations.value = src.destinations || '';
+      loadDestinationsPicker(src.destinations || '');
       if (src.anonymizeTables === 'true') f.anonymizeTables.value = 'true';
       // Annotation values come back as the literal string the user wrote
       // ("true" / "false" / ""). Empty == "use default" — leave the select on
@@ -567,6 +576,62 @@ window.openSourceForm = function(secretName) {
     }).catch(e => toast('Failed to load source: ' + e.message, 'error'));
   }
 };
+
+// Renders a checkbox list of all destinations into #destinationsPicker and
+// keeps the hidden `destinations` input in sync as a comma-separated string.
+// `currentValue` is the saved annotation string ("name1,name2"). Names that
+// are present in the saved value but no longer match any known destination
+// are kept as disabled "(missing)" entries so a simple Update doesn't silently
+// drop the allow-list.
+function loadDestinationsPicker(currentValue) {
+  const picker = document.getElementById('destinationsPicker');
+  const hidden = document.querySelector('#sourceForm input[name="destinations"]');
+  if (!picker || !hidden) return;
+  const selected = (currentValue || '').split(',').map(s => s.trim()).filter(Boolean);
+  api('/api/destinations').then(dests => {
+    dests = dests || [];
+    const known = new Set(dests.map(d => d.name));
+    const missing = selected.filter(n => !known.has(n));
+
+    if (dests.length === 0 && missing.length === 0) {
+      picker.innerHTML = '<div class="multi-select-empty">No destinations configured. Create one first, then assign it here.</div>';
+      hidden.value = '';
+      return;
+    }
+
+    const rows = [];
+    for (const d of dests) {
+      const checked = selected.includes(d.name) ? 'checked' : '';
+      rows.push(`<label>
+        <input type="checkbox" value="${escHTML(d.name)}" ${checked}>
+        <span>${escHTML(d.name)}</span>
+        <span class="ms-meta">${escHTML(d.storageType || '')}</span>
+      </label>`);
+    }
+    for (const name of missing) {
+      // Ghost entry: not in the cluster right now (renamed / deleted /
+      // different namespace). Keep it checked so Save doesn't drop it; the
+      // disabled checkbox tells the user something is off.
+      rows.push(`<label class="ms-missing" title="This destination is in the saved allow-list but no destination Secret with that logical name currently exists.">
+        <input type="checkbox" value="${escHTML(name)}" checked disabled data-ghost="1">
+        <span>${escHTML(name)}</span>
+        <span class="ms-meta">missing</span>
+      </label>`);
+    }
+    picker.innerHTML = rows.join('');
+
+    const sync = () => {
+      const checked = picker.querySelectorAll('input[type="checkbox"]:checked');
+      hidden.value = Array.from(checked).map(cb => cb.value).join(',');
+    };
+    picker.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+      cb.addEventListener('change', sync);
+    });
+    sync();
+  }).catch(e => {
+    picker.innerHTML = `<div class="multi-select-empty">Failed to load destinations: ${escHTML(e.message)}</div>`;
+  });
+}
 
 window.submitSourceForm = async function(e, secretName) {
   e.preventDefault();

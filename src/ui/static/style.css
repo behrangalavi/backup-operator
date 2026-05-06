@@ -268,6 +268,32 @@ thead th.sortable:hover { color: var(--text); }
   display: flex; gap: 8px; justify-content: flex-end;
   margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border);
 }
+.multi-select-list {
+  width: 100%; padding: 8px 10px; background: var(--bg-input);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  max-height: 140px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.multi-select-list label {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--text);
+  text-transform: none; letter-spacing: 0; font-weight: 400;
+  margin: 0; padding: 4px 6px; border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.multi-select-list label:hover { background: var(--bg-card-hover); }
+.multi-select-list input[type="checkbox"] {
+  width: auto; margin: 0; cursor: pointer; flex: none;
+}
+.multi-select-list .ms-meta {
+  font-size: 11px; color: var(--text-muted); margin-left: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.multi-select-list label.ms-missing { color: var(--warning); cursor: not-allowed; }
+.multi-select-list label.ms-missing:hover { background: var(--warning-bg); }
+.multi-select-empty {
+  font-size: 12px; color: var(--text-muted); padding: 6px 4px;
+}
 
 /* Charts (pure SVG, no external lib — keeps the binary self-contained). */
 .chart-card {
@@ -546,9 +572,20 @@ rect.hm-out    { fill: transparent; pointer-events: none; }
 /* Responsive */
 /* Verification card */
 .verification-card { margin-bottom: 24px; }
-.verification-card .table-card-header { display: flex; align-items: center; gap: 12px; }
-.verification-summary { padding: 8px 20px 12px; font-size: 13px; color: var(--text-muted); }
+.verification-card .table-card-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.verification-summary {
+  padding: 14px 20px; font-size: 13px; color: var(--text-muted);
+  border-bottom: 1px solid var(--border); line-height: 1.5;
+}
 .verification-card table { font-size: 13px; }
+.verification-card .detail-row {
+  padding: 10px 20px; gap: 16px;
+}
+.verification-card .detail-row + .detail-row { border-top: 1px solid var(--border); }
+.verification-card .detail-row:last-child { padding-bottom: 14px; }
+.verification-card .detail-row pre.val { flex: 1; }
 
 @media (max-width: 768px) {
   #sidebar { width: 60px; }

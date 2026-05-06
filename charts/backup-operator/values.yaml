@@ -47,6 +47,15 @@ workerResources:
     cpu: 250m
     memory: 256Mi
 
+# K8s-native retry on Job failure. Each retry spawns a fresh worker pod
+# with exponential backoff (10s, 20s, 40s, ..., capped at 6m). Catches
+# transient failures (DB blips, brief network partitions) so a 30-second
+# outage during the cron tick doesn't cost a full cron interval of
+# missing backups. Bounded so permanent failures (wrong password, missing
+# bucket) cost at most (1 + workerBackoffLimit) attempts. Set to 0 to
+# disable retries entirely. Range: 0–10.
+workerBackoffLimit: 2
+
 # An emptyDir provides scratch space for the encrypted dump file before
 # fan-out. Size it for the largest expected dump — bump if backups fail
 # with "no space left on device".

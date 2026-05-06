@@ -99,6 +99,21 @@ func main() {
 		{Key: "WORKER_CPU_REQUEST", Optional: true},
 		{Key: "WORKER_MEMORY_REQUEST", Optional: true},
 
+		// K8s-native retry on Job failure. Default 2 = initial attempt + 2
+		// retries with exponential backoff (10s, 20s, 40s, ... capped at
+		// 6m). Bounds the cost of permanent failures while catching
+		// transient ones (DB blips, brief network partitions). 0 disables.
+		{Key: "WORKER_BACKOFF_LIMIT", Optional: true, Default: "2", Validate: func(v string) error {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return fmt.Errorf("'WORKER_BACKOFF_LIMIT' must be integer: %w", err)
+			}
+			if n < 0 || n > 10 {
+				return fmt.Errorf("'WORKER_BACKOFF_LIMIT' must be between 0 and 10")
+			}
+			return nil
+		}},
+
 		// UI dashboard — read-only timeline of run history. Disabled by
 		// default to keep the operator's surface minimal; flip UI_ENABLED
 		// to expose it on UI_ADDR.
@@ -169,6 +184,7 @@ func main() {
 	assert.NoError(mgr.AddReadyzCheck("readyz", healthz.Ping), "failed to add readyz check")
 
 	runTimeoutSec, _ := strconv.Atoi(config.GetValue("RUN_TIMEOUT_SECONDS"))
+	backoffLimit, _ := strconv.Atoi(config.GetValue("WORKER_BACKOFF_LIMIT"))
 
 	worker := controllers.WorkerSpec{
 		Image:              config.GetValue("WORKER_IMAGE"),
@@ -178,6 +194,7 @@ func main() {
 		TempDir:            config.GetValue("TEMP_DIR"),
 		TempDirSize:        config.GetValue("TEMP_DIR_SIZE"),
 		RunTimeoutSeconds:  int64(runTimeoutSec),
+		BackoffLimit:       int32(backoffLimit),
 		RetentionDaysDef:   config.GetValue("DEFAULT_RETENTION_DAYS"),
 		MinKeepDef:         config.GetValue("DEFAULT_MIN_KEEP"),
 		DefaultSchedule:    config.GetValue("DEFAULT_SCHEDULE"),

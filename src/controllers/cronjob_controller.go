@@ -36,6 +36,11 @@ type WorkerSpec struct {
 	TempDir            string
 	TempDirSize        string // e.g. "10Gi"
 	RunTimeoutSeconds  int64
+	// BackoffLimit caps K8s-native Job retries on failure. 0 = no retries
+	// (one attempt, then fail). Default in main.go is 2; tunable via the
+	// WORKER_BACKOFF_LIMIT env var so transient DB/network blips don't
+	// cost a full cron interval of missing backups.
+	BackoffLimit       int32
 	RetentionDaysDef   string
 	MinKeepDef         string
 	DefaultSchedule    string
@@ -208,7 +213,7 @@ func (r *CronJobReconciler) buildCronJob(sec *corev1.Secret, src *secrets.Source
 			FailedJobsHistoryLimit:     ptrInt32(3),
 			JobTemplate: batchv1.JobTemplateSpec{
 				Spec: batchv1.JobSpec{
-					BackoffLimit:          ptrInt32(0),
+					BackoffLimit:          ptrInt32(r.Worker.BackoffLimit),
 					ActiveDeadlineSeconds: &r.Worker.RunTimeoutSeconds,
 					// Auto-clean both scheduled and manually-triggered Jobs
 					// 24h after they finish. Failure history lives in the

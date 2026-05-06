@@ -83,6 +83,8 @@ spec:
             {{- end }}
             {{- end }}
             {{- end }}
+            - name: WORKER_BACKOFF_LIMIT
+              value: {{ .Values.workerBackoffLimit | default 2 | quote }}
             {{- if .Values.ui.enabled }}
             - name: UI_ENABLED
               value: "true"

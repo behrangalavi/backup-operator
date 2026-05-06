@@ -190,12 +190,27 @@ func TestSortedMetaPaths_NoMetas(t *testing.T) {
 
 func TestMetaJSON_SuccessStatus(t *testing.T) {
 	src := testSource("prod-db", "postgres")
-	m := metaJSON(src, nil, nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, nil)
+	m := metaJSON(src, nil, "", nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, nil, nil)
 	if !bytes.Contains(m, []byte(`"status": "success"`)) {
 		t.Error("meta should contain status=success")
 	}
 	if !bytes.Contains(m, []byte(`"sha256": "abc123"`)) {
 		t.Error("meta should contain sha256")
+	}
+	if bytes.Contains(m, []byte(`"statsError"`)) {
+		t.Error("empty statsError must be omitted from JSON, not serialised as \"\"")
+	}
+}
+
+func TestMetaJSON_StatsErrorPresent(t *testing.T) {
+	src := testSource("prod-db", "postgres")
+	m := metaJSON(src, nil, `connect: failed to connect to "postgres://app:***@db:5432/app": permission denied`,
+		nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, nil, nil)
+	if !bytes.Contains(m, []byte(`"statsError":`)) {
+		t.Error("non-empty statsError must be serialised")
+	}
+	if !bytes.Contains(m, []byte(`permission denied`)) {
+		t.Error("statsError content should round-trip into the meta JSON")
 	}
 }
 
@@ -205,7 +220,7 @@ func TestMetaJSON_WithDestinations(t *testing.T) {
 		{Name: "hetzner", StorageType: "sftp", Status: meta.StatusSuccess},
 		{Name: "aws-s3", StorageType: "s3", Status: meta.StatusFailed, Error: "connection refused"},
 	}
-	m := metaJSON(src, nil, nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, drs, nil)
+	m := metaJSON(src, nil, "", nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, drs, nil, nil)
 	if !bytes.Contains(m, []byte(`"destinations"`)) {
 		t.Error("meta should contain destinations array")
 	}
@@ -214,6 +229,24 @@ func TestMetaJSON_WithDestinations(t *testing.T) {
 	}
 	if !bytes.Contains(m, []byte(`"connection refused"`)) {
 		t.Error("meta should contain error for failed destination")
+	}
+}
+
+func TestMetaJSON_WithRetention(t *testing.T) {
+	src := testSource("prod-db", "postgres")
+	rr := []meta.RetentionResult{
+		{Name: "hetzner", Status: meta.StatusSuccess, DeletedDumps: 2, DeletedMetas: 2},
+		{Name: "aws-s3", Status: meta.StatusFailed, Error: "list: connection refused"},
+	}
+	m := metaJSON(src, nil, "", nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, nil, rr)
+	if !bytes.Contains(m, []byte(`"retention"`)) {
+		t.Error("meta should contain retention block")
+	}
+	if !bytes.Contains(m, []byte(`"deletedDumps": 2`)) {
+		t.Error("meta should record dump deletions")
+	}
+	if !bytes.Contains(m, []byte(`"list: connection refused"`)) {
+		t.Error("meta should contain retention error string")
 	}
 }
 
@@ -240,7 +273,7 @@ func TestMetaJSON_WithRestoreVerification(t *testing.T) {
 		EphemeralRecipientFingerprint: "abc1234567890def",
 		DurationSeconds:               1.23,
 	}
-	m := metaJSON(src, nil, nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, rv)
+	m := metaJSON(src, nil, "", nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, rv, nil)
 	if !bytes.Contains(m, []byte(`"restoreVerification"`)) {
 		t.Error("meta should contain restoreVerification")
 	}
@@ -261,7 +294,7 @@ func TestMetaJSON_WithVerification(t *testing.T) {
 			{Name: "users", PreDumpRows: 100, PostDumpRows: 100, DumpRows: 100, Verdict: "match"},
 		},
 	}
-	m := metaJSON(src, nil, nil, v, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, nil)
+	m := metaJSON(src, nil, "", nil, v, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, nil, nil)
 	if !bytes.Contains(m, []byte(`"verification"`)) {
 		t.Error("meta should contain verification")
 	}

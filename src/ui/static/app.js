@@ -302,7 +302,7 @@ async function renderDashboard(loading = true) {
           <td class="num row-num">${i + 1}</td>
           <td><a href="#/target/${escHTML(t.Name)}" style="color:var(--accent);font-weight:600">${escHTML(t.Name)}</a></td>
           <td><span class="badge badge-${t.DBType}">${t.DBType}</span></td>
-          <td><code style="font-size:12px;background:var(--bg-input);padding:2px 6px;border-radius:4px">${escHTML(t.Schedule)}</code></td>
+          <td><code style="font-size:12px;background:var(--bg-input);padding:2px 6px;border-radius:4px">${escHTML(t.Schedule)}</code>${t.Suspended ? ' <span class="badge badge-warn" style="margin-left:4px" title="Scheduled runs are paused; manual triggers still work">Paused</span>' : ''}</td>
           <td>${t.Latest ? (t.Latest.status === 'failed'
             ? failedBadge(t.Latest)
             : '<span class="badge badge-ok">OK</span>')
@@ -313,6 +313,9 @@ async function renderDashboard(loading = true) {
           <td>${(t.Destinations || []).map(d => `<span class="badge badge-sftp" style="margin:1px">${escHTML(d)}</span>`).join('')}</td>
           <td style="white-space:nowrap">
             <button class="btn btn-ghost btn-sm" onclick="triggerBackup('${escHTML(t.Name)}')" title="Trigger a manual backup run now (creates a one-off Job from the CronJob template)">&#9654;</button>
+            ${t.Suspended
+              ? `<button class="btn btn-ghost btn-sm" style="color:var(--success)" onclick="toggleSourceSuspend('${escHTML(t.SecretName)}','${escHTML(t.Name)}',false)" title="Resume scheduled runs">&#9655;&#9655;</button>`
+              : `<button class="btn btn-ghost btn-sm" style="color:var(--warning)" onclick="toggleSourceSuspend('${escHTML(t.SecretName)}','${escHTML(t.Name)}',true)" title="Pause scheduled runs — sets backup.mogenius.io/suspended=true. Existing dumps kept; manual triggers still work.">&#10074;&#10074;</button>`}
             <button class="btn btn-ghost btn-sm" onclick="openSourceForm('${escHTML(t.SecretName)}')" title="Edit this source's connection details and schedule">&#9998;</button>
             <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteSource('${escHTML(t.SecretName)}','${escHTML(t.Name)}')" title="Delete this source — the CronJob is cascaded; existing dumps in storage are kept">&#10005;</button>
           </td>
@@ -407,13 +410,14 @@ async function renderSources(loading = true) {
           <div>
             <div style="font-weight:600;font-size:15px;color:var(--text-heading)">${escHTML(t.Name)}</div>
             <span class="badge badge-${t.DBType}" style="margin-top:6px">${t.DBType}</span>
+            ${t.Suspended ? '<span class="badge badge-warn" style="margin-top:6px;margin-left:4px" title="Scheduled runs are paused; manual triggers still work">Paused</span>' : ''}
           </div>
           ${t.Latest ? (t.Latest.status === 'failed'
             ? failedBadge(t.Latest)
             : '<span class="badge badge-ok">OK</span>')
             : '<span class="badge badge-pending">No runs</span>'}
         </div>
-        <div class="detail-row"><span class="key">Schedule</span><code class="val">${escHTML(t.Schedule)}</code></div>
+        <div class="detail-row"><span class="key">Schedule</span><code class="val">${escHTML(t.Schedule)}${t.Suspended ? ' <span style="color:var(--warning);font-weight:600">(paused)</span>' : ''}</code></div>
         <div class="detail-row"><span class="key">Last run</span><span class="val">${t.Latest ? timeAgo(t.Latest.timestamp) : 'never'}</span></div>
         ${t.Latest && t.Latest.status === 'failed' && t.Latest.error ? `
         <div class="detail-row" style="align-items:flex-start"><span class="key">Error</span><span class="val" style="color:var(--danger);font-size:12px;word-break:break-word" title="${escHTML(t.Latest.error)}">${escHTML(truncate(t.Latest.error, 140))}</span></div>` : ''}
@@ -421,7 +425,10 @@ async function renderSources(loading = true) {
         <div class="detail-row"><span class="key">Destinations</span><span class="val">${(t.Destinations||[]).join(', ') || 'all'}</span></div>
         ${verificationRow(t)}
         <div style="display:flex;gap:6px;margin-top:12px;justify-content:flex-end">
-          <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();triggerBackup('${escHTML(t.Name)}')" title="Trigger a manual backup run now (creates a one-off Job from the CronJob template)">&#9654; Run</button>
+          <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();triggerBackup('${escHTML(t.Name)}')" title="Trigger a manual backup run now (creates a one-off Job from the CronJob template; pause-state ignored for manual triggers)">&#9654; Run</button>
+          ${t.Suspended
+            ? `<button class="btn btn-ghost btn-sm" style="color:var(--success)" onclick="event.stopPropagation();toggleSourceSuspend('${escHTML(t.SecretName)}','${escHTML(t.Name)}',false)" title="Resume scheduled runs — the reconciler clears Spec.Suspend on the managed CronJob within seconds">Resume</button>`
+            : `<button class="btn btn-ghost btn-sm" style="color:var(--warning)" onclick="event.stopPropagation();toggleSourceSuspend('${escHTML(t.SecretName)}','${escHTML(t.Name)}',true)" title="Pause scheduled runs — sets backup.mogenius.io/suspended=true on the source Secret. Existing dumps and config are kept; manual Run still works.">Pause</button>`}
           <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openSourceForm('${escHTML(t.SecretName)}')" title="Edit this source's connection details and schedule">Edit</button>
           <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="event.stopPropagation();deleteSource('${escHTML(t.SecretName)}','${escHTML(t.Name)}')" title="Delete this source — the managed CronJob is removed via OwnerReference; existing dumps in storage are kept">Delete</button>
         </div>
@@ -2128,6 +2135,12 @@ function renderRestoreVerificationDetail(run) {
   const dur = (rv.durationSeconds != null && !isNaN(rv.durationSeconds))
     ? rv.durationSeconds.toFixed(1) + 's' : '—';
   const completed = rv.completedAt ? new Date(rv.completedAt).toLocaleString() : '—';
+  // statsError lives on the run, not on rv: it explains *why* preTables
+  // was empty and therefore why a schema-only / sample / full verifier
+  // ended up Skipped. Without surfacing it here, the operator sees
+  // "Skipped" with no reason and reaches for unrelated toggles.
+  const skippedHint = (rv.verdict === 'skipped' && run.statsError)
+    ? `<div class="detail-row" style="align-items:flex-start"><span class="key">Stats error</span><pre class="val" style="color:var(--warn,#f0b400);font-size:12px;white-space:pre-wrap;word-break:break-word;margin:0;background:var(--bg-input);padding:8px;border-radius:4px;max-height:160px;overflow:auto" title="The pre-dump CollectStats call failed, so the verifier had no preTables to compare against. Fix the underlying access (DB permissions, network) — the analyzer toggle is unrelated.">${escHTML(run.statsError)}</pre></div>` : '';
   return `
     <div class="table-card verification-card">
       <div class="table-card-header">
@@ -2139,6 +2152,7 @@ function renderRestoreVerificationDetail(run) {
       <div class="detail-row"><span class="key">Completed</span><span class="val">${completed}</span></div>
       <div class="detail-row"><span class="key">Duration</span><span class="val">${dur}</span></div>
       ${rv.ephemeralRecipientFingerprint ? `<div class="detail-row"><span class="key">Ephemeral recipient</span><code class="val" style="font-size:11px">${escHTML(rv.ephemeralRecipientFingerprint)}</code></div>` : ''}
+      ${skippedHint}
       ${rv.error ? `<div class="detail-row" style="align-items:flex-start"><span class="key">Error</span><pre class="val" style="color:var(--danger);font-size:12px;white-space:pre-wrap;word-break:break-word;margin:0;background:var(--bg-input);padding:8px;border-radius:4px;max-height:160px;overflow:auto">${escHTML(rv.error)}</pre></div>` : ''}
     </div>`;
 }
@@ -2188,6 +2202,22 @@ window.triggerBackup = async function(targetName) {
     await api('/api/trigger/' + targetName, { method: 'POST' });
     toast('Backup triggered for ' + targetName, 'success');
   } catch(e) { toast('Trigger failed: ' + e.message, 'error'); }
+};
+
+// Pause/resume scheduled runs without deleting the source. Hits the
+// dedicated suspend endpoint so we don't have to send the full source
+// body — that endpoint only patches the suspended annotation.
+window.toggleSourceSuspend = async function(secretName, displayName, suspend) {
+  try {
+    await api('/api/sources/' + secretName + '/suspend', {
+      method: 'POST',
+      body: JSON.stringify({ suspend }),
+    });
+    toast(suspend ? `Paused ${displayName}` : `Resumed ${displayName}`, 'success');
+    renderPage(currentPage());
+  } catch(e) {
+    toast((suspend ? 'Pause' : 'Resume') + ' failed: ' + e.message, 'error');
+  }
 };
 
 // --- Settings Wizard ---

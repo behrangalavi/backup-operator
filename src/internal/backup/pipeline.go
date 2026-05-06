@@ -196,10 +196,17 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	}
 
 	var preStats *dumper.Stats
+	var preStatsError string
 	if src.AnalyzerEnabled {
 		s, statsErr := d.CollectStats(ctx)
 		if statsErr != nil {
-			log.V(1).Info("pre-dump stats collection skipped", "reason", statsErr.Error())
+			// Sanitize before persisting/logging — driver errors can echo the
+			// connection URI (and thus the password) back. Surfaced at Info
+			// level and into meta.json so a silent permission failure stops
+			// presenting as an unexplained "skipped" verifier verdict.
+			preStatsError = dumper.SanitizeStderr(statsErr.Error(), src.Config.Password)
+			log.Info("pre-dump stats collection failed; preStats unavailable for analyzer and verifier",
+				"target", src.TargetName, "reason", preStatsError)
 		} else {
 			preStats = s
 		}
@@ -396,10 +403,18 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	// Without this, a full storage stays full forever (upload fails → retention
 	// never runs → deadlock). Safe because MinKeep protects the N most recent
 	// existing backups. Best-effort: failures here do not abort the run.
+	//
+	// The pre-upload sweep's per-destination result is the one we persist
+	// into meta.json. The post-upload sweep below runs after the meta is
+	// already in storage, so its results would arrive too late for the same
+	// artifact. Pre-upload is the load-bearing path anyway: if it fails,
+	// storage is filling up; if post-upload fails, we just have one extra
+	// timestamp until next run.
 	policy := p.resolvePolicy(src)
+	var retentionResults []meta.RetentionResult
 	if !policy.Disabled() {
 		log.V(1).Info("running pre-upload retention sweep")
-		p.applyRetention(ctx, dests, src.TargetName, policy, time.Now(), log)
+		retentionResults = p.applyRetention(ctx, dests, src.TargetName, policy, time.Now(), log)
 	}
 
 	// Phase 1: fan-out dumps to all destinations, collecting per-destination results.
@@ -430,7 +445,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	}
 
 	// Phase 2: build meta with destination results, upload to successful destinations.
-	metaBytes := metaJSON(src, metaStats, metaReport, metaVerification, encryptedSize, sha256sum, timestamp, runStart, schemaChangedAt, destResults, restoreVerification)
+	metaBytes := metaJSON(src, metaStats, preStatsError, metaReport, metaVerification, encryptedSize, sha256sum, timestamp, runStart, schemaChangedAt, destResults, restoreVerification, retentionResults)
 	p.uploadMeta(ctx, dests, destResults, metaPath, metaBytes, log)
 
 	metrics.SetLastRunStatus(src.TargetName, true)
@@ -865,7 +880,7 @@ func sortedMetaPaths(objs []storage.Object) []string {
 	return out
 }
 
-func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report, verification *meta.DumpVerification, size int64, sha256sum, timestamp string, runStart time.Time, schemaChangedAt time.Time, destResults []meta.DestinationResult, restoreVerification *meta.RestoreVerificationResult) []byte {
+func metaJSON(src *secrets.Source, stats *dumper.Stats, statsError string, report *analyzer.Report, verification *meta.DumpVerification, size int64, sha256sum, timestamp string, runStart time.Time, schemaChangedAt time.Time, destResults []meta.DestinationResult, restoreVerification *meta.RestoreVerificationResult, retention []meta.RetentionResult) []byte {
 	completedAt := time.Now().UTC()
 	m := meta.MetaFile{
 		Target:              src.TargetName,
@@ -878,10 +893,12 @@ func metaJSON(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report,
 		CompletedAt:         completedAt,
 		DurationSeconds:     completedAt.Sub(runStart).Seconds(),
 		Stats:               stats,
+		StatsError:          statsError,
 		Report:              report,
 		Verification:        verification,
 		RestoreVerification: restoreVerification,
 		Destinations:        destResults,
+		Retention:           retention,
 	}
 	out, _ := json.MarshalIndent(m, "", "  ")
 	return out

@@ -38,6 +38,27 @@ type DestinationResult struct {
 	Error       string `json:"error,omitempty"`
 }
 
+// RetentionResult records the outcome of a single destination's retention
+// sweep. Only the pre-upload sweep is captured here — the post-upload sweep
+// runs after the meta is in storage, so its results would arrive too late
+// to land in the same artifact. That is acceptable: the pre-upload sweep is
+// the load-bearing path (it frees space for the new dump), the post-upload
+// sweep just trims one extra cohort if the new artifact pushed the count
+// above threshold.
+//
+// Status mirrors the DestinationResult constants ("success" / "failed").
+// DeletedDumps / DeletedMetas / DeletedOther break down what was pruned so
+// dashboards can answer "are we trimming actual data or just stale meta
+// sidecars".
+type RetentionResult struct {
+	Name          string `json:"name"`
+	Status        string `json:"status"`
+	DeletedDumps  int    `json:"deletedDumps,omitempty"`
+	DeletedMetas  int    `json:"deletedMetas,omitempty"`
+	DeletedOther  int    `json:"deletedOther,omitempty"`
+	Error         string `json:"error,omitempty"`
+}
+
 // Verification verdict constants.
 const (
 	VerificationMatch    = "match"
@@ -127,6 +148,14 @@ type MetaFile struct {
 	CompletedAt        time.Time        `json:"completedAt,omitempty"`
 	DurationSeconds    float64          `json:"durationSeconds,omitempty"`
 	Stats              *dumper.Stats    `json:"stats,omitempty"`
+	// StatsError records the sanitized message from a failed pre-dump
+	// CollectStats call. Without it, a permission / connect failure on
+	// pg_stat_user_tables (or its MySQL / Mongo equivalents) leaves
+	// Stats==nil with no operator-visible signal — the surface symptom
+	// is a "skipped" restore-verification verdict (no preTables to
+	// compare). Empty when stats collection succeeded or the analyzer
+	// is disabled by annotation.
+	StatsError         string           `json:"statsError,omitempty"`
 	Report             *analyzer.Report `json:"report,omitempty"`
 	Verification       *DumpVerification `json:"verification,omitempty"`
 	// RestoreVerification is set when a restore-verifier ran for this run.
@@ -134,6 +163,10 @@ type MetaFile struct {
 	// Verification (dump-stream check) — both can coexist on the same run.
 	RestoreVerification *RestoreVerificationResult `json:"restoreVerification,omitempty"`
 	Destinations       []DestinationResult `json:"destinations,omitempty"`
+	// Retention captures the pre-upload retention sweep's outcome per
+	// destination. Empty when retention is disabled (Days==0) or the run
+	// failed before retention ran. See RetentionResult for details.
+	Retention          []RetentionResult `json:"retention,omitempty"`
 
 	// Path within the destination, populated when fetched via List+Get so
 	// callers can deep-link or correlate to the encrypted dump alongside.

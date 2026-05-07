@@ -940,7 +940,13 @@ window.submitSourceForm = async function(e, secretName) {
     retentionDays: f.retentionDays.value,
     minKeep: f.minKeep.value,
     destinations: f.destinations.value,
-    anonymizeTables: f.anonymizeTables.value === 'true' ? true : null,
+    // Two-option select ("Yes" / "No") — always emit a concrete bool. The
+    // tri-state pattern below (analyzerEnabled / emptyDumpCheck) sends null
+    // for "use default" because those have a third option in the form;
+    // anonymizeTables doesn't, so null here meant "user picked No but I
+    // discarded the choice" — the backend's merge then left the previous
+    // annotation in place, silently ignoring the change.
+    anonymizeTables: f.anonymizeTables.value === 'true',
     analyzerEnabled: triState(f.analyzerEnabled.value),
     emptyDumpCheck: triState(f.emptyDumpCheck.value),
     rowDropThreshold: f.rowDropThreshold.value,

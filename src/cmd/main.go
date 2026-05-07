@@ -17,6 +17,7 @@ import (
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -218,6 +219,31 @@ func main() {
 		Interval:  time.Duration(refreshSec) * time.Second,
 	}
 	assert.NoError(mgr.Add(refresher), "failed to register metrics refresher")
+
+	// Recipient reconciler: watches Secrets labeled role=age-recipient and
+	// materialises them into the operator-managed merged Secret named by
+	// AGE_SECRET_NAME — the same name worker pods reference via
+	// `secretKeyRef`. So the chart can bootstrap recipients with
+	// per-Secret files and the operator owns the merged target.
+	recipientReconciler := &controllers.RecipientReconciler{
+		Client:           mgr.GetClient(),
+		Logger:           ctrl.Log.WithName("recipient-reconciler"),
+		Namespace:        watchNs,
+		MergedSecretName: config.GetValue("AGE_SECRET_NAME"),
+	}
+
+	// Bootstrap before the manager starts so the merged Secret exists with
+	// the right content before any CronJob tick can race against an empty
+	// or missing target. Uses a non-cached client because the manager's
+	// cache only starts during mgr.Start(). Bootstrap also runs the
+	// one-time legacy migration (single AGE_PUBLIC_KEYS Secret →
+	// per-recipient Secrets) so a helm upgrade from the pre-reconciler
+	// chart fans recipients out automatically.
+	bootstrapClient, err := client.New(cfg, client.Options{Scheme: mgr.GetScheme()})
+	assert.NoError(err, "failed to create bootstrap client")
+	recipientReconciler.Bootstrap(context.Background(), bootstrapClient)
+
+	assert.NoError(recipientReconciler.SetupWithManager(mgr), "failed to setup recipient reconciler")
 
 	if config.GetValue("STORAGE_SCRUB_ENABLED") == "true" {
 		scrubHours, _ := strconv.Atoi(config.GetValue("STORAGE_SCRUB_INTERVAL_HOURS"))

@@ -7,8 +7,9 @@ const (
 	LabelDBType      = "backup.mogenius.io/db-type"
 	LabelStorageType = "backup.mogenius.io/storage-type"
 
-	RoleSource      = "source"
-	RoleDestination = "destination"
+	RoleSource        = "source"
+	RoleDestination   = "destination"
+	RoleAgeRecipient  = "age-recipient"
 
 	AnnotationName             = "backup.mogenius.io/name"
 	AnnotationSchedule         = "backup.mogenius.io/schedule"
@@ -42,6 +43,18 @@ const (
 	// DB pod). stream-validate ignores both.
 	AnnotationVerificationImage      = "backup.mogenius.io/verification-image"
 	AnnotationVerificationVolumeSize = "backup.mogenius.io/verification-volume-size"
+
+	// RecipientPublicKeyField is the Secret data key under which a
+	// per-recipient Secret stores its single age public key. The operator's
+	// RecipientReconciler reads this from every Secret labeled
+	// role=age-recipient and merges them into the worker-mounted
+	// MergedRecipientsField on a single operator-managed Secret.
+	RecipientPublicKeyField = "public-key"
+
+	// MergedRecipientsField is the data key on the operator-managed merged
+	// Secret. Newline-separated list of recipients, matching the env-var
+	// format the worker has always consumed via `secretKeyRef`.
+	MergedRecipientsField = "AGE_PUBLIC_KEYS"
 )
 
 // Restore-verification mode values. RestoreVerificationOff /

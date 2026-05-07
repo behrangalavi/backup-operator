@@ -219,6 +219,7 @@ src/
 ├── controllers/
 │   ├── cronjob_controller.go  # Source Secret → batch/v1.CronJob
 │   ├── metrics_refresher.go   # Reconstructs run-level Gauges from each destination's latest meta.json
+│   ├── recipient_reconciler.go # role=age-recipient Secrets → merged Secret AGE_PUBLIC_KEYS; one-time legacy migration in Bootstrap()
 │   └── storage_scrub.go       # Periodic SHA256 verification of stored dumps (silent corruption detector)
 ├── crypto/              # age public-key encryption + private-key decryption
 ├── dumper/              # DB dump abstraction
@@ -342,7 +343,7 @@ backup-restore --storage-secret hetzner-sb -n backup --target prod-users \
 
 | Label | Required | Values |
 |---|---|---|
-| `backup.mogenius.io/role` | **yes** | `source` \| `destination` |
+| `backup.mogenius.io/role` | **yes** | `source` \| `destination` \| `age-recipient` |
 | `backup.mogenius.io/db-type` | yes (sources only) | `postgres` \| `mysql` \| `mariadb` \| `mongo` \| `redis` |
 | `backup.mogenius.io/storage-type` | yes (destinations only) | `sftp` \| `hetzner-sftp` \| `s3` |
 
@@ -408,6 +409,34 @@ A typo on a feature-flag annotation falls back to the default rather than reject
 | `region` | no | Defaults to `us-east-1`; non-AWS providers usually ignore this |
 | `endpoint` | no | Required for non-AWS (MinIO, Hetzner Object Storage, R2, B2, Wasabi). Omit for AWS. |
 | `path-style` | no | `"true"` for MinIO etc. that require path-style addressing. |
+
+### 6.6 Age-recipient Secrets
+
+Each age public key the worker should encrypt to lives in its **own**
+Secret labeled `backup.mogenius.io/role=age-recipient`. The operator's
+`RecipientReconciler` watches them and materialises a single merged
+Secret (named by the operator's `AGE_SECRET_NAME` env, default
+`<release>-age`) which worker pods mount via `secretKeyRef`. This
+matches the source/destination discovery model — drop a labeled Secret,
+the operator picks it up.
+
+| Annotation | Effect |
+|---|---|
+| `backup.mogenius.io/name` | Logical recipient name; surfaced in events and the UI Age-Keys page. |
+
+| Data key | Required | Notes |
+|---|---|---|
+| `public-key` | **yes** | A single age recipient line (`age1...`). Newline-separated multi-key strings are *not* supported here — one Secret per key. |
+
+How they're created:
+
+- **Helm install bootstrap:** the chart fans out `agePublicKeys` (string or array) into one labeled Secret per entry, named `<release>-recipient-<index>`.
+- **UI Age-Keys page:** create-on-add, delete-on-remove. Names follow `backup-recipient-<sha256-prefix>` so re-adding the same key is idempotent.
+- **GitOps:** apply your own labeled Secret manifests under `recipients/`. The operator picks them up like any other.
+
+Removing the last recipient is refused by the UI — leaving zero
+recipients makes the worker unable to encrypt at all. Apply via
+`kubectl delete` bypasses that guard at your own risk.
 
 ---
 
@@ -604,9 +633,12 @@ Operator's machine (offline):
                                   └── private: AGE-SECRET-KEY-1...
 
 Cluster (online):
-  Helm install --set agePublicKeys="age1qx..."
-   └── creates Secret backup-operator-age with key AGE_PUBLIC_KEYS
-        └── mounted into every worker pod via secretKeyRef in the CronJob spec
+  Helm install --set agePublicKeys[0]=age1qx...
+   └── creates one labeled Secret per recipient (role=age-recipient)
+        └── operator's RecipientReconciler watches them
+             └── materialises a merged Secret <release>-age with
+                 AGE_PUBLIC_KEYS = newline-joined recipient list
+                  └── mounted into every worker pod via secretKeyRef
 
 Worker pod runtime:
   cmd/worker reads AGE_PUBLIC_KEYS env
@@ -741,6 +773,7 @@ These same conditions also surface in the operator UI under `/api/alerts` and `#
 | Retention can't delete (perms / list / session) | Old dumps remain; the run still succeeds (retention is best-effort) | Pipeline records the failure into the `retention` block of `meta.json`. Operator's `MetricsRefresher` reads it back and sets `retention_last_status{target,destination}=0`. After 24h of persistent failure → `BackupRetentionFailing` (warning) — long enough to ride out a single transient error, short enough to surface real problems before storage fills. |
 | `known-hosts` mismatch | `ssh.NewClientConn` fails before any data leaves | Run fails; worker logs the host-key error |
 | `known-hosts` missing | Worker logs `INSECURE` warning, accepts any host key | No automated alert (intentional — the user opted out) |
+| Helm upgrade from pre-RecipientReconciler chart | Helm deletes the legacy single `<release>-age` Secret as part of removing it from its manifest set; the new operator pod runs `Bootstrap` on startup which re-materialises the merged Secret from per-recipient Secrets | Brief gap (a few seconds) between Helm-delete and operator-recreate. A CronJob tick that races into the gap fails with `secret not found`; the next tick succeeds. One-time on the first upgrade; subsequent upgrades are gap-free. |
 
 ---
 
@@ -931,7 +964,7 @@ This section documents the complete data lifecycle for compliance audits (DSGVO/
 
 ### 17.3 Key Management
 
-- **Public key** (`age` recipient): stored in a K8s Secret (`backup-operator-age`), distributed to worker pods via env var. Used only for encryption.
+- **Public keys** (`age` recipients): one Secret per recipient (`role=age-recipient` label, `public-key` data field). The operator's `RecipientReconciler` materialises a merged Secret (`<release>-age`) that worker pods mount via `secretKeyRef`. Used only for encryption. Per-Secret form means lifecycle is decoupled from Helm releases (UI-added or GitOps-applied recipients survive `helm uninstall`).
 - **Private key** (`age` identity): **never enters the cluster**. Lives on the operator's machine. Required only for `backup-restore` CLI.
 - **SSH keys** (SFTP destinations): stored in destination Secrets. Scoped to individual storage backends.
 - **S3 credentials**: stored in destination Secrets. Should use scoped IAM roles with minimal write permissions.
@@ -984,6 +1017,8 @@ The notable ones, with the reasoning that future readers should preserve.
 - **Single dump → fan-out via temp file.** Streaming the encrypted dump to N destinations simultaneously means the slowest destination throttles the dump phase. Materialising once locally costs `emptyDir` space but decouples destinations.
 
 - **`Storage.List()` returns logical paths.** Storage implementations apply `pathPrefix` internally on `Upload`/`Get`/`Delete`. Returning raw server-side paths from `List` would break the round-trip (caller passes `Object.Path` back to `Get`, gets double-prefixed). This is enforced by per-implementation `stripPrefix` helpers.
+
+- **Per-recipient Secrets via `role=age-recipient`, materialised by an operator reconciler.** Originally the chart shipped a single Secret containing all recipients newline-joined under `AGE_PUBLIC_KEYS`. Worker contract was clean, but the *human* contract had three rough edges: (a) UI-added keys lived inside a Helm-managed object, so `helm upgrade --reuse-values` could silently revert them; (b) lifecycle of "this person's recipient" was not a first-class object, only a substring of the central Secret; (c) the discovery story diverged from the rest of the system, where sources and destinations are picked up by labels. Refactor: each recipient is its own Secret labeled `role=age-recipient` with one `public-key` data field. A new `RecipientReconciler` watches them, sorts deterministically, joins `\n`, and writes the result to the operator-managed merged Secret named by `AGE_SECRET_NAME` — the very name the CronJob template already references via `secretKeyRef`. Worker contract therefore unchanged; what changed is *who creates and owns* the merged Secret. Migration: `Bootstrap()` runs at operator startup BEFORE the manager — if it sees a legacy single-Secret with `AGE_PUBLIC_KEYS` and zero per-recipient Secrets, it splits the legacy keys into per-recipient Secrets (idempotent: `AlreadyExists` on Create is treated as success). Helm-upgrade scenario: Helm deletes the old chart-managed merged Secret as part of removing it from its manifest set; operator's Bootstrap immediately re-materialises it from the per-recipient Secrets that the new chart created. Brief gap (a few seconds) on the first upgrade — documented in §14, accepted as a one-time migration cost rather than a permanent helm hook. Considered alternatives: (1) Helm `pre-upgrade` hook job that bridges the migration — rejected because it leaves permanent hook complexity in the chart for a one-time event; (2) renaming the merged Secret to a new name to avoid the helm-delete window — rejected because it would force every CronJob to be re-templated and re-applied. Trade-offs preserved: real names stay in Prometheus metrics (we never expose recipient *content* there anyway), the existing `agePublicKeys` Helm value still works (chart fans it out into N labeled Secrets), the UI Age-Keys page now CRUDs per-recipient Secrets directly so add/remove is atomic without RMW races on a shared blob.
 
 - **`agePublicKeys` accepts both string and array in Helm values, normalised to newline-separated env-var.** The original interface was a single newline-separated string — clean for the worker (its env-var format is one big string anyway) but fragile at the operator-experience layer: `--set agePublicKeys="age1aaa\nage1bbb"` from the CLI silently produces a single bogus recipient because `\n` doesn't expand without double-quoting through several shells, and YAML multi-line block-scalar indentation is its own foot-gun. Worst case is loud (`crypto.NewFromPublicKeys` fails parse, worker crashes at startup) — not silent encryption to the wrong recipient — but "operator wrote two keys, only one took effect, runs all encrypt to one recipient" is plausible enough to be worth defending against. Fix: `secret-age.yaml` accepts either `string` or `[]string` via `kindIs "slice"`, joins arrays with `\n`, then `trimAll`s before the empty-check. Worker contract is unchanged. The string form is preserved for backward compatibility with installs that predate this; array form is recommended for multi-key rotation because `--set agePublicKeys[0]=age1qx... --set agePublicKeys[1]=age1yz...` works cleanly from any CI shell. The reviewer who flagged this also suggested making it array-only as a breaking change — the dual-form approach captures the ergonomic win at zero migration cost.
 

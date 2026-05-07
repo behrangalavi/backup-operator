@@ -100,13 +100,39 @@
       "testAlert": "Envoyer une alerte de test",
       "amStatus": "État Alertmanager",
       "promStatus": "État Prometheus",
-      "connected": "connecté",
-      "unreachable": "injoignable"
+      "connected": "Connecté",
+      "unreachable": "Injoignable",
+      "notConfigured": "Non configuré",
+      "connectionStatus": "État de la connexion",
+      "mode": "Mode",
+      "modePrometheus": "Prometheus (référence)",
+      "modeLocal": "Heuristique locale (sans for:)",
+      "modeNone": "Indisponible",
+      "subtitle": "Supervision des alertes de sauvegarde",
+      "rulesReference": "Référence des règles d'alerte",
+      "rulesReferenceSub": "{count} règles intégrées au chart Helm",
+      "alertCol": "Alerte",
+      "severityCol": "Sévérité",
+      "conditionCol": "Condition",
+      "descriptionCol": "Description"
     },
     "audit": {
       "title": "Journal d'audit",
       "subtitle": "Événements Kubernetes émis par l'opérateur et le worker",
-      "empty": "Aucun événement d'audit enregistré."
+      "empty": "Aucun événement d'audit",
+      "emptyAll": "Aucune sauvegarde, action de rétention ou modification de configuration enregistrée pour l'instant. Les événements apparaîtront dès qu'une sauvegarde s'exécute ou qu'une source/destination/clé est modifiée.",
+      "emptyFiltered": "Aucun événement dans cette catégorie. Essayez Tous pour voir tout ce qui a été émis.",
+      "category": {
+        "all": "Tous",
+        "backup": "Sauvegardes",
+        "retention": "Rétention",
+        "keys": "Clés age",
+        "config": "Configuration",
+        "other": "Autres"
+      },
+      "events": "événements",
+      "of": "sur",
+      "component": "Composant"
     },
     "settings": {
       "title": "Paramètres",
@@ -117,11 +143,46 @@
       "review": "Vérifier & appliquer",
       "applied": "Paramètres appliqués",
       "exportHint": "Téléchargez un values.yaml correspondant à ces paramètres — committez-le dans Git puis lancez helm upgrade.",
+      "notAvailable": "Paramètres indisponibles",
       "section": {
         "schedule": "Planification & Timeout",
         "retention": "Politique de rétention",
         "worker": "Ressources du worker",
         "review": "Vérifier & appliquer"
+      },
+      "wizard": {
+        "scheduleDesc": "Configurer la planification par défaut et le timeout d'exécution.",
+        "retentionDesc": "Contrôler la durée de conservation et le minimum de sécurité.",
+        "workerDesc": "Limites CPU/mémoire pour les pods worker démarrés par les CronJobs.",
+        "reviewDesc": "Vérifiez les paramètres avant d'enregistrer. Les changements prennent effet immédiatement.",
+        "limits": "Limites",
+        "requests": "Requêtes",
+        "note": "Cliquez sur \"Exporter values.yaml\" pour télécharger un fichier Helm pour vos flux GitOps.",
+        "label": {
+          "defaultSchedule": "Cron par défaut",
+          "runTimeout": "Timeout d'exécution (secondes)",
+          "retentionDays": "Jours de rétention",
+          "minKeep": "Conserver au moins",
+          "tempDir": "Répertoire temporaire",
+          "tempDirSize": "Taille du temp",
+          "cpuLimit": "Limite CPU",
+          "memoryLimit": "Limite mémoire",
+          "cpuRequest": "Requête CPU",
+          "memoryRequest": "Requête mémoire",
+          "timeout": "Timeout"
+        },
+        "hint": {
+          "schedule": "Expression cron pour les nouvelles sources sans planification. Ex. : \"0 2 * * *\" = quotidien à 2 h.",
+          "timeout": "Durée maximale d'une exécution avant arrêt. 3600 = 1 heure.",
+          "retentionDays": "Les sauvegardes plus anciennes sont supprimées. 0 = illimité.",
+          "minKeep": "Toujours conserver au moins ce nombre, peu importe l'âge.",
+          "tempDir": "Espace de travail pour les dumps chiffrés avant upload.",
+          "tempDirSize": "Limite de taille emptyDir. À augmenter pour les gros dumps.",
+          "cpuLimit": "ex. 2000m = 2 cœurs",
+          "memoryLimit": "ex. 2Gi, 512Mi",
+          "cpuRequest": "CPU minimum garanti",
+          "memoryRequest": "Mémoire minimum garantie"
+        }
       }
     }
   },
@@ -308,6 +369,46 @@
     "triggerFailed": "Échec du déclenchement : {error}",
     "paused": "Suspendu",
     "resumed": "Repris"
+  },
+  "ageKeys": {
+    "title": "Destinataires de chiffrement (clés publiques age)",
+    "titleShort": "Destinataires de chiffrement",
+    "intro": "Chaque Secret étiqueté contient un destinataire age. L'opérateur les fusionne dans la variable AGE_PUBLIC_KEYS du worker à chaque reconcile.",
+    "noKeys": "Aucun destinataire de chiffrement configuré.",
+    "noKeysHint": "Ajoutez au moins une clé publique age pour que les pods worker puissent chiffrer les dumps.",
+    "addNew": "Ajouter une nouvelle clé publique",
+    "publicKey": "Clé publique (age1…)",
+    "name": "Nom (optionnel)",
+    "namePlaceholder": "alice-laptop",
+    "added": "Destinataire ajouté",
+    "addFailed": "Échec de l'ajout : {error}",
+    "removed": "Destinataire supprimé",
+    "removeFailed": "Échec de la suppression : {error}",
+    "removeConfirm": "Supprimer le destinataire {name} ? Les pods worker ne chiffreront plus pour cette clé. Les dumps existants restent déchiffrables avec la clé privée correspondante.",
+    "readOnly": "Mode lecture seule — la modification des destinataires est désactivée."
+  },
+  "card": {
+    "storageByDestination": "Stockage par destination",
+    "storageSubtitle": "dernier dump réussi par cible",
+    "tablesLatest": "Tables — dernière exécution",
+    "tablesSubtitle": "{count} table · tendance sur {runs} exécution",
+    "tablesSubtitlePlural": "{count} tables · tendance sur {runs} exécutions",
+    "dumpVerification": "Vérification d'intégrité du dump",
+    "restoreVerificationCard": "Vérification de restauration",
+    "failedToLoad": "Échec du chargement",
+    "storageUnreachable": "Stockage inaccessible"
+  },
+  "stat": {
+    "healthy": "Sains",
+    "failed": "Échec",
+    "running": "En cours",
+    "critical": "Critique",
+    "warning": "Avertissement",
+    "info": "Info",
+    "totalSize": "Taille totale",
+    "backups": "Sauvegardes",
+    "oldest": "Plus ancien",
+    "newest": "Plus récent"
   },
   "alertname": {
     "BackupOverdue": "Sauvegarde en retard",

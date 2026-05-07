@@ -100,13 +100,39 @@
       "testAlert": "Testalarm senden",
       "amStatus": "Alertmanager-Status",
       "promStatus": "Prometheus-Status",
-      "connected": "verbunden",
-      "unreachable": "nicht erreichbar"
+      "connected": "Verbunden",
+      "unreachable": "Nicht erreichbar",
+      "notConfigured": "Nicht konfiguriert",
+      "connectionStatus": "Verbindungsstatus",
+      "mode": "Modus",
+      "modePrometheus": "Prometheus (verbindlich)",
+      "modeLocal": "Lokale Heuristik (ohne for:-Debounce)",
+      "modeNone": "Nicht verfügbar",
+      "subtitle": "Backup-Alarm-Überwachung",
+      "rulesReference": "Alarm-Regeln Referenz",
+      "rulesReferenceSub": "{count} eingebaute Regeln aus dem Helm-Chart",
+      "alertCol": "Alarm",
+      "severityCol": "Schweregrad",
+      "conditionCol": "Bedingung",
+      "descriptionCol": "Beschreibung"
     },
     "audit": {
       "title": "Audit-Trail",
       "subtitle": "Kubernetes-Events vom Backup-Operator und Worker",
-      "empty": "Noch keine Audit-Events erfasst."
+      "empty": "Keine Audit-Events",
+      "emptyAll": "Noch keine Backup-Läufe, Aufbewahrungsaktionen oder Konfigurationsänderungen erfasst. Events erscheinen hier, sobald ein Backup läuft oder du eine Quelle/Ziel/age-Key änderst.",
+      "emptyFiltered": "Keine Events in dieser Kategorie. Wähle Alle, um alles zu sehen.",
+      "category": {
+        "all": "Alle",
+        "backup": "Backup-Läufe",
+        "retention": "Aufbewahrung",
+        "keys": "Age-Keys",
+        "config": "Konfiguration",
+        "other": "Andere"
+      },
+      "events": "Events",
+      "of": "von",
+      "component": "Komponente"
     },
     "settings": {
       "title": "Einstellungen",
@@ -117,11 +143,46 @@
       "review": "Prüfen & Anwenden",
       "applied": "Einstellungen angewendet",
       "exportHint": "Lade ein values.yaml herunter, das diese Einstellungen abbildet — committe es nach Git und führe helm upgrade aus.",
+      "notAvailable": "Einstellungen nicht verfügbar",
       "section": {
         "schedule": "Zeitplan & Timeout",
         "retention": "Aufbewahrung",
         "worker": "Worker-Ressourcen",
         "review": "Prüfen & Anwenden"
+      },
+      "wizard": {
+        "scheduleDesc": "Standard-Zeitplan und Ausführungs-Timeout konfigurieren.",
+        "retentionDesc": "Wie lange Backups behalten werden und Mindestschutz festlegen.",
+        "workerDesc": "CPU- und Speicher-Limits für die Worker-Pods, die der CronJob startet.",
+        "reviewDesc": "Einstellungen prüfen vor dem Speichern. Änderungen greifen sofort für neue Läufe.",
+        "limits": "Limits",
+        "requests": "Anforderungen",
+        "note": "Klicke \"values.yaml exportieren\", um eine Helm-kompatible Datei für GitOps-Workflows herunterzuladen.",
+        "label": {
+          "defaultSchedule": "Standard-Cron-Plan",
+          "runTimeout": "Run-Timeout (Sekunden)",
+          "retentionDays": "Aufbewahrungstage",
+          "minKeep": "Mindestens behalten",
+          "tempDir": "Temp-Verzeichnis",
+          "tempDirSize": "Temp-Größe",
+          "cpuLimit": "CPU-Limit",
+          "memoryLimit": "Speicher-Limit",
+          "cpuRequest": "CPU-Anforderung",
+          "memoryRequest": "Speicher-Anforderung",
+          "timeout": "Timeout"
+        },
+        "hint": {
+          "schedule": "Cron-Ausdruck für neue Quellen ohne eigenen Zeitplan. Beispiel: \"0 2 * * *\" = täglich 02:00.",
+          "timeout": "Maximale Dauer eines Backup-Laufs, danach Abbruch. 3600 = 1 Stunde.",
+          "retentionDays": "Ältere Backups werden gelöscht. 0 = unbegrenzt behalten.",
+          "minKeep": "Mindestens so viele Backups behalten, unabhängig vom Alter.",
+          "tempDir": "Arbeitsverzeichnis für verschlüsselte Dumps vor Upload.",
+          "tempDirSize": "emptyDir-Größenlimit. Für große Dumps erhöhen.",
+          "cpuLimit": "z.B. 2000m = 2 Kerne",
+          "memoryLimit": "z.B. 2Gi, 512Mi",
+          "cpuRequest": "Garantiertes CPU-Minimum",
+          "memoryRequest": "Garantierter Speicher-Mindestwert"
+        }
       }
     }
   },
@@ -308,6 +369,46 @@
     "triggerFailed": "Auslösen fehlgeschlagen: {error}",
     "paused": "Pausiert",
     "resumed": "Fortgesetzt"
+  },
+  "ageKeys": {
+    "title": "Verschlüsselungs-Empfänger (age Public Keys)",
+    "titleShort": "Verschlüsselungs-Empfänger",
+    "intro": "Jedes gelabelte Secret enthält einen age-Empfänger. Der Operator führt sie bei jedem Reconcile in der AGE_PUBLIC_KEYS Env des Workers zusammen.",
+    "noKeys": "Keine Verschlüsselungs-Empfänger konfiguriert.",
+    "noKeysHint": "Füge mindestens einen age Public Key hinzu, damit Worker-Pods Dumps verschlüsseln können.",
+    "addNew": "Neuen Public Key hinzufügen",
+    "publicKey": "Public Key (age1…)",
+    "name": "Name (optional)",
+    "namePlaceholder": "alice-laptop",
+    "added": "Empfänger hinzugefügt",
+    "addFailed": "Hinzufügen fehlgeschlagen: {error}",
+    "removed": "Empfänger entfernt",
+    "removeFailed": "Entfernen fehlgeschlagen: {error}",
+    "removeConfirm": "Empfänger {name} entfernen? Worker-Pods verschlüsseln nicht mehr für diesen Key. Vorhandene Dumps bleiben mit dem zugehörigen Private Key entschlüsselbar.",
+    "readOnly": "Nur-Lese-Modus — Änderung von Empfängern deaktiviert."
+  },
+  "card": {
+    "storageByDestination": "Speicher pro Ziel",
+    "storageSubtitle": "letzter erfolgreicher Dump pro Target",
+    "tablesLatest": "Tabellen — letzter Lauf",
+    "tablesSubtitle": "{count} Tabelle · Verlauf über {runs} Lauf",
+    "tablesSubtitlePlural": "{count} Tabellen · Verlauf über {runs} Läufe",
+    "dumpVerification": "Dump-Integritätsprüfung",
+    "restoreVerificationCard": "Restore-Verifikation",
+    "failedToLoad": "Laden fehlgeschlagen",
+    "storageUnreachable": "Speicher nicht erreichbar"
+  },
+  "stat": {
+    "healthy": "Gesund",
+    "failed": "Fehlgeschlagen",
+    "running": "Laufend",
+    "critical": "Kritisch",
+    "warning": "Warnung",
+    "info": "Info",
+    "totalSize": "Gesamtgröße",
+    "backups": "Backups",
+    "oldest": "Ältestes",
+    "newest": "Neuestes"
   },
   "alertname": {
     "BackupOverdue": "Backup überfällig",

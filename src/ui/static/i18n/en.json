@@ -100,13 +100,39 @@
       "testAlert": "Send Test Alert",
       "amStatus": "Alertmanager status",
       "promStatus": "Prometheus status",
-      "connected": "connected",
-      "unreachable": "unreachable"
+      "connected": "Connected",
+      "unreachable": "Unreachable",
+      "notConfigured": "Not configured",
+      "connectionStatus": "Connection Status",
+      "mode": "Mode",
+      "modePrometheus": "Prometheus (canonical)",
+      "modeLocal": "Local Heuristic (no for: debounce)",
+      "modeNone": "Not available",
+      "subtitle": "Backup alert monitoring",
+      "rulesReference": "Alert Rules Reference",
+      "rulesReferenceSub": "{count} built-in rules shipped with the Helm chart",
+      "alertCol": "Alert",
+      "severityCol": "Severity",
+      "conditionCol": "Condition",
+      "descriptionCol": "Description"
     },
     "audit": {
       "title": "Audit Trail",
       "subtitle": "Kubernetes Events emitted by the backup operator and worker",
-      "empty": "No audit events recorded yet."
+      "empty": "No audit events",
+      "emptyAll": "No backup runs, retention actions, or configuration changes have been recorded yet. Events appear here as soon as a backup runs or you change a source/destination/age key.",
+      "emptyFiltered": "No events in this category. Try All to see everything that has been emitted.",
+      "category": {
+        "all": "All",
+        "backup": "Backup runs",
+        "retention": "Retention",
+        "keys": "Age keys",
+        "config": "Config",
+        "other": "Other"
+      },
+      "events": "events",
+      "of": "of",
+      "component": "Component"
     },
     "settings": {
       "title": "Settings",
@@ -117,11 +143,46 @@
       "review": "Review & Apply",
       "applied": "Settings applied",
       "exportHint": "Download a values.yaml mirroring these settings — commit it to Git and run helm upgrade.",
+      "notAvailable": "Settings not available",
       "section": {
         "schedule": "Schedule & Timeout",
         "retention": "Retention Policy",
         "worker": "Worker Resources",
         "review": "Review & Apply"
+      },
+      "wizard": {
+        "scheduleDesc": "Configure the default backup schedule and execution timeout.",
+        "retentionDesc": "Control how long backups are kept and the minimum safety floor.",
+        "workerDesc": "CPU and memory limits for backup worker pods spawned by CronJobs.",
+        "reviewDesc": "Review your settings before saving. Changes take effect immediately for new backup runs.",
+        "limits": "Limits",
+        "requests": "Requests",
+        "note": "Click \"Export values.yaml\" to download a Helm-compatible values file for GitOps workflows.",
+        "label": {
+          "defaultSchedule": "Default Cron Schedule",
+          "runTimeout": "Run Timeout (seconds)",
+          "retentionDays": "Retention Days",
+          "minKeep": "Minimum Keep",
+          "tempDir": "Temp Directory",
+          "tempDirSize": "Temp Dir Size",
+          "cpuLimit": "CPU Limit",
+          "memoryLimit": "Memory Limit",
+          "cpuRequest": "CPU Request",
+          "memoryRequest": "Memory Request",
+          "timeout": "Timeout"
+        },
+        "hint": {
+          "schedule": "Cron expression for new sources without a custom schedule. Example: \"0 2 * * *\" = daily at 2 AM",
+          "timeout": "Maximum duration for a single backup run before it's killed. 3600 = 1 hour.",
+          "retentionDays": "Backups older than this are pruned. 0 = keep forever.",
+          "minKeep": "Always keep at least this many backups, regardless of retention age.",
+          "tempDir": "Scratch space for encrypted dumps before upload.",
+          "tempDirSize": "emptyDir size limit. Increase for large dumps.",
+          "cpuLimit": "e.g. 2000m = 2 cores",
+          "memoryLimit": "e.g. 2Gi, 512Mi",
+          "cpuRequest": "Minimum guaranteed CPU",
+          "memoryRequest": "Minimum guaranteed memory"
+        }
       }
     }
   },
@@ -308,6 +369,46 @@
     "triggerFailed": "Trigger failed: {error}",
     "paused": "Paused",
     "resumed": "Resumed"
+  },
+  "ageKeys": {
+    "title": "Encryption Recipients (age public keys)",
+    "titleShort": "Encryption Recipients",
+    "intro": "Each labeled Secret holds one age recipient. The operator merges them into the worker's AGE_PUBLIC_KEYS env on every reconcile.",
+    "noKeys": "No encryption recipients configured.",
+    "noKeysHint": "Add at least one age public key so worker pods can encrypt dumps.",
+    "addNew": "Add new public key",
+    "publicKey": "Public Key (age1…)",
+    "name": "Name (optional)",
+    "namePlaceholder": "alice-laptop",
+    "added": "Recipient added",
+    "addFailed": "Add failed: {error}",
+    "removed": "Recipient removed",
+    "removeFailed": "Remove failed: {error}",
+    "removeConfirm": "Remove recipient {name}? Worker pods will no longer encrypt to this key. Existing dumps remain decryptable with the corresponding private key.",
+    "readOnly": "Read-only mode — recipient mutation is disabled."
+  },
+  "card": {
+    "storageByDestination": "Storage by Destination",
+    "storageSubtitle": "latest successful dump per target",
+    "tablesLatest": "Tables — Latest Run",
+    "tablesSubtitle": "{count} table · trend across {runs} run",
+    "tablesSubtitlePlural": "{count} tables · trend across {runs} runs",
+    "dumpVerification": "Dump Integrity Verification",
+    "restoreVerificationCard": "Restore Verification",
+    "failedToLoad": "Failed to load",
+    "storageUnreachable": "Storage unreachable"
+  },
+  "stat": {
+    "healthy": "Healthy",
+    "failed": "Failed",
+    "running": "Running",
+    "critical": "Critical",
+    "warning": "Warning",
+    "info": "Info",
+    "totalSize": "Total Size",
+    "backups": "Backups",
+    "oldest": "Oldest",
+    "newest": "Newest"
   },
   "alertname": {
     "BackupOverdue": "Backup overdue",

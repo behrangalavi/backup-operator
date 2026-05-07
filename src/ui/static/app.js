@@ -482,10 +482,10 @@ async function renderDashboard(loading = true) {
     </div>
     <div class="stats-row">
       <div class="stat-card"><div class="label">${tr('nav.sources')}</div><div class="value">${targets.length}</div></div>
-      <div class="stat-card"><div class="label">Healthy</div><div class="value ok">${ok}</div></div>
-      <div class="stat-card"><div class="label">Failed</div><div class="value${failed > 0 ? ' bad' : ''}">${failed}</div></div>
+      <div class="stat-card"><div class="label">${tr('stat.healthy')}</div><div class="value ok">${ok}</div></div>
+      <div class="stat-card"><div class="label">${tr('stat.failed')}</div><div class="value${failed > 0 ? ' bad' : ''}">${failed}</div></div>
       <div class="stat-card"><div class="label">${tr('nav.destinations')}</div><div class="value">${dests.length}</div></div>
-      <div class="stat-card"><div class="label">Running ${tr('nav.jobs')}</div><div class="value">${running}</div></div>
+      <div class="stat-card"><div class="label">${tr('stat.running')} ${tr('nav.jobs')}</div><div class="value">${running}</div></div>
     </div>
     ${renderStorageByDestination(targets, dests)}
     <div class="table-card">
@@ -1051,7 +1051,7 @@ async function renderDestinations(loading = true) {
           <div class="detail-row"><span class="key">Newest</span><span class="val">${st.newestBackup ? timeAgo(st.newestBackup) : '—'}</span></div>
         </div>` : st && st.error ? `
         <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);color:var(--danger);font-size:12px">
-          ${tr('page.alerts.unreachable')}: ${escHTML(st.error)}
+          ${tr('card.storageUnreachable')}: ${escHTML(st.error)}
         </div>` : ''}
         <div style="display:flex;gap:6px;margin-top:12px;justify-content:flex-end">
           <button class="btn btn-ghost btn-sm" onclick="testDestConnection('${escJS(d.secretName)}','${escJS(d.name)}')" title="Probe this destination — verifies SSH/SFTP login or S3 bucket access without uploading anything">&#128268; ${tr('buttons.test')}</button>
@@ -1286,27 +1286,27 @@ async function renderAlerts(loading = true) {
     const mode = statusResp.mode || 'none';
 
     const promStatus = !prom.configured
-      ? '<span class="badge badge-pending">Not configured</span>'
+      ? `<span class="badge badge-pending">${tr('page.alerts.notConfigured')}</span>`
       : prom.reachable
-        ? `<span class="badge badge-ok">Connected</span>${prom.version ? ' <span style="font-size:11px;color:var(--text-muted)">v' + escHTML(prom.version) + '</span>' : ''}`
-        : `<span class="badge badge-critical">Unreachable</span> <span style="font-size:11px;color:var(--text-muted)">${escHTML(prom.error || '')}</span>`;
+        ? `<span class="badge badge-ok">${tr('page.alerts.connected')}</span>${prom.version ? ' <span style="font-size:11px;color:var(--text-muted)">v' + escHTML(prom.version) + '</span>' : ''}`
+        : `<span class="badge badge-critical">${tr('page.alerts.unreachable')}</span> <span style="font-size:11px;color:var(--text-muted)">${escHTML(prom.error || '')}</span>`;
 
     const amStatus = !am.configured
-      ? '<span class="badge badge-pending">Not configured</span>'
+      ? `<span class="badge badge-pending">${tr('page.alerts.notConfigured')}</span>`
       : am.reachable
-        ? `<span class="badge badge-ok">Connected</span>${am.version ? ' <span style="font-size:11px;color:var(--text-muted)">v' + escHTML(am.version) + '</span>' : ''}`
-        : `<span class="badge badge-critical">Unreachable</span> <span style="font-size:11px;color:var(--text-muted)">${escHTML(am.error || '')}</span>`;
+        ? `<span class="badge badge-ok">${tr('page.alerts.connected')}</span>${am.version ? ' <span style="font-size:11px;color:var(--text-muted)">v' + escHTML(am.version) + '</span>' : ''}`
+        : `<span class="badge badge-critical">${tr('page.alerts.unreachable')}</span> <span style="font-size:11px;color:var(--text-muted)">${escHTML(am.error || '')}</span>`;
 
-    const modeLabel = mode === 'prometheus' ? 'Prometheus (canonical)'
-      : mode === 'local' ? 'Local Heuristic (no for: debounce)'
-      : 'Not available';
+    const modeLabel = mode === 'prometheus' ? tr('page.alerts.modePrometheus')
+      : mode === 'local' ? tr('page.alerts.modeLocal')
+      : tr('page.alerts.modeNone');
     const modeBadge = mode === 'prometheus' ? 'ok' : mode === 'local' ? 'warning' : 'critical';
 
     statusBanner = `
       <div class="table-card" style="margin-bottom:16px">
         <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
-          <strong>Connection Status</strong>
-          <span class="badge badge-${modeBadge}" style="margin-left:8px">Mode: ${escHTML(modeLabel)}</span>
+          <strong>${tr('page.alerts.connectionStatus')}</strong>
+          <span class="badge badge-${modeBadge}" style="margin-left:8px">${tr('page.alerts.mode')}: ${escHTML(modeLabel)}</span>
         </div>
         <table>
           <tbody>
@@ -1420,7 +1420,7 @@ receivers:
     <div class="page-header">
       <div>
         <h1>${tr('page.alerts.title')}</h1>
-        <div class="subtitle">Backup alert monitoring${amURL ? ' — <a href="' + escAttr(amURL) + '" target="_blank">' + tr('page.alerts.openInAlertmanager') + '</a>' : ''}</div>
+        <div class="subtitle">${tr('page.alerts.subtitle')}${amURL ? ' — <a href="' + escAttr(amURL) + '" target="_blank">' + tr('page.alerts.openInAlertmanager') + '</a>' : ''}</div>
       </div>
       <div style="display:flex;gap:8px">
         ${testBtn}
@@ -1432,9 +1432,9 @@ receivers:
     ${alertError}
     ${sourceBanner}
     <div class="stats-row">
-      <div class="stat-card"><div class="label">Critical</div><div class="value${counts.critical > 0 ? ' bad' : ''}">${counts.critical || 0}</div></div>
-      <div class="stat-card"><div class="label">Warning</div><div class="value${counts.warning > 0 ? ' bad' : ''}">${counts.warning || 0}</div></div>
-      <div class="stat-card"><div class="label">Info</div><div class="value">${counts.info || 0}</div></div>
+      <div class="stat-card"><div class="label">${tr('stat.critical')}</div><div class="value${counts.critical > 0 ? ' bad' : ''}">${counts.critical || 0}</div></div>
+      <div class="stat-card"><div class="label">${tr('stat.warning')}</div><div class="value${counts.warning > 0 ? ' bad' : ''}">${counts.warning || 0}</div></div>
+      <div class="stat-card"><div class="label">${tr('stat.info')}</div><div class="value">${counts.info || 0}</div></div>
     </div>
     ${items.length === 0
       ? `<div class="empty-state"><h3>${tr('page.alerts.empty')}</h3><p>${tr('page.alerts.empty')}</p></div>`
@@ -1453,7 +1453,7 @@ receivers:
                 <summary><code style="font-size:12px">${escHTML(info.icon)} ${escHTML(info.title)}</code></summary>
                 <div style="padding:8px 0;font-size:12px;line-height:1.6">
                   <p style="margin:0 0 6px">${escHTML(info.desc)}</p>
-                  <p style="margin:0;color:var(--text-muted)"><strong>Action:</strong> ${escHTML(info.action)}</p>
+                  <p style="margin:0;color:var(--text-muted)"><strong>${tr('table.action')}:</strong> ${escHTML(info.action)}</p>
                 </div>
               </details>
             </td>
@@ -1469,11 +1469,11 @@ receivers:
 
     <div class="table-card" style="margin-top:24px">
       <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
-        <strong>Alert Rules Reference</strong>
-        <span style="font-size:12px;color:var(--text-muted);margin-left:8px">7 built-in rules shipped with the Helm chart</span>
+        <strong>${tr('page.alerts.rulesReference')}</strong>
+        <span style="font-size:12px;color:var(--text-muted);margin-left:8px">${tr('page.alerts.rulesReferenceSub', {count: Object.keys(ALERT_DESCRIPTIONS).filter(k => k !== 'BackupOperatorTestAlert').length})}</span>
       </div>
       <table>
-        <thead><tr><th>Alert</th><th>Severity</th><th>Condition</th><th>Description</th></tr></thead>
+        <thead><tr><th>${tr('page.alerts.alertCol')}</th><th>${tr('page.alerts.severityCol')}</th><th>${tr('page.alerts.conditionCol')}</th><th>${tr('page.alerts.descriptionCol')}</th></tr></thead>
         <tbody>
           ${Object.entries(ALERT_DESCRIPTIONS).filter(([k]) => k !== 'BackupOperatorTestAlert').map(([name, info]) => `<tr>
             <td><code style="font-size:12px">${escHTML(info.icon)} ${escHTML(info.title)}</code></td>
@@ -1631,19 +1631,19 @@ async function renderAudit(loading = true) {
   const truncated = data.total > entries.length;
 
   const categories = [
-    ['all',       'All',           'Show every audit event'],
-    ['backup',    'Backup runs',   'BackupStarted / BackupCompleted / BackupFailed'],
-    ['retention', 'Retention',     'Old dumps deleted by retention policy'],
-    ['keys',      'Age keys',      'Age recipient additions, removals, refusals'],
-    ['config',    'Config',        'Source / destination / settings changes'],
-    ['other',     'Other',         'Anything emitted by our components that does not fit above'],
+    ['all',       tr('page.audit.category.all'),       'Show every audit event'],
+    ['backup',    tr('page.audit.category.backup'),    'BackupStarted / BackupCompleted / BackupFailed'],
+    ['retention', tr('page.audit.category.retention'), 'Old dumps deleted by retention policy'],
+    ['keys',      tr('page.audit.category.keys'),      'Age recipient additions, removals, refusals'],
+    ['config',    tr('page.audit.category.config'),    'Source / destination / settings changes'],
+    ['other',     tr('page.audit.category.other'),     'Anything emitted by our components that does not fit above'],
   ];
 
   content.innerHTML = `
     <div class="page-header">
       <div><h1>${tr('page.audit.title')}</h1><div class="subtitle">${tr('page.audit.subtitle')}</div></div>
       <div style="display:flex;gap:8px;align-items:center">
-        <span style="color:var(--text-muted);font-size:12px">${entries.length}${truncated ? ' of ' + data.total : ''} events</span>
+        <span style="color:var(--text-muted);font-size:12px">${entries.length}${truncated ? ' ' + tr('page.audit.of') + ' ' + data.total : ''} ${tr('page.audit.events')}</span>
         <button class="btn btn-secondary btn-sm" onclick="renderAudit(true)" title="Re-fetch the events list from Kubernetes">&#8635; ${tr('buttons.refresh')}</button>
       </div>
     </div>
@@ -1657,9 +1657,7 @@ async function renderAudit(loading = true) {
       ${entries.length === 0 ? `
       <div class="empty-state">
         <h3>${tr('page.audit.empty')}</h3>
-        <p>${auditFilter === 'all'
-          ? 'No backup runs, retention actions, or configuration changes have been recorded yet. Events appear here as soon as a backup runs or you change a source/destination/age key.'
-          : 'No events in this category. Try All to see everything that has been emitted.'}</p>
+        <p>${auditFilter === 'all' ? tr('page.audit.emptyAll') : tr('page.audit.emptyFiltered')}</p>
       </div>` : `
       <table>
         <thead><tr>
@@ -1668,7 +1666,7 @@ async function renderAudit(loading = true) {
           <th>${tr('table.severity')}</th>
           <th>${tr('table.reason')}</th>
           <th>${tr('table.object')}</th>
-          <th>Component</th>
+          <th>${tr('page.audit.component')}</th>
           <th>${tr('table.message')}</th>
         </tr></thead>
         <tbody>${entries.map((e, i) => `<tr>
@@ -1949,7 +1947,7 @@ function renderStorageByDestination(targets, dests) {
   if (maxTotal === 0) return '';
 
   return `<div class="chart-card" style="margin-bottom:16px">
-    <h3>Storage by Destination <span class="chart-card-sub">latest successful dump per target</span></h3>
+    <h3>${tr('card.storageByDestination')} <span class="chart-card-sub">${tr('card.storageSubtitle')}</span></h3>
     <div class="stack-bar-list">
       ${rows.map(r => `
         <div class="stack-bar-row">
@@ -1998,7 +1996,7 @@ function renderTablesCard(runs) {
   if (latest.length === 0) return '';
 
   return `<div class="chart-card">
-    <h3>Tables — Latest Run <span class="chart-card-sub">${latest.length} table${latest.length === 1 ? '' : 's'} · trend across ${sorted.length} run${sorted.length === 1 ? '' : 's'}</span></h3>
+    <h3>${tr('card.tablesLatest')} <span class="chart-card-sub">${tr(latest.length === 1 ? 'card.tablesSubtitle' : 'card.tablesSubtitlePlural', {count: latest.length, runs: sorted.length})}</span></h3>
     <div class="table-scroll">
     <table class="tbl-compact">
       <thead><tr><th>Table</th><th class="num">Rows</th><th>Trend</th><th class="num">Size</th></tr></thead>
@@ -2214,7 +2212,7 @@ window.viewMeta = async function(targetName, timestamp, destination) {
       </div>
       <pre class="json-viewer">${jsonHighlight(pretty)}</pre>`;
   } catch(e) {
-    $('#modal-body').innerHTML = `<div class="empty-state"><h3>Failed to load</h3><p style="color:var(--danger)">${escHTML(e.message)}</p></div>`;
+    $('#modal-body').innerHTML = `<div class="empty-state"><h3>${tr('card.failedToLoad')}</h3><p style="color:var(--danger)">${escHTML(e.message)}</p></div>`;
   }
 };
 
@@ -2429,13 +2427,13 @@ function renderRestoreVerificationDetail(run) {
   return `
     <div class="table-card verification-card">
       <div class="table-card-header">
-        <h2>Restore Verification</h2>
+        <h2>${tr('card.restoreVerificationCard')}</h2>
         ${renderRestoreVerificationBadge(rv)}
       </div>
       ${rv.summary ? `<div class="verification-summary">${escHTML(rv.summary)}</div>` : ''}
-      <div class="detail-row"><span class="key">Mode</span><span class="val">${escHTML(rv.mode || '—')}</span></div>
-      <div class="detail-row"><span class="key">Completed</span><span class="val">${completed}</span></div>
-      <div class="detail-row"><span class="key">Duration</span><span class="val">${dur}</span></div>
+      <div class="detail-row"><span class="key">${tr('form.source.label.verificationMode')}</span><span class="val">${escHTML(rv.mode || '—')}</span></div>
+      <div class="detail-row"><span class="key">${tr('table.completedAt')}</span><span class="val">${completed}</span></div>
+      <div class="detail-row"><span class="key">${tr('table.duration')}</span><span class="val">${dur}</span></div>
       ${rv.ephemeralRecipientFingerprint ? `<div class="detail-row"><span class="key">Ephemeral recipient</span><code class="val" style="font-size:11px">${escHTML(rv.ephemeralRecipientFingerprint)}</code></div>` : ''}
       ${skippedHint}
       ${rv.error ? `<div class="detail-row" style="align-items:flex-start"><span class="key">Error</span><pre class="val" style="color:var(--danger);font-size:12px;white-space:pre-wrap;word-break:break-word;margin:0;background:var(--bg-input);padding:8px;border-radius:4px;max-height:160px;overflow:auto">${escHTML(rv.error)}</pre></div>` : ''}
@@ -2454,7 +2452,7 @@ function renderVerificationDetail(run) {
   return `
     <div class="table-card verification-card">
       <div class="table-card-header">
-        <h2>Dump Integrity Verification</h2>
+        <h2>${tr('card.dumpVerification')}</h2>
         ${renderVerificationBadge(v)}
       </div>
       <div class="verification-summary">${escHTML(v.summary || '')}</div>
@@ -2536,14 +2534,14 @@ async function renderSettings(loading = true) {
     window._currentSettings = null;
     content.innerHTML = `
       <div class="page-header">
-        <div><h1>${tr('page.settings.title')}</h1><div class="subtitle">Operator configuration</div></div>
+        <div><h1>${tr('page.settings.title')}</h1><div class="subtitle">${tr('page.settings.subtitle')}</div></div>
       </div>
       <div class="empty-state">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09"/></svg>
-        <h3>Settings not available</h3>
-        <p>Could not load operator settings.${errorMsg ? ' <strong>Error:</strong> ' + escHTML(errorMsg) : ''}</p>
+        <h3>${tr('page.settings.notAvailable')}</h3>
+        <p>${tr('toast.loadFailed', {error: errorMsg || ''})}</p>
         <p style="margin-top:8px;font-size:0.9em;opacity:0.7">Ensure the operator is deployed with <code>ui.enabled=true</code> and the Docker image is rebuilt after code changes.</p>
-        <button class="btn btn-primary" onclick="renderSettings(true)" style="margin-top:12px" title="Reload the settings ConfigMap from Kubernetes">Retry</button>
+        <button class="btn btn-primary" onclick="renderSettings(true)" style="margin-top:12px" title="Reload the settings ConfigMap from Kubernetes">${tr('buttons.refresh')}</button>
       </div>`;
     return;
   }
@@ -2598,17 +2596,17 @@ function renderSettingsPage(settings) {
 async function loadAgeKeysSection() {
   const host = $('#age-keys-section');
   if (!host) return;
-  host.innerHTML = '<div class="table-card-header"><h2>Encryption Recipients (age public keys)</h2></div><div class="empty-state"><div class="spinner"></div></div>';
+  host.innerHTML = `<div class="table-card-header"><h2>${tr('ageKeys.title')}</h2></div><div class="empty-state"><div class="spinner"></div></div>`;
   let resp;
   try {
     resp = await fetch('/api/age-keys').then(r => r.json());
   } catch(e) {
-    host.innerHTML = `<div class="table-card-header"><h2>Encryption Recipients</h2></div>
-      <div class="empty-state"><p style="color:var(--danger)">Failed to load: ${escHTML(e.message)}</p></div>`;
+    host.innerHTML = `<div class="table-card-header"><h2>${tr('ageKeys.titleShort')}</h2></div>
+      <div class="empty-state"><p style="color:var(--danger)">${tr('toast.loadFailed', {error: e.message})}</p></div>`;
     return;
   }
   if (!resp.ok && resp.message) {
-    host.innerHTML = `<div class="table-card-header"><h2>Encryption Recipients</h2></div>
+    host.innerHTML = `<div class="table-card-header"><h2>${tr('ageKeys.titleShort')}</h2></div>
       <div class="empty-state"><p>${escHTML(resp.message)}</p></div>`;
     return;
   }
@@ -2616,15 +2614,14 @@ async function loadAgeKeysSection() {
   const canMutate = !!resp.canMutate;
   host.innerHTML = `
     <div class="table-card-header">
-      <h2>Encryption Recipients (age public keys)</h2>
-      <span style="color:var(--text-muted);font-size:12px">${keys.length} recipient${keys.length === 1 ? '' : 's'} · Secret: <code>${escHTML(resp.secretName || '—')}</code></span>
+      <h2>${tr('ageKeys.title')}</h2>
+      <span style="color:var(--text-muted);font-size:12px">${keys.length} · Secret: <code>${escHTML(resp.secretName || '—')}</code></span>
     </div>
     <p style="padding:0 16px;color:var(--text-muted);font-size:13px;margin:0 0 12px">
-      Future backups encrypt to <strong>every</strong> listed recipient — any of their private-key holders can restore.
-      Existing dumps in storage are not re-encrypted when this list changes.
-      ${canMutate ? '' : '<br><span style="color:var(--warning,#d97706)">Add/remove disabled — set <code>UI_ALLOW_KEY_MUTATION=true</code> on the operator (and ensure <code>UI_READ_ONLY=false</code>) to enable.</span>'}
+      ${tr('ageKeys.intro')}
+      ${canMutate ? '' : '<br><span style="color:var(--warning,#d97706)">' + tr('ageKeys.readOnly') + '</span>'}
     </p>
-    ${keys.length === 0 ? '<div class="empty-state"><p>No recipients configured — the worker will refuse to start until at least one is added.</p></div>' : `
+    ${keys.length === 0 ? `<div class="empty-state"><p>${tr('ageKeys.noKeys')} ${tr('ageKeys.noKeysHint')}</p></div>` : `
     <table>
       <thead><tr>
         <th class="num row-num">#</th>
@@ -2639,13 +2636,13 @@ async function loadAgeKeysSection() {
         ${canMutate ? `<td style="white-space:nowrap">
           <button class="btn btn-ghost btn-sm" style="color:var(--danger)"
             onclick="removeAgeKey('${escJS(k.recipient)}','${escJS(k.hash)}')"
-            title="Remove this public key. Future backups will no longer encrypt to it. The last recipient cannot be removed.">&#10005; Remove</button>
+            title="Remove this public key. Future backups will no longer encrypt to it. The last recipient cannot be removed.">&#10005; ${tr('common.delete')}</button>
         </td>` : ''}
       </tr>`).join('')}</tbody>
     </table>`}
     ${canMutate ? `
     <div style="padding:16px;border-top:1px solid var(--border)">
-      <h3 style="font-size:13px;margin:0 0 8px">Add new recipient</h3>
+      <h3 style="font-size:13px;margin:0 0 8px">${tr('ageKeys.addNew')}</h3>
       <form onsubmit="addAgeKey(event)">
         <div style="display:flex;gap:8px">
           <input type="text" name="recipient" required pattern="age1[0-9a-z]+"
@@ -2653,7 +2650,7 @@ async function loadAgeKeysSection() {
             style="flex:1;font-family:ui-monospace,monospace;font-size:12px"
             title="An age X25519 recipient — starts with 'age1' followed by base32 characters. Generate with 'age-keygen' offline; paste only the public line here.">
           <button type="submit" class="btn btn-primary btn-sm"
-            title="Add this recipient. Future backup runs will encrypt to it in addition to the existing recipients. Validation rejects malformed strings before saving.">+ Add Recipient</button>
+            title="Add this recipient. Future backup runs will encrypt to it in addition to the existing recipients. Validation rejects malformed strings before saving.">+ ${tr('buttons.addKey')}</button>
         </div>
         <div class="hint">Paste the <code>age1...</code> public line from <code>age-keygen</code>. The private key must stay offline — never paste it here.</div>
       </form>
@@ -2667,11 +2664,11 @@ window.addAgeKey = async function(ev) {
   if (!recipient) return;
   try {
     const resp = await api('/api/age-keys', { method: 'POST', body: JSON.stringify({ recipient }) });
-    toast(resp.message || 'Recipient added', 'success');
+    toast(resp.message || tr('ageKeys.added'), 'success');
     form.reset();
     loadAgeKeysSection();
   } catch(e) {
-    toast('Add failed: ' + e.message, 'error');
+    toast(tr('ageKeys.addFailed', {error: e.message}), 'error');
   }
 };
 
@@ -2687,118 +2684,118 @@ window.removeAgeKey = async function(recipient, hash) {
   if (!ok) return;
   try {
     const resp = await api('/api/age-keys/' + encodeURIComponent(recipient), { method: 'DELETE' });
-    toast(resp.message || 'Recipient removed', 'success');
+    toast(resp.message || tr('ageKeys.removed'), 'success');
     loadAgeKeysSection();
   } catch(e) {
-    toast('Remove failed: ' + e.message, 'error');
+    toast(tr('ageKeys.removeFailed', {error: e.message}), 'error');
   }
 };
 
 function renderSettingsStepContent(step, s) {
   switch(step) {
     case 0: return `
-      <h3>Schedule & Timeout</h3>
-      <p class="wizard-desc">Configure the default backup schedule and execution timeout.</p>
+      <h3>${tr('page.settings.section.schedule')}</h3>
+      <p class="wizard-desc">${tr('page.settings.wizard.scheduleDesc')}</p>
       <div class="form-group">
-        <label for="defaultSchedule">Default Cron Schedule</label>
+        <label for="defaultSchedule">${tr('page.settings.wizard.label.defaultSchedule')}</label>
         <input type="text" id="defaultSchedule" name="defaultSchedule" value="${escAttr(s.defaultSchedule)}" placeholder="0 2 * * *">
-        <div class="hint">Cron expression for new sources without a custom schedule. Example: "0 2 * * *" = daily at 2 AM</div>
+        <div class="hint">${tr('page.settings.wizard.hint.schedule')}</div>
       </div>
       <div class="form-group">
-        <label for="runTimeoutSeconds">Run Timeout (seconds)</label>
+        <label for="runTimeoutSeconds">${tr('page.settings.wizard.label.runTimeout')}</label>
         <input type="number" id="runTimeoutSeconds" name="runTimeoutSeconds" value="${escAttr(s.runTimeoutSeconds)}" placeholder="3600" min="0">
-        <div class="hint">Maximum duration for a single backup run before it's killed. 3600 = 1 hour.</div>
+        <div class="hint">${tr('page.settings.wizard.hint.timeout')}</div>
       </div>`;
 
     case 1: return `
-      <h3>Retention Policy</h3>
-      <p class="wizard-desc">Control how long backups are kept and the minimum safety floor.</p>
+      <h3>${tr('page.settings.section.retention')}</h3>
+      <p class="wizard-desc">${tr('page.settings.wizard.retentionDesc')}</p>
       <div class="form-row">
         <div class="form-group">
-          <label for="defaultRetentionDays">Retention Days</label>
+          <label for="defaultRetentionDays">${tr('page.settings.wizard.label.retentionDays')}</label>
           <input type="number" id="defaultRetentionDays" name="defaultRetentionDays" value="${escAttr(s.defaultRetentionDays)}" placeholder="30" min="0">
-          <div class="hint">Backups older than this are pruned. 0 = keep forever.</div>
+          <div class="hint">${tr('page.settings.wizard.hint.retentionDays')}</div>
         </div>
         <div class="form-group">
-          <label for="defaultMinKeep">Minimum Keep</label>
+          <label for="defaultMinKeep">${tr('page.settings.wizard.label.minKeep')}</label>
           <input type="number" id="defaultMinKeep" name="defaultMinKeep" value="${escAttr(s.defaultMinKeep)}" placeholder="3" min="0">
-          <div class="hint">Always keep at least this many backups, regardless of retention age.</div>
+          <div class="hint">${tr('page.settings.wizard.hint.minKeep')}</div>
         </div>
       </div>
       <div class="form-row">
         <div class="form-group">
-          <label for="tempDir">Temp Directory</label>
+          <label for="tempDir">${tr('page.settings.wizard.label.tempDir')}</label>
           <input type="text" id="tempDir" name="tempDir" value="${escAttr(s.tempDir)}" placeholder="/tmp/backup-operator">
-          <div class="hint">Scratch space for encrypted dumps before upload.</div>
+          <div class="hint">${tr('page.settings.wizard.hint.tempDir')}</div>
         </div>
         <div class="form-group">
-          <label for="tempDirSize">Temp Dir Size</label>
+          <label for="tempDirSize">${tr('page.settings.wizard.label.tempDirSize')}</label>
           <input type="text" id="tempDirSize" name="tempDirSize" value="${escAttr(s.tempDirSize)}" placeholder="10Gi">
-          <div class="hint">emptyDir size limit. Increase for large dumps.</div>
+          <div class="hint">${tr('page.settings.wizard.hint.tempDirSize')}</div>
         </div>
       </div>`;
 
     case 2: return `
-      <h3>Worker Resources</h3>
-      <p class="wizard-desc">CPU and memory limits for backup worker pods spawned by CronJobs.</p>
+      <h3>${tr('page.settings.section.worker')}</h3>
+      <p class="wizard-desc">${tr('page.settings.wizard.workerDesc')}</p>
       <div class="form-section">
-        <h4>Limits</h4>
+        <h4>${tr('page.settings.wizard.limits')}</h4>
         <div class="form-row">
           <div class="form-group">
-            <label for="workerCpuLimit">CPU Limit</label>
+            <label for="workerCpuLimit">${tr('page.settings.wizard.label.cpuLimit')}</label>
             <input type="text" id="workerCpuLimit" name="workerCpuLimit" value="${escAttr(s.workerCpuLimit)}" placeholder="2000m">
-            <div class="hint">e.g. 2000m = 2 cores</div>
+            <div class="hint">${tr('page.settings.wizard.hint.cpuLimit')}</div>
           </div>
           <div class="form-group">
-            <label for="workerMemoryLimit">Memory Limit</label>
+            <label for="workerMemoryLimit">${tr('page.settings.wizard.label.memoryLimit')}</label>
             <input type="text" id="workerMemoryLimit" name="workerMemoryLimit" value="${escAttr(s.workerMemoryLimit)}" placeholder="2Gi">
-            <div class="hint">e.g. 2Gi, 512Mi</div>
+            <div class="hint">${tr('page.settings.wizard.hint.memoryLimit')}</div>
           </div>
         </div>
       </div>
       <div class="form-section">
-        <h4>Requests</h4>
+        <h4>${tr('page.settings.wizard.requests')}</h4>
         <div class="form-row">
           <div class="form-group">
-            <label for="workerCpuRequest">CPU Request</label>
+            <label for="workerCpuRequest">${tr('page.settings.wizard.label.cpuRequest')}</label>
             <input type="text" id="workerCpuRequest" name="workerCpuRequest" value="${escAttr(s.workerCpuRequest)}" placeholder="250m">
-            <div class="hint">Minimum guaranteed CPU</div>
+            <div class="hint">${tr('page.settings.wizard.hint.cpuRequest')}</div>
           </div>
           <div class="form-group">
-            <label for="workerMemoryRequest">Memory Request</label>
+            <label for="workerMemoryRequest">${tr('page.settings.wizard.label.memoryRequest')}</label>
             <input type="text" id="workerMemoryRequest" name="workerMemoryRequest" value="${escAttr(s.workerMemoryRequest)}" placeholder="256Mi">
-            <div class="hint">Minimum guaranteed memory</div>
+            <div class="hint">${tr('page.settings.wizard.hint.memoryRequest')}</div>
           </div>
         </div>
       </div>`;
 
     case 3:
       return `
-      <h3>Review & Apply</h3>
-      <p class="wizard-desc">Review your settings before saving. Changes take effect immediately for new backup runs.</p>
+      <h3>${tr('page.settings.section.review')}</h3>
+      <p class="wizard-desc">${tr('page.settings.wizard.reviewDesc')}</p>
       <div class="review-grid">
         <div class="detail-card">
-          <h3>Schedule & Timeout</h3>
-          <div class="detail-row"><span class="key">Schedule</span><code class="val">${escHTML(s.defaultSchedule)}</code></div>
-          <div class="detail-row"><span class="key">Timeout</span><span class="val">${escHTML(s.runTimeoutSeconds)}s</span></div>
+          <h3>${tr('page.settings.section.schedule')}</h3>
+          <div class="detail-row"><span class="key">${tr('table.schedule')}</span><code class="val">${escHTML(s.defaultSchedule)}</code></div>
+          <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.timeout')}</span><span class="val">${escHTML(s.runTimeoutSeconds)}s</span></div>
         </div>
         <div class="detail-card">
-          <h3>Retention</h3>
-          <div class="detail-row"><span class="key">Retention Days</span><span class="val">${escHTML(s.defaultRetentionDays)}</span></div>
-          <div class="detail-row"><span class="key">Min Keep</span><span class="val">${escHTML(s.defaultMinKeep)}</span></div>
-          <div class="detail-row"><span class="key">Temp Dir</span><code class="val">${escHTML(s.tempDir)}</code></div>
-          <div class="detail-row"><span class="key">Temp Dir Size</span><span class="val">${escHTML(s.tempDirSize)}</span></div>
+          <h3>${tr('page.settings.section.retention')}</h3>
+          <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.retentionDays')}</span><span class="val">${escHTML(s.defaultRetentionDays)}</span></div>
+          <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.minKeep')}</span><span class="val">${escHTML(s.defaultMinKeep)}</span></div>
+          <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.tempDir')}</span><code class="val">${escHTML(s.tempDir)}</code></div>
+          <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.tempDirSize')}</span><span class="val">${escHTML(s.tempDirSize)}</span></div>
         </div>
         <div class="detail-card">
-          <h3>Worker Resources</h3>
-          <div class="detail-row"><span class="key">CPU Limit</span><span class="val">${escHTML(s.workerCpuLimit) || '—'}</span></div>
-          <div class="detail-row"><span class="key">Memory Limit</span><span class="val">${escHTML(s.workerMemoryLimit) || '—'}</span></div>
-          <div class="detail-row"><span class="key">CPU Request</span><span class="val">${escHTML(s.workerCpuRequest) || '—'}</span></div>
-          <div class="detail-row"><span class="key">Memory Request</span><span class="val">${escHTML(s.workerMemoryRequest) || '—'}</span></div>
+          <h3>${tr('page.settings.section.worker')}</h3>
+          <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.cpuLimit')}</span><span class="val">${escHTML(s.workerCpuLimit) || '—'}</span></div>
+          <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.memoryLimit')}</span><span class="val">${escHTML(s.workerMemoryLimit) || '—'}</span></div>
+          <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.cpuRequest')}</span><span class="val">${escHTML(s.workerCpuRequest) || '—'}</span></div>
+          <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.memoryRequest')}</span><span class="val">${escHTML(s.workerMemoryRequest) || '—'}</span></div>
         </div>
       </div>
       <div class="wizard-note">
-        <strong>Note:</strong> Click "Export values.yaml" to download a Helm-compatible values file for GitOps workflows.
+        ${tr('page.settings.wizard.note')}
       </div>`;
   }
 }

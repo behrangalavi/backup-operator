@@ -372,12 +372,39 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		// "disappeared" — hash the current stats too so prev/curr names line
 		// up and only real schema drift surfaces as anomalies. Real names
 		// stay available via the original `stats` for the metrics path.
+		//
+		// Transition case: when anonymize-tables is freshly enabled, the
+		// last meta.json was written with real names. Hashing only the
+		// current stats then mismatches against still-real prev stats and
+		// produces N false-positive `table-disappeared` anomalies for one
+		// run. Detect that and hash prev too so the very first post-toggle
+		// run is clean.
 		cmpStats := stats
-		if src.AnonymizeTables && stats != nil {
-			cmpStats = anonymizeStats(stats)
+		cmpPrev := prevStats
+		switch {
+		case src.AnonymizeTables:
+			if stats != nil {
+				cmpStats = anonymizeStats(stats)
+			}
+			if prevStats != nil && !looksAnonymized(prevStats) {
+				cmpPrev = anonymizeStats(prevStats)
+			}
+		case prevStats != nil && looksAnonymized(prevStats):
+			// Reverse transition: anonymize-tables was just turned off. The
+			// last meta.json holds hashed names; the current run produced
+			// real names. Hashes are one-way, so the per-table comparison
+			// can't be reconciled for this single run — clearing prev's
+			// Tables suppresses N false-positive `table-disappeared`
+			// anomalies. Schema-hash, charset and size comparisons remain
+			// intact (they don't depend on table names). The next run
+			// will have real names on both sides and analyzes normally.
+			cleared := *prevStats
+			cleared.Tables = nil
+			cmpPrev = &cleared
+			log.Info("anonymize-tables disabled; prev meta still hashed — skipping per-table comparison for this run only")
 		}
 		an := p.analyzerForSource(src)
-		report = an.Compare(prevStats, cmpStats, prevSize, encryptedSize)
+		report = an.Compare(cmpPrev, cmpStats, prevSize, encryptedSize)
 		emitAnalyzerMetrics(src.TargetName, report, stats)
 		// Carry forward the schema-change timestamp: only bump it on real
 		// drift, otherwise the caller can use the recorded value to age the
@@ -964,6 +991,30 @@ func emitAnalyzerMetrics(target string, r *analyzer.Report, realStats *dumper.St
 func hashTableName(name string) string {
 	h := sha256.Sum256([]byte(name))
 	return hex.EncodeToString(h[:8])
+}
+
+// looksAnonymized reports whether every table name in s is already a 16-hex
+// hash (the format hashTableName produces). Used to detect the transition
+// run when anonymize-tables was just toggled on: the last meta.json was
+// written with real names, so prev stats need a one-shot hash before they
+// can line up with the current run's hashed names.
+func looksAnonymized(s *dumper.Stats) bool {
+	if s == nil || len(s.Tables) == 0 {
+		return true
+	}
+	for _, t := range s.Tables {
+		if len(t.Name) != 16 {
+			return false
+		}
+		for i := 0; i < 16; i++ {
+			c := t.Name[i]
+			isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+			if !isHex {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func anonymizeStats(s *dumper.Stats) *dumper.Stats {

@@ -322,6 +322,159 @@ func TestAnonymizeTables_NoFalsePositiveDisappeared(t *testing.T) {
 	}
 }
 
+// TestAnonymizeTables_TransitionRunNoFalsePositives regresses the case
+// where a user freshly toggles anonymize-tables=true: the last meta.json
+// holds real names, the new run hashes its own stats, and the analyzer
+// would otherwise see every prev table as "disappeared" for one run.
+// The pipeline must detect that prev is still in real-name form and
+// hash it before Compare.
+func TestAnonymizeTables_TransitionRunNoFalsePositives(t *testing.T) {
+	prevReal := &dumper.Stats{
+		SchemaHash: "abc",
+		Tables: []dumper.TableStats{
+			{Name: "platform.users", RowCount: 100, SizeBytes: 1024},
+			{Name: "platform.orders", RowCount: 50, SizeBytes: 512},
+		},
+	}
+	currReal := &dumper.Stats{
+		SchemaHash: "abc",
+		Tables: []dumper.TableStats{
+			{Name: "platform.users", RowCount: 100, SizeBytes: 1024},
+			{Name: "platform.orders", RowCount: 50, SizeBytes: 512},
+		},
+	}
+	if looksAnonymized(prevReal) {
+		t.Fatalf("prevReal must not look anonymized")
+	}
+	cmpStats := anonymizeStats(currReal)
+	cmpPrev := anonymizeStats(prevReal)
+
+	report := analyzer.NewAnalyzer().Compare(cmpPrev, cmpStats, 1000, 1000)
+	if len(report.Anomalies) != 0 {
+		t.Errorf("expected zero anomalies on transition run, got %d: %+v",
+			len(report.Anomalies), report.Anomalies)
+	}
+}
+
+// TestAnonymizeTables_OffTransitionSuppressesTableComparison regresses the
+// reverse-direction toggle: anonymize-tables was previously on (prev meta
+// is hashed) and the user just turned it off. The per-table comparison
+// cannot be reconciled — hashes are one-way. The pipeline must clear prev's
+// Tables for this run so no `table-disappeared` anomalies fire, while
+// preserving schema-hash, charset and size signals that don't depend on
+// table names.
+func TestAnonymizeTables_OffTransitionSuppressesTableComparison(t *testing.T) {
+	prevHashed := &dumper.Stats{
+		SchemaHash: "abc",
+		Charset:    "utf8mb4",
+		Tables: []dumper.TableStats{
+			{Name: hashTableName("public.users"), RowCount: 100, SizeBytes: 1024},
+			{Name: hashTableName("public.orders"), RowCount: 50, SizeBytes: 512},
+		},
+	}
+	currReal := &dumper.Stats{
+		SchemaHash: "abc",
+		Charset:    "utf8mb4",
+		Tables: []dumper.TableStats{
+			{Name: "public.users", RowCount: 100, SizeBytes: 1024},
+			{Name: "public.orders", RowCount: 50, SizeBytes: 512},
+		},
+	}
+	if !looksAnonymized(prevHashed) {
+		t.Fatalf("prevHashed must look anonymized")
+	}
+	// Mirror the pipeline's reverse-transition handling.
+	cleared := *prevHashed
+	cleared.Tables = nil
+	cmpPrev := &cleared
+
+	report := analyzer.NewAnalyzer().Compare(cmpPrev, currReal, 1000, 1000)
+	if len(report.Anomalies) != 0 {
+		t.Errorf("expected zero anomalies on off-transition run, got %d: %+v",
+			len(report.Anomalies), report.Anomalies)
+	}
+	if report.SchemaChanged {
+		t.Errorf("schema-hash drift detection must survive table clearing")
+	}
+	if report.CharsetChanged {
+		t.Errorf("charset drift detection must survive table clearing")
+	}
+}
+
+// TestAnonymizeTables_OffTransitionStillFlagsRealDrift confirms that
+// suppressing the table comparison does not also suppress schema, charset
+// or size signals on the same off-transition run.
+func TestAnonymizeTables_OffTransitionStillFlagsRealDrift(t *testing.T) {
+	prevHashed := &dumper.Stats{
+		SchemaHash: "abc",
+		Charset:    "utf8",
+		Tables: []dumper.TableStats{
+			{Name: hashTableName("public.users")},
+		},
+	}
+	currReal := &dumper.Stats{
+		SchemaHash: "DEF",
+		Charset:    "utf8mb4",
+		Tables: []dumper.TableStats{
+			{Name: "public.users"},
+		},
+	}
+	cleared := *prevHashed
+	cleared.Tables = nil
+	cmpPrev := &cleared
+
+	report := analyzer.NewAnalyzer().Compare(cmpPrev, currReal, 10000, 100)
+	if !report.SchemaChanged {
+		t.Errorf("expected SchemaChanged=true")
+	}
+	if !report.CharsetChanged {
+		t.Errorf("expected CharsetChanged=true")
+	}
+	hasSize := false
+	for _, a := range report.Anomalies {
+		if a.Kind == "size-collapse" {
+			hasSize = true
+			break
+		}
+	}
+	if !hasSize {
+		t.Errorf("expected size-collapse anomaly, got %+v", report.Anomalies)
+	}
+}
+
+func TestLooksAnonymized(t *testing.T) {
+	cases := []struct {
+		name string
+		in   *dumper.Stats
+		want bool
+	}{
+		{"nil", nil, true},
+		{"empty", &dumper.Stats{}, true},
+		{"all hashed", &dumper.Stats{Tables: []dumper.TableStats{
+			{Name: hashTableName("public.users")},
+			{Name: hashTableName("public.orders")},
+		}}, true},
+		{"all real", &dumper.Stats{Tables: []dumper.TableStats{
+			{Name: "public.users"},
+			{Name: "public.orders"},
+		}}, false},
+		{"mixed", &dumper.Stats{Tables: []dumper.TableStats{
+			{Name: hashTableName("public.users")},
+			{Name: "public.orders"},
+		}}, false},
+		{"non-hex 16-char", &dumper.Stats{Tables: []dumper.TableStats{
+			{Name: "public.zzzzzzzzz"},
+		}}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := looksAnonymized(c.in); got != c.want {
+				t.Errorf("looksAnonymized: got %v want %v", got, c.want)
+			}
+		})
+	}
+}
+
 func TestHashTableName_Deterministic(t *testing.T) {
 	a := hashTableName("public.users")
 	b := hashTableName("public.users")

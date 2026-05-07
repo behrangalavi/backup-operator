@@ -128,6 +128,84 @@ func contains(s, sub string) bool {
 	return false
 }
 
+func TestSelectForDeletion_EmptyInput(t *testing.T) {
+	if got := selectForDeletion(nil, RetentionPolicy{Days: 30, MinKeep: 0}, fakeNow); len(got) != 0 {
+		t.Errorf("nil input must produce no victims, got %v", got)
+	}
+	if got := selectForDeletion([]storage.Object{}, RetentionPolicy{Days: 30, MinKeep: 0}, fakeNow); len(got) != 0 {
+		t.Errorf("empty input must produce no victims, got %v", got)
+	}
+}
+
+func TestSelectForDeletion_MinKeepGreaterThanTotal(t *testing.T) {
+	// 2 dumps, both ancient, but MinKeep=5 — the floor protects every
+	// existing timestamp regardless of age.
+	var objs []storage.Object
+	for _, age := range []int{100, 200} {
+		objs = append(objs, dump("x", fakeNow.AddDate(0, 0, -age))...)
+	}
+	got := selectForDeletion(objs, RetentionPolicy{Days: 30, MinKeep: 5}, fakeNow)
+	if len(got) != 0 {
+		t.Errorf("MinKeep > total dumps must keep everything, got %v", got)
+	}
+}
+
+func TestSelectForDeletion_CutoffBoundary(t *testing.T) {
+	// Three dumps at the boundary:
+	//   - exactly at cutoff (now - 30d)         → kept (Before == false)
+	//   - one nanosecond past cutoff            → deleted
+	//   - one nanosecond before cutoff (newer)  → kept
+	// Documents the exact semantics so a future tweak to `Before` vs.
+	// `!After` can't silently shift retention by one boundary point.
+	cutoff := fakeNow.Add(-30 * 24 * time.Hour)
+	objs := append(dump("x", cutoff),
+		append(dump("x", cutoff.Add(-time.Nanosecond)),
+			dump("x", cutoff.Add(time.Nanosecond))...,
+		)...,
+	)
+	got := selectForDeletion(objs, RetentionPolicy{Days: 30, MinKeep: 0}, fakeNow)
+	if len(got) != 2 {
+		t.Fatalf("only the past-cutoff timestamp should be deleted, got %d victims: %v", len(got), got)
+	}
+	pastTS := cutoff.Add(-time.Nanosecond).Format(timestampLayout)
+	for _, v := range got {
+		if !contains(v, pastTS) {
+			t.Errorf("expected only the past-cutoff timestamp in victims, got %s", v)
+		}
+	}
+}
+
+func TestSelectForDeletion_OrphanMeta(t *testing.T) {
+	// A meta file without a matching dump (or vice versa) should still be
+	// pruned when its timestamp is past cutoff. Otherwise stale metas
+	// accumulate after a botched delete on a previous run.
+	old := fakeNow.AddDate(0, 0, -100).Format(timestampLayout)
+	objs := []storage.Object{
+		{Path: "x/2026/01/19/dump-" + old + ".meta.json", Size: 1},
+	}
+	got := selectForDeletion(objs, RetentionPolicy{Days: 30, MinKeep: 0}, fakeNow)
+	if len(got) != 1 || !contains(got[0], ".meta.json") {
+		t.Errorf("orphan meta must be selected for deletion, got %v", got)
+	}
+}
+
+func TestClassifyKind(t *testing.T) {
+	cases := []struct {
+		path string
+		want string
+	}{
+		{"x/2026/01/01/dump-20260101T020000Z.sql.gz.age", "dump"},
+		{"x/2026/01/01/dump-20260101T020000Z.meta.json", "meta"},
+		{"x/random.txt", "other"},
+		{"", "other"},
+	}
+	for _, c := range cases {
+		if got := classifyKind(c.path); got != c.want {
+			t.Errorf("classifyKind(%q) = %q, want %q", c.path, got, c.want)
+		}
+	}
+}
+
 func TestSortDirsByDepth(t *testing.T) {
 	dirs := map[string]bool{
 		"target/2024":       true,

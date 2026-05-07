@@ -28,6 +28,13 @@ const (
 	AnnotationSizeDropThreshold = "backup.mogenius.io/size-drop-threshold"
 	AnnotationAnonymizeTables   = "backup.mogenius.io/anonymize-tables"
 	AnnotationEmptyDumpCheck    = "backup.mogenius.io/empty-dump-check"
+	// AnnotationJitterMinutes spreads the cron's minute field across an
+	// N-minute window via a deterministic per-source hash. Default 60
+	// (= "spread within the hour") applies only when the user wrote
+	// minute=="0"; setting it explicitly opts in to spreading even when
+	// the user wrote a non-zero literal minute. 0 disables. See the
+	// scheduler.ApplyJitter contract for the full semantics.
+	AnnotationJitterMinutes = "backup.mogenius.io/jitter-minutes"
 
 	// Restore-Verification annotations control the post-upload check that
 	// proves the encrypted dump is still decryptable and parseable. The

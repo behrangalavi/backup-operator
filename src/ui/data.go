@@ -8,6 +8,7 @@ import (
 
 	"backup-operator/internal/labels"
 	"backup-operator/internal/meta"
+	"backup-operator/internal/scheduler"
 	"backup-operator/internal/secrets"
 	storageFactory "backup-operator/storage/factory"
 
@@ -139,7 +140,13 @@ func (d *k8sData) listTargets(ctx context.Context) ([]targetSummary, error) {
 			Name:         src.TargetName,
 			SecretName:   src.SecretName,
 			DBType:       src.DBType,
-			Schedule:     src.Schedule,
+			// The materialised schedule is what the CronJob actually
+			// runs after per-source minute jitter. Operators reading
+			// the dashboard need to see the effective time, not the
+			// pre-jitter annotation — otherwise "0 2 * * *" on the
+			// card and "37 2 * * *" in the cluster would silently
+			// disagree.
+			Schedule:     scheduler.ApplyJitter(src.Schedule, src.JitterMinutes, src.SecretName),
 			Suspended:    src.Suspended,
 			Destinations: destinationsAllowedFor(src, dests),
 			CreatedAt:    createdAt[src.SecretName],

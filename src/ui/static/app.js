@@ -513,6 +513,11 @@ window.openSourceForm = function(secretName) {
         <div class="hint">Cron expression (default: 0 2 * * *)</div></div>
     </div>
     <div class="form-row">
+      <div class="form-group"><label>Jitter Minutes</label>
+        <input name="jitterMinutes" placeholder="auto">
+        <div class="hint">Spread the cron's minute field across an N-minute window per source to avoid fleet-wide thundering herd. Default applies to <code>0 H * * *</code>-style schedules only; explicit minutes are respected. <code>0</code> pins the schedule. Multi-fire (<code>*/15</code>, <code>0,30</code>) is always left alone.</div></div>
+    </div>
+    <div class="form-row">
       <div class="form-group"><label>Username</label>
         <input name="username">
         <div class="hint">Required for all types except Redis (Redis &lt; 6 has no usernames; ACL usernames came in 6.0)</div></div>
@@ -626,6 +631,7 @@ window.openSourceForm = function(secretName) {
       f.port.value = src.port || '';
       f.database.value = src.database || '';
       f.schedule.value = src.schedule || '';
+      f.jitterMinutes.value = src.jitterMinutes || '';
       f.username.value = src.username || '';
       f.retentionDays.value = src.retentionDays || '';
       f.minKeep.value = src.minKeep || '';
@@ -720,6 +726,7 @@ window.submitSourceForm = async function(e, secretName) {
     port: f.port.value,
     database: f.database.value,
     schedule: f.schedule.value,
+    jitterMinutes: f.jitterMinutes.value,
     username: f.username.value,
     password: f.password.value,
     retentionDays: f.retentionDays.value,

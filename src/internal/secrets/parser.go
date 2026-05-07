@@ -64,6 +64,12 @@ type Source struct {
 	// pod's data volume (e.g. "100Gi", "5Gi"). Empty falls back to a
 	// per-mode default. Same gating as VerificationImage.
 	VerificationVolumeSize string
+	// JitterMinutes controls per-source minute spreading on the
+	// materialised CronJob. -1 = annotation absent (default behaviour:
+	// jitter only when the user wrote minute==0). 0 = explicit opt-out.
+	// >0 = explicit window. See scheduler.ApplyJitter for the full
+	// decision tree.
+	JitterMinutes int
 	Config             dumper.Config
 }
 
@@ -148,6 +154,7 @@ func ParseSource(s *corev1.Secret, defaultSchedule string) (*Source, error) {
 		SizeDropThreshold:  parseFloatAnnotation(s.Annotations[labels.AnnotationSizeDropThreshold], -1),
 		AnonymizeTables:    parseBoolAnnotation(s.Annotations[labels.AnnotationAnonymizeTables], false),
 		EmptyDumpCheck:     parseBoolAnnotation(s.Annotations[labels.AnnotationEmptyDumpCheck], true),
+		JitterMinutes:      parseIntAnnotation(s.Annotations[labels.AnnotationJitterMinutes], -1),
 		Suspended:          parseBoolAnnotation(s.Annotations[labels.AnnotationSuspended], false),
 		RestoreVerificationMode:     parseRestoreVerificationMode(s.Annotations[labels.AnnotationRestoreVerificationMode]),
 		RestoreVerificationInterval: parseDurationAnnotation(s.Annotations[labels.AnnotationRestoreVerificationInterval]),

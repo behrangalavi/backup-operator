@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"backup-operator/internal/labels"
+	"backup-operator/internal/scheduler"
 	"backup-operator/internal/secrets"
 
 	"github.com/go-logr/logr"
@@ -123,7 +124,11 @@ func (r *CronJobReconciler) ensureCronJob(ctx context.Context, sec *corev1.Secre
 		return fmt.Errorf("CreateOrUpdate cronjob: %w", err)
 	}
 	if op != controllerutil.OperationResultNone {
-		log.Info("cronjob reconciled", "operation", op, "target", src.TargetName, "schedule", src.Schedule)
+		// Log the materialised schedule (post-jitter), not the
+		// annotation value — operators inspecting the log need to know
+		// what actually runs, not what was requested.
+		log.Info("cronjob reconciled", "operation", op, "target", src.TargetName,
+			"schedule", desired.Spec.Schedule, "schedule_annotation", src.Schedule)
 	}
 	return nil
 }
@@ -207,7 +212,7 @@ func (r *CronJobReconciler) buildCronJob(sec *corev1.Secret, src *secrets.Source
 			},
 		},
 		Spec: batchv1.CronJobSpec{
-			Schedule:                   src.Schedule,
+			Schedule:                   scheduler.ApplyJitter(src.Schedule, src.JitterMinutes, src.SecretName),
 			ConcurrencyPolicy:          concurrency,
 			// Pointer (not bare bool): we want the reconciler to deterministically
 			// drive Suspend from the annotation, including back to false. Manual

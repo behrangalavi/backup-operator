@@ -43,6 +43,11 @@ type sourceRequest struct {
 	RowDropThreshold   string            `json:"rowDropThreshold"`
 	SizeDropThreshold  string            `json:"sizeDropThreshold"`
 	AnonymizeTables    *bool             `json:"anonymizeTables"`
+	// JitterMinutes spreads the cron's minute field per source.
+	// Empty string = annotation absent (default behaviour: jitter when
+	// minute==0 only). "0" pins the schedule. Any other integer is a
+	// window override.
+	JitterMinutes string `json:"jitterMinutes"`
 	// Restore-verification (Phase 1 stream-validate, Phase 2 spawn-and-restore).
 	// Empty string on optional fields means "don't change / use default".
 	RestoreVerificationMode     string `json:"restoreVerificationMode"`
@@ -725,6 +730,9 @@ func buildSourceAnnotations(req sourceRequest) map[string]string {
 	if req.Destinations != "" {
 		ann[labels.AnnotationDestinations] = req.Destinations
 	}
+	if req.JitterMinutes != "" {
+		ann[labels.AnnotationJitterMinutes] = req.JitterMinutes
+	}
 	if req.RetentionDays != "" {
 		ann[labels.AnnotationRetentionDays] = req.RetentionDays
 	}
@@ -793,6 +801,9 @@ func mergeSourceAnnotations(sec *corev1.Secret, req sourceRequest) {
 	}
 	if req.Destinations != "" {
 		sec.Annotations[labels.AnnotationDestinations] = req.Destinations
+	}
+	if req.JitterMinutes != "" {
+		sec.Annotations[labels.AnnotationJitterMinutes] = req.JitterMinutes
 	}
 	if req.RetentionDays != "" {
 		sec.Annotations[labels.AnnotationRetentionDays] = req.RetentionDays
@@ -890,6 +901,7 @@ func (s *Server) handleAPIGetSource(w http.ResponseWriter, r *http.Request) {
 		AnalyzerEnabled   string `json:"analyzerEnabled"`
 		EmptyDumpCheck    string `json:"emptyDumpCheck"`
 		Destinations      string `json:"destinations"`
+		JitterMinutes     string `json:"jitterMinutes"`
 		RetentionDays     string `json:"retentionDays"`
 		MinKeep           string `json:"minKeep"`
 		RowDropThreshold  string `json:"rowDropThreshold"`
@@ -921,6 +933,7 @@ func (s *Server) handleAPIGetSource(w http.ResponseWriter, r *http.Request) {
 		AnalyzerEnabled:   sec.Annotations[labels.AnnotationAnalyzerEnabled],
 		EmptyDumpCheck:    sec.Annotations[labels.AnnotationEmptyDumpCheck],
 		Destinations:      sec.Annotations[labels.AnnotationDestinations],
+		JitterMinutes:     sec.Annotations[labels.AnnotationJitterMinutes],
 		RetentionDays:     sec.Annotations[labels.AnnotationRetentionDays],
 		MinKeep:           sec.Annotations[labels.AnnotationMinKeep],
 		RowDropThreshold:  sec.Annotations[labels.AnnotationRowDropThreshold],

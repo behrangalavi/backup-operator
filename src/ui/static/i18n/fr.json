@@ -26,46 +26,134 @@
     "loading": "Chargement…",
     "yes": "Oui",
     "no": "Non",
-    "language": "Langue"
+    "language": "Langue",
+    "actions": "Actions",
+    "search": "Rechercher…",
+    "all": "Tous",
+    "type": "Type",
+    "name": "Nom",
+    "status": "État",
+    "details": "Détails",
+    "create": "Créer",
+    "update": "Mettre à jour",
+    "default": "Défaut",
+    "enabled": "Activé",
+    "disabled": "Désactivé",
+    "sortBy": "Trier par",
+    "auto": "auto",
+    "off": "Désactivé",
+    "on": "Activé",
+    "none": "—"
   },
   "buttons": {
     "runNow": "Lancer maintenant",
+    "run": "Lancer",
     "addSource": "Ajouter une source",
     "addDestination": "Ajouter une destination",
     "pause": "Suspendre",
     "resume": "Reprendre",
     "test": "Tester",
     "refresh": "Actualiser",
-    "exportValues": "Exporter values.yaml"
+    "exportValues": "Exporter values.yaml",
+    "back": "Retour",
+    "next": "Suivant",
+    "applySettings": "Appliquer",
+    "sendTest": "Envoyer une alerte de test",
+    "addKey": "Ajouter une clé"
   },
   "page": {
     "dashboard": {
-      "title": "Tableau de bord"
+      "title": "Tableau de bord",
+      "subtitle": "Vue d'ensemble des sauvegardes",
+      "targets": "Cibles de sauvegarde",
+      "consistency": "Cohérence inter-destinations",
+      "health": "Matrice de santé des destinations",
+      "noTargets": "Aucune source de sauvegarde",
+      "noTargetsHint": "Créez une source pour commencer à sauvegarder vos bases de données.",
+      "noConsistency": "Toutes les cibles sont cohérentes sur leurs destinations."
     },
     "sources": {
       "title": "Sources",
-      "empty": "Aucune source configurée. Cliquez sur \"Ajouter une source\" pour étiqueter votre premier Secret de base de données."
+      "subtitle": "Sources de sauvegarde de bases de données",
+      "empty": "Aucune source configurée",
+      "emptyHint": "Cliquez sur \"Ajouter une source\" pour étiqueter votre premier Secret de base.",
+      "addFirst": "Ajouter votre première source"
     },
     "destinations": {
       "title": "Destinations",
-      "empty": "Aucune destination configurée. Cliquez sur \"Ajouter une destination\" pour brancher SFTP ou S3."
+      "subtitle": "Stockages cibles pour les uploads",
+      "empty": "Aucune destination configurée",
+      "emptyHint": "Cliquez sur \"Ajouter une destination\" pour brancher SFTP ou S3.",
+      "addFirst": "Ajouter votre première destination"
     },
     "jobs": {
       "title": "Tâches",
+      "subtitle": "Historique d'exécution des tâches",
       "empty": "Aucune tâche enregistrée."
     },
     "alerts": {
       "title": "Alertes",
       "empty": "Aucune alerte active.",
       "sourceLocal": "Heuristique locale — la durée (`for:`) n'est pas respectée. Alertmanager est la source de référence.",
-      "sourcePrometheus": "En direct depuis Prometheus."
+      "sourcePrometheus": "En direct depuis Prometheus.",
+      "openInAlertmanager": "Ouvrir dans Alertmanager",
+      "testAlert": "Envoyer une alerte de test",
+      "amStatus": "État Alertmanager",
+      "promStatus": "État Prometheus",
+      "connected": "connecté",
+      "unreachable": "injoignable"
     },
     "audit": {
-      "title": "Journal d'audit"
+      "title": "Journal d'audit",
+      "subtitle": "Événements Kubernetes émis par l'opérateur et le worker",
+      "empty": "Aucun événement d'audit enregistré."
     },
     "settings": {
-      "title": "Paramètres"
+      "title": "Paramètres",
+      "subtitle": "Configuration de l'opérateur",
+      "wizardSubtitle": "Assistant de configuration",
+      "step": "Étape",
+      "of": "sur",
+      "review": "Vérifier & appliquer",
+      "applied": "Paramètres appliqués",
+      "exportHint": "Téléchargez un values.yaml correspondant à ces paramètres — committez-le dans Git puis lancez helm upgrade.",
+      "section": {
+        "schedule": "Planification & Timeout",
+        "retention": "Politique de rétention",
+        "worker": "Ressources du worker",
+        "review": "Vérifier & appliquer"
+      }
     }
+  },
+  "table": {
+    "target": "Cible",
+    "type": "Type",
+    "schedule": "Planification",
+    "status": "État",
+    "lastRun": "Dernière exécution",
+    "size": "Taille",
+    "createdAt": "Créé",
+    "destinations": "Destinations",
+    "timestamp": "Horodatage",
+    "presentIn": "Présent dans",
+    "missingFrom": "Manquant dans",
+    "phase": "Phase",
+    "error": "Erreur",
+    "runCount": "Exécutions",
+    "completedAt": "Terminé",
+    "duration": "Durée",
+    "verification": "Vérification",
+    "anomalies": "Anomalies",
+    "reason": "Motif",
+    "message": "Message",
+    "object": "Objet",
+    "action": "Action",
+    "kind": "Type",
+    "summary": "Résumé",
+    "severity": "Sévérité",
+    "alert": "Alerte",
+    "sinceFiring": "Active depuis",
+    "destination": "Destination"
   },
   "target": {
     "configuration": "Configuration",
@@ -75,13 +163,164 @@
     "runHistory": "Historique des exécutions",
     "dumpSizeTrend": "Évolution de la taille",
     "runStatusHeatmap": "État — 91 derniers jours",
-    "analysisCoverage": "Couverture d'analyse"
+    "analysisCoverage": "Couverture d'analyse",
+    "verification": "Vérification du dump",
+    "restoreVerification": "Vérification de restauration",
+    "tablesCard": "Tables (dernière exécution)",
+    "time": "Heure",
+    "sha256": "SHA256",
+    "verificationLabel": "Vérification",
+    "restoreLabel": "Vérif. restauration",
+    "back": "Retour au tableau de bord"
+  },
+  "form": {
+    "source": {
+      "createTitle": "Créer une source",
+      "editTitle": "Modifier la source",
+      "section": {
+        "basics": "Informations",
+        "credentials": "Identifiants",
+        "retention": "Rétention",
+        "fanout": "Distribution",
+        "verification": "Vérification de restauration",
+        "analysis": "Analyse & validation"
+      },
+      "label": {
+        "name": "Nom de la cible",
+        "dbType": "Type de BDD",
+        "host": "Hôte",
+        "port": "Port",
+        "database": "Base",
+        "schedule": "Planification",
+        "jitter": "Jitter (minutes)",
+        "username": "Utilisateur",
+        "password": "Mot de passe",
+        "retentionDays": "Rétention (jours)",
+        "minKeep": "Conserver au moins",
+        "destinations": "Destinations",
+        "destinationsHint": "Tout décoché = distribution à toutes les destinations.",
+        "anonymize": "Anonymiser les noms de tables",
+        "verificationMode": "Mode",
+        "verificationInterval": "Intervalle",
+        "verificationImage": "Image vérificateur (Phase 2)",
+        "verificationVolumeSize": "Taille du volume (Phase 2)",
+        "analyzer": "Analyseur",
+        "emptyDumpCheck": "Détection dump vide",
+        "rowDropThreshold": "Seuil chute de lignes",
+        "sizeDropThreshold": "Seuil chute de taille"
+      },
+      "placeholder": {
+        "name": "prod-users",
+        "host": "db.example.com",
+        "port": "auto-détection",
+        "database": "mydb",
+        "schedule": "0 2 * * *",
+        "jitter": "auto",
+        "passwordEdit": "(vide = inchangé)",
+        "retentionDays": "30",
+        "minKeep": "3",
+        "interval": "168h",
+        "image": "ex. postgres:15.5-alpine",
+        "volumeSize": "ex. 100Gi",
+        "rowDrop": "0.5",
+        "sizeDrop": "0.5",
+        "selectType": "Sélectionner…"
+      },
+      "verifyMode": {
+        "off": "Désactivé (défaut)",
+        "streamValidate": "stream-validate (en mémoire, sans pod DB)",
+        "schemaOnly": "schema-only (lance une DB, restaure le DDL)",
+        "sample": "sample (lance une DB, tables sélectionnées)",
+        "full": "full (lance une DB, restauration complète + tests)"
+      },
+      "select": {
+        "default": "Défaut",
+        "defaultOn": "Défaut (activé)",
+        "enabled": "Activé",
+        "disabled": "Désactivé"
+      }
+    },
+    "destination": {
+      "createTitle": "Créer une destination",
+      "editTitle": "Modifier la destination",
+      "label": {
+        "name": "Nom de la destination",
+        "type": "Type de stockage",
+        "host": "Hôte",
+        "port": "Port",
+        "username": "Utilisateur",
+        "sshKey": "Clé privée SSH",
+        "knownHosts": "Known Hosts",
+        "bucket": "Bucket",
+        "region": "Région",
+        "endpoint": "Endpoint",
+        "accessKey": "Access Key ID",
+        "secretKey": "Secret Access Key",
+        "pathStyle": "Path-style",
+        "pathPrefix": "Préfixe de chemin"
+      },
+      "placeholder": {
+        "name": "hetzner-sb",
+        "host": "u123.your-storagebox.de",
+        "port": "23",
+        "endpoint": "ex. https://minio.example.com",
+        "region": "us-east-1",
+        "pathPrefix": "/cluster-prod"
+      },
+      "type": {
+        "sftp": "SFTP",
+        "hetznerSftp": "Hetzner Storage Box (SFTP)",
+        "s3": "S3 / compatible S3"
+      }
+    }
+  },
+  "modal": {
+    "delete": {
+      "title": "Supprimer {name} ?",
+      "warning": "La configuration est supprimée définitivement. Les dumps déjà stockés sont conservés.",
+      "confirm": "Supprimer",
+      "cancel": "Annuler"
+    },
+    "test": {
+      "title": "Tester {name}",
+      "running": "Test de connectivité en cours…",
+      "success": "Connecté. Bucket/chemin accessible.",
+      "fail": "Échec : {error}"
+    }
   },
   "toast": {
     "saved": "Enregistré",
     "deleted": "Supprimé",
     "triggered": "Sauvegarde lancée",
     "exportOk": "values.yaml exporté",
-    "exportFail": "Échec de l'export : {error}"
+    "exportFail": "Échec de l'export : {error}",
+    "sourceCreated": "Source créée",
+    "sourceUpdated": "Source mise à jour",
+    "sourceDeleted": "Source supprimée",
+    "destinationCreated": "Destination créée",
+    "destinationUpdated": "Destination mise à jour",
+    "destinationDeleted": "Destination supprimée",
+    "settingsSaved": "Paramètres enregistrés",
+    "testAlertSent": "Alerte de test envoyée — devrait apparaître dans Alertmanager en quelques secondes",
+    "loadFailed": "Échec du chargement : {error}",
+    "saveFailed": "Échec de l'enregistrement : {error}",
+    "deleteFailed": "Échec de la suppression : {error}",
+    "triggerFailed": "Échec du déclenchement : {error}",
+    "paused": "Suspendu",
+    "resumed": "Repris"
+  },
+  "alertname": {
+    "BackupOverdue": "Sauvegarde en retard",
+    "BackupDestinationFailing": "Destination en échec",
+    "BackupDumpSizeCollapsed": "Effondrement de la taille",
+    "BackupSchemaChanged": "Schéma modifié",
+    "BackupCharsetChanged": "Charset modifié",
+    "BackupStorageCorrupted": "Stockage corrompu",
+    "BackupRetentionFailing": "Rétention en échec",
+    "BackupAnomaliesAppearing": "Anomalies détectées",
+    "BackupLastRunFailed": "Dernière exécution échouée",
+    "BackupSucceeded": "Sauvegarde réussie",
+    "BackupRestoreVerificationFailed": "Vérification de restauration échouée",
+    "BackupRestoreVerificationStale": "Vérification de restauration obsolète"
   }
 }

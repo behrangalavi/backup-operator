@@ -26,46 +26,134 @@
     "loading": "Lade…",
     "yes": "Ja",
     "no": "Nein",
-    "language": "Sprache"
+    "language": "Sprache",
+    "actions": "Aktionen",
+    "search": "Suchen…",
+    "all": "Alle",
+    "type": "Typ",
+    "name": "Name",
+    "status": "Status",
+    "details": "Details",
+    "create": "Anlegen",
+    "update": "Aktualisieren",
+    "default": "Standard",
+    "enabled": "Aktiviert",
+    "disabled": "Deaktiviert",
+    "sortBy": "Sortieren nach",
+    "auto": "automatisch",
+    "off": "Aus",
+    "on": "An",
+    "none": "—"
   },
   "buttons": {
     "runNow": "Jetzt starten",
+    "run": "Starten",
     "addSource": "Quelle hinzufügen",
     "addDestination": "Ziel hinzufügen",
     "pause": "Pausieren",
     "resume": "Fortsetzen",
     "test": "Testen",
     "refresh": "Aktualisieren",
-    "exportValues": "values.yaml exportieren"
+    "exportValues": "values.yaml exportieren",
+    "back": "Zurück",
+    "next": "Weiter",
+    "applySettings": "Einstellungen übernehmen",
+    "sendTest": "Testalarm senden",
+    "addKey": "Schlüssel hinzufügen"
   },
   "page": {
     "dashboard": {
-      "title": "Übersicht"
+      "title": "Übersicht",
+      "subtitle": "Backup-Übersicht",
+      "targets": "Backup-Ziele",
+      "consistency": "Konsistenz über Ziele",
+      "health": "Ziel-Gesundheitsmatrix",
+      "noTargets": "Keine Backup-Quellen",
+      "noTargetsHint": "Lege eine Quelle an, um deine Datenbanken zu sichern.",
+      "noConsistency": "Alle Targets sind über ihre Ziele hinweg konsistent."
     },
     "sources": {
       "title": "Quellen",
-      "empty": "Keine Quellen konfiguriert. Klicke \"Quelle hinzufügen\", um dein erstes Datenbank-Secret zu labeln."
+      "subtitle": "Datenbank-Quellen für Backups",
+      "empty": "Keine Quellen konfiguriert",
+      "emptyHint": "Klicke \"Quelle hinzufügen\", um dein erstes Datenbank-Secret zu labeln.",
+      "addFirst": "Erste Quelle hinzufügen"
     },
     "destinations": {
       "title": "Ziele",
-      "empty": "Keine Ziele konfiguriert. Klicke \"Ziel hinzufügen\", um SFTP oder S3 anzubinden."
+      "subtitle": "Speicher-Backends für Backup-Uploads",
+      "empty": "Keine Ziele konfiguriert",
+      "emptyHint": "Klicke \"Ziel hinzufügen\", um SFTP oder S3 anzubinden.",
+      "addFirst": "Erstes Ziel hinzufügen"
     },
     "jobs": {
       "title": "Jobs",
+      "subtitle": "Backup-Job-Verlauf",
       "empty": "Noch keine Jobs erfasst."
     },
     "alerts": {
       "title": "Alarme",
       "empty": "Keine aktiven Alarme.",
       "sourceLocal": "Lokale Heuristik — Schwellzeit (`for:`) wird nicht berücksichtigt. Alertmanager ist die verbindliche Quelle.",
-      "sourcePrometheus": "Live aus Prometheus."
+      "sourcePrometheus": "Live aus Prometheus.",
+      "openInAlertmanager": "In Alertmanager öffnen",
+      "testAlert": "Testalarm senden",
+      "amStatus": "Alertmanager-Status",
+      "promStatus": "Prometheus-Status",
+      "connected": "verbunden",
+      "unreachable": "nicht erreichbar"
     },
     "audit": {
-      "title": "Audit-Trail"
+      "title": "Audit-Trail",
+      "subtitle": "Kubernetes-Events vom Backup-Operator und Worker",
+      "empty": "Noch keine Audit-Events erfasst."
     },
     "settings": {
-      "title": "Einstellungen"
+      "title": "Einstellungen",
+      "subtitle": "Operator-Konfiguration",
+      "wizardSubtitle": "Operator-Konfigurations-Assistent",
+      "step": "Schritt",
+      "of": "von",
+      "review": "Prüfen & Anwenden",
+      "applied": "Einstellungen angewendet",
+      "exportHint": "Lade ein values.yaml herunter, das diese Einstellungen abbildet — committe es nach Git und führe helm upgrade aus.",
+      "section": {
+        "schedule": "Zeitplan & Timeout",
+        "retention": "Aufbewahrung",
+        "worker": "Worker-Ressourcen",
+        "review": "Prüfen & Anwenden"
+      }
     }
+  },
+  "table": {
+    "target": "Target",
+    "type": "Typ",
+    "schedule": "Zeitplan",
+    "status": "Status",
+    "lastRun": "Letzter Lauf",
+    "size": "Größe",
+    "createdAt": "Erstellt",
+    "destinations": "Ziele",
+    "timestamp": "Zeitstempel",
+    "presentIn": "Vorhanden in",
+    "missingFrom": "Fehlt in",
+    "phase": "Phase",
+    "error": "Fehler",
+    "runCount": "Läufe",
+    "completedAt": "Abgeschlossen",
+    "duration": "Dauer",
+    "verification": "Verifikation",
+    "anomalies": "Anomalien",
+    "reason": "Grund",
+    "message": "Meldung",
+    "object": "Objekt",
+    "action": "Aktion",
+    "kind": "Art",
+    "summary": "Zusammenfassung",
+    "severity": "Schweregrad",
+    "alert": "Alarm",
+    "sinceFiring": "Aktiv seit",
+    "destination": "Ziel"
   },
   "target": {
     "configuration": "Konfiguration",
@@ -75,13 +163,164 @@
     "runHistory": "Lauf-Historie",
     "dumpSizeTrend": "Dump-Größenverlauf",
     "runStatusHeatmap": "Lauf-Status — letzte 91 Tage",
-    "analysisCoverage": "Analyse-Abdeckung"
+    "analysisCoverage": "Analyse-Abdeckung",
+    "verification": "Dump-Verifikation",
+    "restoreVerification": "Restore-Verifikation",
+    "tablesCard": "Tabellen (letzter Lauf)",
+    "time": "Zeit",
+    "sha256": "SHA256",
+    "verificationLabel": "Verifikation",
+    "restoreLabel": "Restore-Verifikation",
+    "back": "Zurück zur Übersicht"
+  },
+  "form": {
+    "source": {
+      "createTitle": "Quelle anlegen",
+      "editTitle": "Quelle bearbeiten",
+      "section": {
+        "basics": "Grunddaten",
+        "credentials": "Zugangsdaten",
+        "retention": "Aufbewahrung",
+        "fanout": "Verteilung",
+        "verification": "Restore-Verifikation",
+        "analysis": "Analyse & Validierung"
+      },
+      "label": {
+        "name": "Target-Name",
+        "dbType": "DB-Typ",
+        "host": "Host",
+        "port": "Port",
+        "database": "Datenbank",
+        "schedule": "Zeitplan",
+        "jitter": "Jitter (Minuten)",
+        "username": "Benutzername",
+        "password": "Passwort",
+        "retentionDays": "Aufbewahrung (Tage)",
+        "minKeep": "Mindestens behalten",
+        "destinations": "Ziele",
+        "destinationsHint": "Alle leer = Verteilung an alle Ziele.",
+        "anonymize": "Tabellennamen anonymisieren",
+        "verificationMode": "Modus",
+        "verificationInterval": "Intervall",
+        "verificationImage": "Verifier-Image (nur Phase 2)",
+        "verificationVolumeSize": "Volume-Größe (nur Phase 2)",
+        "analyzer": "Analyzer",
+        "emptyDumpCheck": "Leerer-Dump-Check",
+        "rowDropThreshold": "Schwelle Zeilen-Rückgang",
+        "sizeDropThreshold": "Schwelle Größen-Rückgang"
+      },
+      "placeholder": {
+        "name": "prod-users",
+        "host": "db.example.com",
+        "port": "automatisch",
+        "database": "mydb",
+        "schedule": "0 2 * * *",
+        "jitter": "automatisch",
+        "passwordEdit": "(leer = unverändert)",
+        "retentionDays": "30",
+        "minKeep": "3",
+        "interval": "168h",
+        "image": "z.B. postgres:15.5-alpine",
+        "volumeSize": "z.B. 100Gi",
+        "rowDrop": "0.5",
+        "sizeDrop": "0.5",
+        "selectType": "Auswählen…"
+      },
+      "verifyMode": {
+        "off": "Aus (Standard)",
+        "streamValidate": "stream-validate (in-process, ohne DB-Pod)",
+        "schemaOnly": "schema-only (DB starten, DDL wiederherstellen)",
+        "sample": "sample (DB starten, ausgewählte Tabellen)",
+        "full": "full (DB starten, voll-Restore + Smoke-Tests)"
+      },
+      "select": {
+        "default": "Standard",
+        "defaultOn": "Standard (an)",
+        "enabled": "Aktiviert",
+        "disabled": "Deaktiviert"
+      }
+    },
+    "destination": {
+      "createTitle": "Ziel anlegen",
+      "editTitle": "Ziel bearbeiten",
+      "label": {
+        "name": "Ziel-Name",
+        "type": "Speichertyp",
+        "host": "Host",
+        "port": "Port",
+        "username": "Benutzername",
+        "sshKey": "SSH Private Key",
+        "knownHosts": "Known Hosts",
+        "bucket": "Bucket",
+        "region": "Region",
+        "endpoint": "Endpoint",
+        "accessKey": "Access Key ID",
+        "secretKey": "Secret Access Key",
+        "pathStyle": "Path-style",
+        "pathPrefix": "Pfad-Präfix"
+      },
+      "placeholder": {
+        "name": "hetzner-sb",
+        "host": "u123.your-storagebox.de",
+        "port": "23",
+        "endpoint": "z.B. https://minio.example.com",
+        "region": "us-east-1",
+        "pathPrefix": "/cluster-prod"
+      },
+      "type": {
+        "sftp": "SFTP",
+        "hetznerSftp": "Hetzner Storage Box (SFTP)",
+        "s3": "S3 / S3-kompatibel"
+      }
+    }
+  },
+  "modal": {
+    "delete": {
+      "title": "{name} löschen?",
+      "warning": "Die Konfiguration wird endgültig entfernt. Vorhandene Dumps im Speicher bleiben erhalten.",
+      "confirm": "Löschen",
+      "cancel": "Abbrechen"
+    },
+    "test": {
+      "title": "{name} testen",
+      "running": "Verbindungstest läuft…",
+      "success": "Verbunden. Bucket/Pfad erreichbar.",
+      "fail": "Fehlgeschlagen: {error}"
+    }
   },
   "toast": {
     "saved": "Gespeichert",
     "deleted": "Gelöscht",
     "triggered": "Backup ausgelöst",
     "exportOk": "values.yaml exportiert",
-    "exportFail": "Export fehlgeschlagen: {error}"
+    "exportFail": "Export fehlgeschlagen: {error}",
+    "sourceCreated": "Quelle angelegt",
+    "sourceUpdated": "Quelle aktualisiert",
+    "sourceDeleted": "Quelle gelöscht",
+    "destinationCreated": "Ziel angelegt",
+    "destinationUpdated": "Ziel aktualisiert",
+    "destinationDeleted": "Ziel gelöscht",
+    "settingsSaved": "Einstellungen gespeichert",
+    "testAlertSent": "Testalarm gesendet — sollte innerhalb von Sekunden im Alertmanager erscheinen",
+    "loadFailed": "Laden fehlgeschlagen: {error}",
+    "saveFailed": "Speichern fehlgeschlagen: {error}",
+    "deleteFailed": "Löschen fehlgeschlagen: {error}",
+    "triggerFailed": "Auslösen fehlgeschlagen: {error}",
+    "paused": "Pausiert",
+    "resumed": "Fortgesetzt"
+  },
+  "alertname": {
+    "BackupOverdue": "Backup überfällig",
+    "BackupDestinationFailing": "Ziel ausgefallen",
+    "BackupDumpSizeCollapsed": "Dump-Größe eingebrochen",
+    "BackupSchemaChanged": "Schema geändert",
+    "BackupCharsetChanged": "Charset geändert",
+    "BackupStorageCorrupted": "Speicher beschädigt",
+    "BackupRetentionFailing": "Aufbewahrung fehlgeschlagen",
+    "BackupAnomaliesAppearing": "Anomalien aufgetreten",
+    "BackupLastRunFailed": "Letzter Lauf fehlgeschlagen",
+    "BackupSucceeded": "Backup erfolgreich",
+    "BackupRestoreVerificationFailed": "Restore-Verifikation fehlgeschlagen",
+    "BackupRestoreVerificationStale": "Restore-Verifikation veraltet"
   }
 }

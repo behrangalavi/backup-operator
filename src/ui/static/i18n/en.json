@@ -26,46 +26,134 @@
     "loading": "Loading…",
     "yes": "Yes",
     "no": "No",
-    "language": "Language"
+    "language": "Language",
+    "actions": "Actions",
+    "search": "Search…",
+    "all": "All",
+    "type": "Type",
+    "name": "Name",
+    "status": "Status",
+    "details": "Details",
+    "create": "Create",
+    "update": "Update",
+    "default": "Default",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "sortBy": "Sort by",
+    "auto": "auto",
+    "off": "Off",
+    "on": "On",
+    "none": "—"
   },
   "buttons": {
     "runNow": "Run Now",
+    "run": "Run",
     "addSource": "Add Source",
     "addDestination": "Add Destination",
     "pause": "Pause",
     "resume": "Resume",
     "test": "Test",
     "refresh": "Refresh",
-    "exportValues": "Export values.yaml"
+    "exportValues": "Export values.yaml",
+    "back": "Back",
+    "next": "Next",
+    "applySettings": "Apply Settings",
+    "sendTest": "Send Test Alert",
+    "addKey": "Add Key"
   },
   "page": {
     "dashboard": {
-      "title": "Dashboard"
+      "title": "Dashboard",
+      "subtitle": "Backup overview",
+      "targets": "Backup Targets",
+      "consistency": "Consistency Across Destinations",
+      "health": "Destination Health Matrix",
+      "noTargets": "No backup sources",
+      "noTargetsHint": "Create a source to start backing up your databases.",
+      "noConsistency": "All targets are consistent across their destinations."
     },
     "sources": {
       "title": "Sources",
-      "empty": "No sources configured. Click \"Add Source\" to label your first database Secret."
+      "subtitle": "Database backup sources",
+      "empty": "No sources configured",
+      "emptyHint": "Click \"Add Source\" to label your first database Secret.",
+      "addFirst": "Add your first source"
     },
     "destinations": {
       "title": "Destinations",
-      "empty": "No destinations configured. Click \"Add Destination\" to add an SFTP or S3 backend."
+      "subtitle": "Storage backends for backup uploads",
+      "empty": "No destinations configured",
+      "emptyHint": "Click \"Add Destination\" to add an SFTP or S3 backend.",
+      "addFirst": "Add your first destination"
     },
     "jobs": {
       "title": "Jobs",
+      "subtitle": "Backup job execution history",
       "empty": "No jobs recorded yet."
     },
     "alerts": {
       "title": "Alerts",
       "empty": "No alerts firing.",
       "sourceLocal": "Local heuristic — duration thresholds (`for:`) are not honored. Alertmanager is the audit-grade source.",
-      "sourcePrometheus": "Live from Prometheus."
+      "sourcePrometheus": "Live from Prometheus.",
+      "openInAlertmanager": "Open in Alertmanager",
+      "testAlert": "Send Test Alert",
+      "amStatus": "Alertmanager status",
+      "promStatus": "Prometheus status",
+      "connected": "connected",
+      "unreachable": "unreachable"
     },
     "audit": {
-      "title": "Audit Trail"
+      "title": "Audit Trail",
+      "subtitle": "Kubernetes Events emitted by the backup operator and worker",
+      "empty": "No audit events recorded yet."
     },
     "settings": {
-      "title": "Settings"
+      "title": "Settings",
+      "subtitle": "Operator configuration",
+      "wizardSubtitle": "Operator configuration wizard",
+      "step": "Step",
+      "of": "of",
+      "review": "Review & Apply",
+      "applied": "Settings applied",
+      "exportHint": "Download a values.yaml mirroring these settings — commit it to Git and run helm upgrade.",
+      "section": {
+        "schedule": "Schedule & Timeout",
+        "retention": "Retention Policy",
+        "worker": "Worker Resources",
+        "review": "Review & Apply"
+      }
     }
+  },
+  "table": {
+    "target": "Target",
+    "type": "Type",
+    "schedule": "Schedule",
+    "status": "Status",
+    "lastRun": "Last Run",
+    "size": "Size",
+    "createdAt": "Created",
+    "destinations": "Destinations",
+    "timestamp": "Timestamp",
+    "presentIn": "Present In",
+    "missingFrom": "Missing From",
+    "phase": "Phase",
+    "error": "Error",
+    "runCount": "Runs",
+    "completedAt": "Completed",
+    "duration": "Duration",
+    "verification": "Verification",
+    "anomalies": "Anomalies",
+    "reason": "Reason",
+    "message": "Message",
+    "object": "Object",
+    "action": "Action",
+    "kind": "Kind",
+    "summary": "Summary",
+    "severity": "Severity",
+    "alert": "Alert",
+    "sinceFiring": "Firing since",
+    "destination": "Destination"
   },
   "target": {
     "configuration": "Configuration",
@@ -75,13 +163,164 @@
     "runHistory": "Run History",
     "dumpSizeTrend": "Dump Size Trend",
     "runStatusHeatmap": "Run Status — Last 91 Days",
-    "analysisCoverage": "Analysis Coverage"
+    "analysisCoverage": "Analysis Coverage",
+    "verification": "Dump Verification",
+    "restoreVerification": "Restore Verification",
+    "tablesCard": "Tables (latest run)",
+    "time": "Time",
+    "sha256": "SHA256",
+    "verificationLabel": "Verification",
+    "restoreLabel": "Restore Verify",
+    "back": "Back to dashboard"
+  },
+  "form": {
+    "source": {
+      "createTitle": "Create Source",
+      "editTitle": "Edit Source",
+      "section": {
+        "basics": "Basics",
+        "credentials": "Credentials",
+        "retention": "Retention",
+        "fanout": "Fan-out",
+        "verification": "Restore Verification",
+        "analysis": "Analysis & Validation"
+      },
+      "label": {
+        "name": "Target Name",
+        "dbType": "DB Type",
+        "host": "Host",
+        "port": "Port",
+        "database": "Database",
+        "schedule": "Schedule",
+        "jitter": "Jitter Minutes",
+        "username": "Username",
+        "password": "Password",
+        "retentionDays": "Retention Days",
+        "minKeep": "Min Keep",
+        "destinations": "Destinations",
+        "destinationsHint": "Leave all unchecked to fan out to every destination.",
+        "anonymize": "Anonymize Tables",
+        "verificationMode": "Mode",
+        "verificationInterval": "Interval",
+        "verificationImage": "Verifier Image (Phase-2 only)",
+        "verificationVolumeSize": "Volume Size (Phase-2 only)",
+        "analyzer": "Analyzer",
+        "emptyDumpCheck": "Empty-Dump Check",
+        "rowDropThreshold": "Row-Drop Threshold",
+        "sizeDropThreshold": "Size-Drop Threshold"
+      },
+      "placeholder": {
+        "name": "prod-users",
+        "host": "db.example.com",
+        "port": "auto-detect",
+        "database": "mydb",
+        "schedule": "0 2 * * *",
+        "jitter": "auto",
+        "passwordEdit": "(unchanged if empty)",
+        "retentionDays": "30",
+        "minKeep": "3",
+        "interval": "168h",
+        "image": "e.g. postgres:15.5-alpine",
+        "volumeSize": "e.g. 100Gi",
+        "rowDrop": "0.5",
+        "sizeDrop": "0.5",
+        "selectType": "Select…"
+      },
+      "verifyMode": {
+        "off": "Off (default)",
+        "streamValidate": "stream-validate (in-process, no DB pod)",
+        "schemaOnly": "schema-only (spawn DB, restore DDL)",
+        "sample": "sample (spawn DB, restore selected tables)",
+        "full": "full (spawn DB, full restore + smoke queries)"
+      },
+      "select": {
+        "default": "Default",
+        "defaultOn": "Default (on)",
+        "enabled": "Enabled",
+        "disabled": "Disabled"
+      }
+    },
+    "destination": {
+      "createTitle": "Create Destination",
+      "editTitle": "Edit Destination",
+      "label": {
+        "name": "Destination Name",
+        "type": "Storage Type",
+        "host": "Host",
+        "port": "Port",
+        "username": "Username",
+        "sshKey": "SSH Private Key",
+        "knownHosts": "Known Hosts",
+        "bucket": "Bucket",
+        "region": "Region",
+        "endpoint": "Endpoint",
+        "accessKey": "Access Key ID",
+        "secretKey": "Secret Access Key",
+        "pathStyle": "Path-style",
+        "pathPrefix": "Path Prefix"
+      },
+      "placeholder": {
+        "name": "hetzner-sb",
+        "host": "u123.your-storagebox.de",
+        "port": "23",
+        "endpoint": "e.g. https://minio.example.com",
+        "region": "us-east-1",
+        "pathPrefix": "/cluster-prod"
+      },
+      "type": {
+        "sftp": "SFTP",
+        "hetznerSftp": "Hetzner Storage Box (SFTP)",
+        "s3": "S3 / S3-compatible"
+      }
+    }
+  },
+  "modal": {
+    "delete": {
+      "title": "Delete {name}?",
+      "warning": "This permanently removes the configuration. Existing dumps in storage are kept.",
+      "confirm": "Delete",
+      "cancel": "Cancel"
+    },
+    "test": {
+      "title": "Test {name}",
+      "running": "Running connectivity test…",
+      "success": "Connected. Bucket/path accessible.",
+      "fail": "Failed: {error}"
+    }
   },
   "toast": {
     "saved": "Saved",
     "deleted": "Deleted",
     "triggered": "Backup triggered",
     "exportOk": "values.yaml exported",
-    "exportFail": "Export failed: {error}"
+    "exportFail": "Export failed: {error}",
+    "sourceCreated": "Source created",
+    "sourceUpdated": "Source updated",
+    "sourceDeleted": "Source deleted",
+    "destinationCreated": "Destination created",
+    "destinationUpdated": "Destination updated",
+    "destinationDeleted": "Destination deleted",
+    "settingsSaved": "Settings saved",
+    "testAlertSent": "Test alert sent — should appear in Alertmanager within seconds",
+    "loadFailed": "Failed to load: {error}",
+    "saveFailed": "Save failed: {error}",
+    "deleteFailed": "Delete failed: {error}",
+    "triggerFailed": "Trigger failed: {error}",
+    "paused": "Paused",
+    "resumed": "Resumed"
+  },
+  "alertname": {
+    "BackupOverdue": "Backup overdue",
+    "BackupDestinationFailing": "Destination failing",
+    "BackupDumpSizeCollapsed": "Dump size collapsed",
+    "BackupSchemaChanged": "Schema changed",
+    "BackupCharsetChanged": "Charset changed",
+    "BackupStorageCorrupted": "Storage corrupted",
+    "BackupRetentionFailing": "Retention failing",
+    "BackupAnomaliesAppearing": "Anomalies appearing",
+    "BackupLastRunFailed": "Last run failed",
+    "BackupSucceeded": "Backup succeeded",
+    "BackupRestoreVerificationFailed": "Restore verification failed",
+    "BackupRestoreVerificationStale": "Restore verification stale"
   }
 }

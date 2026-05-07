@@ -454,7 +454,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	var retentionResults []meta.RetentionResult
 	if !policy.Disabled() {
 		log.V(1).Info("running pre-upload retention sweep")
-		retentionResults = p.applyRetention(ctx, dests, src.TargetName, policy, time.Now(), log)
+		retentionResults = p.applyRetention(ctx, dests, src.TargetName, "pre-upload", policy, time.Now(), log)
 	}
 
 	// Phase 1: fan-out dumps to all destinations, collecting per-destination results.
@@ -505,9 +505,26 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 
 	// Post-upload retention: now that the fresh artifact is safely stored,
 	// prune again in case the newly uploaded backup pushed the count above
-	// the retention threshold. Uses the same resolved policy.
+	// the retention threshold. Best-effort: results are not persisted to
+	// the (already-uploaded) meta.json, but per-destination outcomes are
+	// logged and failures emit RetentionFailed Events so the audit trail
+	// is complete. If a post-upload sweep persistently fails, storage
+	// gradually grows by one extra cohort per run rather than catastrophically;
+	// the pre-upload sweep is the load-bearing path with the alerting.
 	if !policy.Disabled() {
-		p.applyRetention(ctx, dests, src.TargetName, policy, time.Now(), log)
+		postResults := p.applyRetention(ctx, dests, src.TargetName, "post-upload", policy, time.Now(), log)
+		for _, r := range postResults {
+			if r.Status == meta.StatusFailed {
+				log.Info("post-upload retention failed",
+					"destination", r.Name, "target", src.TargetName, "err", r.Error)
+				continue
+			}
+			if r.DeletedDumps+r.DeletedMetas+r.DeletedOther > 0 {
+				log.Info("post-upload retention pruned",
+					"destination", r.Name, "target", src.TargetName,
+					"dumps", r.DeletedDumps, "metas", r.DeletedMetas, "other", r.DeletedOther)
+			}
+		}
 	}
 
 	return nil

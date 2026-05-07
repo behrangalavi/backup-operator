@@ -45,22 +45,27 @@ func (p RetentionPolicy) Disabled() bool { return p.Days <= 0 }
 // meta.json) for downstream observability. Errors against one destination
 // do NOT abort the others. The backup run's success status is unaffected by
 // retention failures: deleting old dumps is best-effort.
+//
+// phase identifies pre-upload vs. post-upload sweeps in logs and Events so
+// operators can tell which one failed. Pre-upload is load-bearing (fills
+// storage if it fails); post-upload is best-effort cleanup that just leaves
+// one extra cohort until the next run.
 func (p *Pipeline) applyRetention(
 	ctx context.Context,
 	dests []*secrets.Destination,
-	target string,
+	target, phase string,
 	policy RetentionPolicy,
 	now time.Time,
 	log logr.Logger,
 ) []meta.RetentionResult {
 	if policy.Disabled() {
-		log.V(1).Info("retention disabled", "target", target)
+		log.V(1).Info("retention disabled", "target", target, "phase", phase)
 		return nil
 	}
 
 	results := make([]meta.RetentionResult, 0, len(dests))
 	for _, dest := range dests {
-		results = append(results, p.retainForDestination(ctx, dest, target, policy, now, log))
+		results = append(results, p.retainForDestination(ctx, dest, target, phase, policy, now, log))
 	}
 	return results
 }
@@ -71,19 +76,30 @@ func (p *Pipeline) applyRetention(
 func (p *Pipeline) retainForDestination(
 	ctx context.Context,
 	dest *secrets.Destination,
-	target string,
+	target, phase string,
 	policy RetentionPolicy,
 	now time.Time,
 	log logr.Logger,
 ) meta.RetentionResult {
 	res := meta.RetentionResult{Name: dest.Name, Status: meta.StatusSuccess}
 
+	// fail wraps the early-return error path so each non-delete failure
+	// gets a Warning Event in addition to the log line. Without these the
+	// failure is invisible in the cluster audit trail — only the worker's
+	// own logs would carry it, and they are short-lived.
+	fail := func(stage string, err error) meta.RetentionResult {
+		log.Error(err, "retention: "+stage, "destination", dest.Name, "phase", phase)
+		res.Status = meta.StatusFailed
+		res.Error = stage + ": " + err.Error()
+		p.events.Emit("Warning", "RetentionFailed",
+			fmt.Sprintf("Retention %s sweep failed for target %s on %s at %s: %v",
+				phase, target, dest.Name, stage, err))
+		return res
+	}
+
 	st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, log)
 	if err != nil {
-		log.Error(err, "retention: init storage", "destination", dest.Name)
-		res.Status = meta.StatusFailed
-		res.Error = "init storage: " + err.Error()
-		return res
+		return fail("init storage", err)
 	}
 
 	// Reuse a single connection for the List + N×Delete batch when the
@@ -92,10 +108,7 @@ func (p *Pipeline) retainForDestination(
 	if bs, ok := st.(storage.BatchStorage); ok {
 		sess, closer, err := bs.WithSession(ctx)
 		if err != nil {
-			log.Error(err, "retention: open session", "destination", dest.Name)
-			res.Status = meta.StatusFailed
-			res.Error = "open session: " + err.Error()
-			return res
+			return fail("open session", err)
 		}
 		defer func() { _ = closer() }()
 		active = sess
@@ -103,10 +116,7 @@ func (p *Pipeline) retainForDestination(
 
 	objs, err := active.List(ctx, target+"/")
 	if err != nil {
-		log.Error(err, "retention: list", "destination", dest.Name)
-		res.Status = meta.StatusFailed
-		res.Error = "list: " + err.Error()
-		return res
+		return fail("list", err)
 	}
 
 	victims := selectForDeletion(objs, policy, now)
@@ -116,13 +126,14 @@ func (p *Pipeline) retainForDestination(
 	log.Info("retention deleting",
 		"destination", dest.Name,
 		"target", target,
+		"phase", phase,
 		"count", len(victims),
 		"policy_days", policy.Days,
 		"min_keep", policy.MinKeep,
 	)
 	p.events.Emit("Normal", "RetentionDelete",
-		fmt.Sprintf("Retention pruning %d artifacts for target %s from %s (policy: %d days, min-keep %d)",
-			len(victims), target, dest.Name, policy.Days, policy.MinKeep))
+		fmt.Sprintf("Retention pruning %d artifacts for target %s from %s (%s, policy: %d days, min-keep %d)",
+			len(victims), target, dest.Name, phase, policy.Days, policy.MinKeep))
 
 	// Track the first delete error per destination — one bad path doesn't
 	// abort the rest, but the destination's overall verdict flips to

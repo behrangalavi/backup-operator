@@ -1,11 +1,17 @@
 package backup
 
 import (
+	"context"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
+	"backup-operator/internal/meta"
+	"backup-operator/internal/secrets"
 	"backup-operator/storage"
+
+	"github.com/go-logr/logr"
 )
 
 // fakeNow is the wall clock used in every test below.
@@ -203,6 +209,68 @@ func TestClassifyKind(t *testing.T) {
 		if got := classifyKind(c.path); got != c.want {
 			t.Errorf("classifyKind(%q) = %q, want %q", c.path, got, c.want)
 		}
+	}
+}
+
+// recordingEmitter captures every Emit call so tests can assert on what
+// Events the pipeline tried to write. Tests that don't care about Events
+// keep using NoopEventEmitter.
+type recordingEmitter struct {
+	events []recordedEvent
+}
+type recordedEvent struct{ Type, Reason, Message string }
+
+func (r *recordingEmitter) Emit(t, reason, msg string) {
+	r.events = append(r.events, recordedEvent{t, reason, msg})
+}
+
+func TestRetention_EmitsRetentionFailedOnInitError(t *testing.T) {
+	// An unsupported storage-type makes storageFactory.NewStorage fail
+	// at the very first step inside retainForDestination — the
+	// init-storage path. The new Event emission must surface that as a
+	// Warning RetentionFailed Event with the phase tag, so the
+	// cluster audit trail shows post-upload sweep failures even though
+	// the meta.json was already uploaded by then.
+	rec := &recordingEmitter{}
+	p := &Pipeline{
+		logger:         logr.Discard(),
+		events:         rec,
+		maxConcurrency: 1,
+	}
+	dests := []*secrets.Destination{
+		{Name: "broken", StorageType: "definitely-not-a-real-type"},
+	}
+	results := p.applyRetention(context.Background(), dests, "prod-db", "post-upload",
+		RetentionPolicy{Days: 30, MinKeep: 0}, fakeNow, p.logger)
+	if len(results) != 1 || results[0].Status != meta.StatusFailed {
+		t.Fatalf("expected 1 failed result, got %+v", results)
+	}
+	if len(rec.events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(rec.events), rec.events)
+	}
+	e := rec.events[0]
+	if e.Type != "Warning" || e.Reason != "RetentionFailed" {
+		t.Errorf("expected Warning/RetentionFailed, got %s/%s", e.Type, e.Reason)
+	}
+	if !strings.Contains(e.Message, "post-upload") {
+		t.Errorf("event message must include phase, got %q", e.Message)
+	}
+	if !strings.Contains(e.Message, "prod-db") || !strings.Contains(e.Message, "broken") {
+		t.Errorf("event message must include target and destination, got %q", e.Message)
+	}
+}
+
+func TestRetention_DisabledEmitsNothing(t *testing.T) {
+	rec := &recordingEmitter{}
+	p := &Pipeline{logger: logr.Discard(), events: rec, maxConcurrency: 1}
+	dests := []*secrets.Destination{{Name: "x", StorageType: "definitely-not-a-real-type"}}
+	results := p.applyRetention(context.Background(), dests, "t", "post-upload",
+		RetentionPolicy{Days: 0, MinKeep: 0}, fakeNow, p.logger)
+	if results != nil {
+		t.Errorf("disabled policy should return nil, got %+v", results)
+	}
+	if len(rec.events) != 0 {
+		t.Errorf("disabled policy must not emit events, got %+v", rec.events)
 	}
 }
 

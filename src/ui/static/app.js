@@ -91,16 +91,38 @@ function toast(msg, type = 'info') {
 }
 
 // --- Modal ---
+// Tracks the element that opened the modal so we can return focus to it on
+// close. Without this, screen-reader users (and keyboard users in general)
+// land at the top of the document after every dialog interaction.
+let modalReturnFocus = null;
 window.openModal = function(title, bodyHTML) {
+  modalReturnFocus = document.activeElement;
   $('#modal-title').textContent = title;
   $('#modal-body').innerHTML = bodyHTML;
   $('#modal-overlay').classList.remove('hidden');
+  // Focus the first interactive element inside the body. Falls back to the
+  // close button so the dialog is always reachable without a mouse.
+  const target = $('#modal-body').querySelector(
+    'input:not([type=hidden]), select, textarea, button, [tabindex]:not([tabindex="-1"])'
+  ) || $('#modal-overlay .modal-close');
+  if (target) setTimeout(() => target.focus(), 0);
 };
 window.closeModal = function() {
   $('#modal-overlay').classList.add('hidden');
+  if (modalReturnFocus && typeof modalReturnFocus.focus === 'function') {
+    modalReturnFocus.focus();
+  }
+  modalReturnFocus = null;
 };
 $('#modal-overlay').addEventListener('click', e => {
   if (e.target === $('#modal-overlay')) closeModal();
+});
+// Esc closes any visible modal. The tooltip on the close button already
+// promises this — without the handler the promise was a lie.
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !$('#modal-overlay').classList.contains('hidden')) {
+    closeModal();
+  }
 });
 
 // --- Helpers ---

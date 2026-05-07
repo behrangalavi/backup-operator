@@ -263,7 +263,7 @@ func (s *Server) routeSourceByMethod(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		s.handleAPIDeleteSource(w, r)
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "method not allowed"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "method not allowed")
 	}
 }
 
@@ -274,7 +274,7 @@ func (s *Server) routeDestinationsList(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		s.handleAPICreateDestination(w, r)
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "method not allowed"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "method not allowed")
 	}
 }
 
@@ -285,7 +285,7 @@ func (s *Server) routeSettings(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPut:
 		s.handleUpdateSettings(w, r)
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "method not allowed"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "method not allowed")
 	}
 }
 
@@ -303,7 +303,7 @@ func (s *Server) routeDestinationByMethod(w http.ResponseWriter, r *http.Request
 	case http.MethodDelete:
 		s.handleAPIDeleteDestination(w, r)
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "method not allowed"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "method not allowed")
 	}
 }
 

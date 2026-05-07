@@ -67,6 +67,10 @@ type destinationRequest struct {
 
 type apiResponse struct {
 	OK      bool   `json:"ok"`
+	// Code is a stable machine-readable error tag — see errors_api.go for
+	// the catalogue. Frontend uses it to pick toast severity and (later)
+	// localised messages without parsing Message text.
+	Code    string `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
 	Name    string `json:"name,omitempty"`
 }
@@ -75,41 +79,41 @@ type apiResponse struct {
 
 func (s *Server) handleAPICreateSource(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "POST required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "POST required")
 		return
 	}
 	var req sourceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "invalid JSON: " + err.Error()})
+		writeError(w, http.StatusBadRequest, codeBadRequest, "invalid JSON: " + err.Error())
 		return
 	}
 	if req.Name == "" || req.DBType == "" || req.Host == "" {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "name, dbType, host are required"})
+		writeError(w, http.StatusBadRequest, codeBadRequest, "name, dbType, host are required")
 		return
 	}
 	// Redis can run with password-only AUTH (no username); every other DB
 	// type still requires a username.
 	if req.Username == "" && req.DBType != "redis" {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "username is required for " + req.DBType})
+		writeError(w, http.StatusBadRequest, codeBadRequest, "username is required for " + req.DBType)
 		return
 	}
 	if !isSupportedDBType(req.DBType) {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "dbType must be postgres, mysql, mariadb, mongo, or redis"})
+		writeError(w, http.StatusBadRequest, codeBadRequest, "dbType must be postgres, mysql, mariadb, mongo, or redis")
 		return
 	}
 	if msg := validateK8sName(req.Name); msg != "" {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: msg})
+		writeError(w, http.StatusBadRequest, codeBadRequest, msg)
 		return
 	}
 	if req.Port != "" {
 		if msg := validatePort(req.Port); msg != "" {
-			writeJSON(w, http.StatusBadRequest, apiResponse{Message: msg})
+			writeError(w, http.StatusBadRequest, codeBadRequest, msg)
 			return
 		}
 	}
 	if req.Schedule != "" {
 		if msg := validateCronSchedule(req.Schedule); msg != "" {
-			writeJSON(w, http.StatusBadRequest, apiResponse{Message: msg})
+			writeError(w, http.StatusBadRequest, codeBadRequest, msg)
 			return
 		}
 	}
@@ -130,7 +134,7 @@ func (s *Server) handleAPICreateSource(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.cfg.Client.Create(r.Context(), secret); err != nil {
 		s.cfg.Logger.Error(err, "create source secret")
-		writeJSON(w, http.StatusConflict, apiResponse{Message: "failed to create: " + sanitizeError(err)})
+		writeError(w, http.StatusConflict, codeConflict, "failed to create: " + sanitizeError(err))
 		return
 	}
 	s.broadcast(sseEvent{Type: "source_created", Data: req.Name})
@@ -139,28 +143,28 @@ func (s *Server) handleAPICreateSource(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAPIUpdateSource(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "PUT required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "PUT required")
 		return
 	}
 	secretName := trimPrefixPath(r.URL.Path, "/api/sources/")
 	if secretName == "" {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "secret name required"})
+		writeError(w, http.StatusBadRequest, codeBadRequest, "secret name required")
 		return
 	}
 
 	var req sourceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "invalid JSON"})
+		writeError(w, http.StatusBadRequest, codeBadRequest, "invalid JSON")
 		return
 	}
 
 	existing := &corev1.Secret{}
 	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, existing); err != nil {
-		writeJSON(w, http.StatusNotFound, apiResponse{Message: "secret not found"})
+		writeError(w, http.StatusNotFound, codeNotFound, "secret not found")
 		return
 	}
 	if existing.Labels[labels.LabelRole] != labels.RoleSource {
-		writeJSON(w, http.StatusForbidden, apiResponse{Message: "not a backup source secret"})
+		writeError(w, http.StatusForbidden, codeForbidden, "not a backup source secret")
 		return
 	}
 
@@ -175,7 +179,7 @@ func (s *Server) handleAPIUpdateSource(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.cfg.Client.Update(r.Context(), existing); err != nil {
 		s.cfg.Logger.Error(err, "update source secret")
-		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "update failed"})
+		writeError(w, http.StatusInternalServerError, codeInternal, "update failed")
 		return
 	}
 	s.broadcast(sseEvent{Type: "source_updated", Data: secretName})
@@ -184,26 +188,26 @@ func (s *Server) handleAPIUpdateSource(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAPIDeleteSource(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "DELETE required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "DELETE required")
 		return
 	}
 	secretName := trimPrefixPath(r.URL.Path, "/api/sources/")
 	if secretName == "" {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "secret name required"})
+		writeError(w, http.StatusBadRequest, codeBadRequest, "secret name required")
 		return
 	}
 
 	existing := &corev1.Secret{}
 	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, existing); err != nil {
-		writeJSON(w, http.StatusNotFound, apiResponse{Message: "not found or already deleted"})
+		writeError(w, http.StatusNotFound, codeNotFound, "not found or already deleted")
 		return
 	}
 	if existing.Labels[labels.LabelRole] != labels.RoleSource {
-		writeJSON(w, http.StatusForbidden, apiResponse{Message: "not a backup source secret"})
+		writeError(w, http.StatusForbidden, codeForbidden, "not a backup source secret")
 		return
 	}
 	if err := s.cfg.Client.Delete(r.Context(), existing); err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "delete failed"})
+		writeError(w, http.StatusInternalServerError, codeInternal, "delete failed")
 		return
 	}
 	s.broadcast(sseEvent{Type: "source_deleted", Data: secretName})
@@ -221,13 +225,13 @@ func (s *Server) handleAPIDeleteSource(w http.ResponseWriter, r *http.Request) {
 // don't carry a stale "suspended=false".
 func (s *Server) handleAPISuspendSource(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "POST required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "POST required")
 		return
 	}
 	rest := trimPrefixPath(r.URL.Path, "/api/sources/")
 	secretName := strings.TrimSuffix(rest, "/suspend")
 	if secretName == "" || strings.Contains(secretName, "/") {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "secret name required"})
+		writeError(w, http.StatusBadRequest, codeBadRequest, "secret name required")
 		return
 	}
 
@@ -235,17 +239,17 @@ func (s *Server) handleAPISuspendSource(w http.ResponseWriter, r *http.Request) 
 		Suspend bool `json:"suspend"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "invalid JSON"})
+		writeError(w, http.StatusBadRequest, codeBadRequest, "invalid JSON")
 		return
 	}
 
 	existing := &corev1.Secret{}
 	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, existing); err != nil {
-		writeJSON(w, http.StatusNotFound, apiResponse{Message: "secret not found"})
+		writeError(w, http.StatusNotFound, codeNotFound, "secret not found")
 		return
 	}
 	if existing.Labels[labels.LabelRole] != labels.RoleSource {
-		writeJSON(w, http.StatusForbidden, apiResponse{Message: "not a backup source secret"})
+		writeError(w, http.StatusForbidden, codeForbidden, "not a backup source secret")
 		return
 	}
 
@@ -260,7 +264,7 @@ func (s *Server) handleAPISuspendSource(w http.ResponseWriter, r *http.Request) 
 
 	if err := s.cfg.Client.Update(r.Context(), existing); err != nil {
 		s.cfg.Logger.Error(err, "patch suspend annotation")
-		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "update failed"})
+		writeError(w, http.StatusInternalServerError, codeInternal, "update failed")
 		return
 	}
 	evType := "source_resumed"
@@ -275,7 +279,7 @@ func (s *Server) handleAPISuspendSource(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleAPIListDestinations(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "GET required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "GET required")
 		return
 	}
 	var list corev1.SecretList
@@ -283,7 +287,7 @@ func (s *Server) handleAPIListDestinations(w http.ResponseWriter, r *http.Reques
 		labels.LabelRole: labels.RoleDestination,
 	}); err != nil {
 		s.cfg.Logger.Error(err, "list destination secrets")
-		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "internal error"})
+		writeError(w, http.StatusInternalServerError, codeInternal, "internal error")
 		return
 	}
 	type destInfo struct {
@@ -318,24 +322,24 @@ func (s *Server) handleAPIListDestinations(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) handleAPICreateDestination(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "POST required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "POST required")
 		return
 	}
 	var req destinationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "invalid JSON"})
+		writeError(w, http.StatusBadRequest, codeBadRequest, "invalid JSON")
 		return
 	}
 	if req.Name == "" || req.StorageType == "" {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "name and storageType are required"})
+		writeError(w, http.StatusBadRequest, codeBadRequest, "name and storageType are required")
 		return
 	}
 	if req.StorageType != "sftp" && req.StorageType != "hetzner-sftp" && req.StorageType != "s3" {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "storageType must be sftp, hetzner-sftp, or s3"})
+		writeError(w, http.StatusBadRequest, codeBadRequest, "storageType must be sftp, hetzner-sftp, or s3")
 		return
 	}
 	if msg := validateK8sName(req.Name); msg != "" {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: msg})
+		writeError(w, http.StatusBadRequest, codeBadRequest, msg)
 		return
 	}
 
@@ -367,7 +371,7 @@ func (s *Server) handleAPICreateDestination(w http.ResponseWriter, r *http.Reque
 
 	if err := s.cfg.Client.Create(r.Context(), secret); err != nil {
 		s.cfg.Logger.Error(err, "create destination secret")
-		writeJSON(w, http.StatusConflict, apiResponse{Message: "failed to create: " + sanitizeError(err)})
+		writeError(w, http.StatusConflict, codeConflict, "failed to create: " + sanitizeError(err))
 		return
 	}
 	s.broadcast(sseEvent{Type: "destination_created", Data: req.Name})
@@ -376,28 +380,28 @@ func (s *Server) handleAPICreateDestination(w http.ResponseWriter, r *http.Reque
 
 func (s *Server) handleAPIUpdateDestination(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "PUT required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "PUT required")
 		return
 	}
 	secretName := trimPrefixPath(r.URL.Path, "/api/destinations/")
 	if secretName == "" {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "secret name required"})
+		writeError(w, http.StatusBadRequest, codeBadRequest, "secret name required")
 		return
 	}
 
 	var req destinationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "invalid JSON"})
+		writeError(w, http.StatusBadRequest, codeBadRequest, "invalid JSON")
 		return
 	}
 
 	existing := &corev1.Secret{}
 	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, existing); err != nil {
-		writeJSON(w, http.StatusNotFound, apiResponse{Message: "secret not found"})
+		writeError(w, http.StatusNotFound, codeNotFound, "secret not found")
 		return
 	}
 	if existing.Labels[labels.LabelRole] != labels.RoleDestination {
-		writeJSON(w, http.StatusForbidden, apiResponse{Message: "not a backup destination secret"})
+		writeError(w, http.StatusForbidden, codeForbidden, "not a backup destination secret")
 		return
 	}
 
@@ -428,7 +432,7 @@ func (s *Server) handleAPIUpdateDestination(w http.ResponseWriter, r *http.Reque
 
 	if err := s.cfg.Client.Update(r.Context(), existing); err != nil {
 		s.cfg.Logger.Error(err, "update destination secret")
-		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "update failed"})
+		writeError(w, http.StatusInternalServerError, codeInternal, "update failed")
 		return
 	}
 	s.broadcast(sseEvent{Type: "destination_updated", Data: secretName})
@@ -437,26 +441,26 @@ func (s *Server) handleAPIUpdateDestination(w http.ResponseWriter, r *http.Reque
 
 func (s *Server) handleAPIDeleteDestination(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "DELETE required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "DELETE required")
 		return
 	}
 	secretName := trimPrefixPath(r.URL.Path, "/api/destinations/")
 	if secretName == "" {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "secret name required"})
+		writeError(w, http.StatusBadRequest, codeBadRequest, "secret name required")
 		return
 	}
 
 	existing := &corev1.Secret{}
 	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, existing); err != nil {
-		writeJSON(w, http.StatusNotFound, apiResponse{Message: "not found or already deleted"})
+		writeError(w, http.StatusNotFound, codeNotFound, "not found or already deleted")
 		return
 	}
 	if existing.Labels[labels.LabelRole] != labels.RoleDestination {
-		writeJSON(w, http.StatusForbidden, apiResponse{Message: "not a backup destination secret"})
+		writeError(w, http.StatusForbidden, codeForbidden, "not a backup destination secret")
 		return
 	}
 	if err := s.cfg.Client.Delete(r.Context(), existing); err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "delete failed"})
+		writeError(w, http.StatusInternalServerError, codeInternal, "delete failed")
 		return
 	}
 	s.broadcast(sseEvent{Type: "destination_deleted", Data: secretName})
@@ -467,19 +471,19 @@ func (s *Server) handleAPIDeleteDestination(w http.ResponseWriter, r *http.Reque
 
 func (s *Server) handleAPITriggerBackup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "POST required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "POST required")
 		return
 	}
 	targetName := trimPrefixPath(r.URL.Path, "/api/trigger/")
 	if targetName == "" {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "target name required"})
+		writeError(w, http.StatusBadRequest, codeBadRequest, "target name required")
 		return
 	}
 
 	// Find the CronJob for this target.
 	var cronJobs batchv1.CronJobList
 	if err := s.cfg.Client.List(r.Context(), &cronJobs, client.InNamespace(s.cfg.Namespace)); err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "failed to list cronjobs"})
+		writeError(w, http.StatusInternalServerError, codeInternal, "failed to list cronjobs")
 		return
 	}
 
@@ -492,7 +496,7 @@ func (s *Server) handleAPITriggerBackup(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	if cronJob == nil {
-		writeJSON(w, http.StatusNotFound, apiResponse{Message: "no cronjob found for target"})
+		writeError(w, http.StatusNotFound, codeNotFound, "no cronjob found for target")
 		return
 	}
 
@@ -512,7 +516,7 @@ func (s *Server) handleAPITriggerBackup(w http.ResponseWriter, r *http.Request) 
 
 	if err := s.cfg.Client.Create(r.Context(), job); err != nil {
 		s.cfg.Logger.Error(err, "create manual job")
-		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "failed to create job"})
+		writeError(w, http.StatusInternalServerError, codeInternal, "failed to create job")
 		return
 	}
 	s.broadcast(sseEvent{Type: "backup_triggered", Data: targetName})
@@ -523,7 +527,7 @@ func (s *Server) handleAPITriggerBackup(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleAPIJobs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "GET required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "GET required")
 		return
 	}
 
@@ -531,7 +535,7 @@ func (s *Server) handleAPIJobs(w http.ResponseWriter, r *http.Request) {
 	if err := s.cfg.Client.List(r.Context(), &jobs, client.InNamespace(s.cfg.Namespace), client.MatchingLabels{
 		"app.kubernetes.io/managed-by": "backup-operator",
 	}); err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "internal error"})
+		writeError(w, http.StatusInternalServerError, codeInternal, "internal error")
 		return
 	}
 
@@ -650,7 +654,7 @@ func (s *Server) broadcast(ev sseEvent) {
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "SSE not supported"})
+		writeError(w, http.StatusInternalServerError, codeInternal, "SSE not supported")
 		return
 	}
 
@@ -658,7 +662,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	if ch == nil {
 		// Broker is full. Refuse explicitly so the client retries later
 		// rather than holding a half-open SSE stream that pins memory.
-		writeJSON(w, http.StatusServiceUnavailable, apiResponse{Message: "too many SSE clients; retry shortly"})
+		writeError(w, http.StatusServiceUnavailable, codeInternal, "too many SSE clients; retry shortly")
 		return
 	}
 	defer s.sse.unsubscribe(ch)
@@ -869,22 +873,22 @@ func mergeSourceData(sec *corev1.Secret, req sourceRequest) {
 // handleAPIGetSource returns a single source secret's configuration (without password).
 func (s *Server) handleAPIGetSource(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "GET required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "GET required")
 		return
 	}
 	secretName := trimPrefixPath(r.URL.Path, "/api/sources/")
 	if secretName == "" {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "secret name required"})
+		writeError(w, http.StatusBadRequest, codeBadRequest, "secret name required")
 		return
 	}
 
 	sec := &corev1.Secret{}
 	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, sec); err != nil {
-		writeJSON(w, http.StatusNotFound, apiResponse{Message: "secret not found"})
+		writeError(w, http.StatusNotFound, codeNotFound, "secret not found")
 		return
 	}
 	if sec.Labels[labels.LabelRole] != labels.RoleSource {
-		writeJSON(w, http.StatusForbidden, apiResponse{Message: "not a backup source secret"})
+		writeError(w, http.StatusForbidden, codeForbidden, "not a backup source secret")
 		return
 	}
 
@@ -950,22 +954,22 @@ func (s *Server) handleAPIGetSource(w http.ResponseWriter, r *http.Request) {
 // handleAPIGetDestination returns a single destination secret's configuration (without sensitive keys).
 func (s *Server) handleAPIGetDestination(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "GET required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "GET required")
 		return
 	}
 	secretName := trimPrefixPath(r.URL.Path, "/api/destinations/")
 	if secretName == "" {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "secret name required"})
+		writeError(w, http.StatusBadRequest, codeBadRequest, "secret name required")
 		return
 	}
 
 	sec := &corev1.Secret{}
 	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, sec); err != nil {
-		writeJSON(w, http.StatusNotFound, apiResponse{Message: "secret not found"})
+		writeError(w, http.StatusNotFound, codeNotFound, "secret not found")
 		return
 	}
 	if sec.Labels[labels.LabelRole] != labels.RoleDestination {
-		writeJSON(w, http.StatusForbidden, apiResponse{Message: "not a backup destination secret"})
+		writeError(w, http.StatusForbidden, codeForbidden, "not a backup destination secret")
 		return
 	}
 
@@ -1008,7 +1012,7 @@ func (s *Server) handleAPIGetDestination(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleAPITestDestination(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "POST required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "POST required")
 		return
 	}
 	secretName := trimPrefixPath(r.URL.Path, "/api/destinations/")
@@ -1016,17 +1020,17 @@ func (s *Server) handleAPITestDestination(w http.ResponseWriter, r *http.Request
 
 	var sec corev1.Secret
 	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, &sec); err != nil {
-		writeJSON(w, http.StatusNotFound, apiResponse{Message: "destination secret not found"})
+		writeError(w, http.StatusNotFound, codeNotFound, "destination secret not found")
 		return
 	}
 	if sec.Labels[labels.LabelRole] != labels.RoleDestination {
-		writeJSON(w, http.StatusForbidden, apiResponse{Message: "not a destination secret"})
+		writeError(w, http.StatusForbidden, codeForbidden, "not a destination secret")
 		return
 	}
 
 	dest, err := secrets.ParseDestination(&sec)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Message: "invalid destination config"})
+		writeError(w, http.StatusBadRequest, codeBadRequest, "invalid destination config")
 		return
 	}
 
@@ -1069,7 +1073,7 @@ type destStorageStats struct {
 
 func (s *Server) handleAPIDestinationStats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "GET required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "GET required")
 		return
 	}
 
@@ -1077,7 +1081,7 @@ func (s *Server) handleAPIDestinationStats(w http.ResponseWriter, r *http.Reques
 	if err := s.cfg.Client.List(r.Context(), &list, client.InNamespace(s.cfg.Namespace), client.MatchingLabels{
 		labels.LabelRole: labels.RoleDestination,
 	}); err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "internal error"})
+		writeError(w, http.StatusInternalServerError, codeInternal, "internal error")
 		return
 	}
 
@@ -1202,13 +1206,13 @@ type destHealthEntry struct {
 
 func (s *Server) handleAPIDestinationHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "GET required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "GET required")
 		return
 	}
 
 	sources, err := s.data.listTargets(r.Context())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "internal error"})
+		writeError(w, http.StatusInternalServerError, codeInternal, "internal error")
 		return
 	}
 
@@ -1216,7 +1220,7 @@ func (s *Server) handleAPIDestinationHealth(w http.ResponseWriter, r *http.Reque
 	if err := s.cfg.Client.List(r.Context(), &destList, client.InNamespace(s.cfg.Namespace), client.MatchingLabels{
 		labels.LabelRole: labels.RoleDestination,
 	}); err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "internal error"})
+		writeError(w, http.StatusInternalServerError, codeInternal, "internal error")
 		return
 	}
 
@@ -1424,13 +1428,13 @@ type consistencyIssue struct {
 
 func (s *Server) handleAPIConsistencyCheck(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "GET required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "GET required")
 		return
 	}
 
 	sources, err := s.data.listTargets(r.Context())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "internal error"})
+		writeError(w, http.StatusInternalServerError, codeInternal, "internal error")
 		return
 	}
 
@@ -1438,7 +1442,7 @@ func (s *Server) handleAPIConsistencyCheck(w http.ResponseWriter, r *http.Reques
 	if err := s.cfg.Client.List(r.Context(), &destList, client.InNamespace(s.cfg.Namespace), client.MatchingLabels{
 		labels.LabelRole: labels.RoleDestination,
 	}); err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "internal error"})
+		writeError(w, http.StatusInternalServerError, codeInternal, "internal error")
 		return
 	}
 

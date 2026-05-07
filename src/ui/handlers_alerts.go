@@ -20,7 +20,7 @@ import (
 // provider yields no alerts; only a missing provider returns 503.
 func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "GET required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "GET required")
 		return
 	}
 	if s.cfg.AlertsProvider == nil {
@@ -34,7 +34,7 @@ func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 	list, err := s.cfg.AlertsProvider.List(r.Context())
 	if err != nil {
 		s.cfg.Logger.Error(err, "list alerts")
-		writeJSON(w, http.StatusBadGateway, apiResponse{Message: "alerts source unavailable: " + sanitizeError(err)})
+		writeError(w, http.StatusBadGateway, codeInternal, "alerts source unavailable: " + sanitizeError(err))
 		return
 	}
 
@@ -69,7 +69,7 @@ func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 // GET /api/alerts/status
 func (s *Server) handleAlertsStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "GET required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "GET required")
 		return
 	}
 
@@ -170,11 +170,11 @@ func (s *Server) handleAlertsStatus(w http.ResponseWriter, r *http.Request) {
 // POST /api/alerts/test
 func (s *Server) handleAlertsTest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "POST required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "POST required")
 		return
 	}
 	if s.cfg.ReadOnly {
-		writeJSON(w, http.StatusForbidden, apiResponse{Message: "read-only mode"})
+		writeError(w, http.StatusForbidden, codeForbidden, "read-only mode")
 		return
 	}
 	amURL := strings.TrimSpace(s.cfg.AlertmanagerURL)
@@ -206,7 +206,7 @@ func (s *Server) handleAlertsTest(w http.ResponseWriter, r *http.Request) {
 	endpoint := strings.TrimRight(amURL, "/") + "/api/v2/alerts"
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{Message: "failed to build request"})
+		writeError(w, http.StatusInternalServerError, codeInternal, "failed to build request")
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")

@@ -36,7 +36,7 @@ type capabilitiesResponse struct {
 // information behind a generic "operation failed" surface.
 func (s *Server) handleAPIClusterCapabilities(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "GET required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "GET required")
 		return
 	}
 

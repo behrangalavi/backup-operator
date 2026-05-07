@@ -12,9 +12,40 @@ async function api(path, opts = {}) {
     headers: { 'Content-Type': 'application/json', ...opts.headers },
     ...opts
   });
-  const data = await resp.json();
-  if (!resp.ok) throw new Error(data.message || resp.statusText);
+  let data = {};
+  try { data = await resp.json(); } catch (_) { /* empty body / non-JSON */ }
+  if (!resp.ok) {
+    const err = new Error(data.message || resp.statusText || 'request failed');
+    // Attach machine-readable error metadata so handlers can pick toast
+    // severity, friendly messages, or retry behaviour without parsing
+    // the human-readable string.
+    err.code = data.code || '';
+    err.status = resp.status;
+    throw err;
+  }
   return data;
+}
+
+// Map an API error to a (message, toast-type) pair. Used by call sites
+// that want code-driven presentation; sites that don't care can keep
+// using toast(err.message, 'error') and behave exactly as before.
+const apiErrorMessages = {
+  validation:           e => e.message,
+  bad_request:          e => e.message,
+  conflict:             e => e.message,
+  forbidden:            e => e.message || 'Not allowed',
+  not_found:            e => e.message || 'Not found',
+  method_not_allowed:   e => e.message || 'Operation not allowed',
+  server_error:         e => 'Server error: ' + (e.message || 'try again'),
+};
+function apiErrorToast(err, fallback) {
+  const msg = (apiErrorMessages[err.code] || (() => err.message || fallback || 'Request failed'))(err);
+  // 5xx (and any unknown ≥500 status) is a server problem — louder.
+  // Everything else is "you tried something that didn't work" — same
+  // visual weight, but operators learn the distinction over time as
+  // codes become actionable in the UI.
+  const type = (err.status >= 500 || err.code === 'server_error') ? 'error' : 'error';
+  toast(msg, type);
 }
 
 // --- SSE ---

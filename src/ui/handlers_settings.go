@@ -128,7 +128,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 // handleSettingsExport generates a values.yaml snippet from the current settings.
 func (s *Server) handleSettingsExport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Message: "GET required"})
+		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "GET required")
 		return
 	}
 	if s.cfg.SettingsConfigMap == "" {

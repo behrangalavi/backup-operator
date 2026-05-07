@@ -482,7 +482,8 @@ kubectl -n backup port-forward svc/backup-operator 8081:8081
 - **Target detail (`#/target/<name>`):** full run history table — timestamps, sizes, SHA256 checksums, schema status, anomaly counts, and download buttons per run. Failed runs surface phase + full error message inline.
 - **Alerts (`#/alerts`):** currently-firing backup alerts with severity counters and a sidebar pill counter. Pulls from Prometheus when configured (`alerts.prometheusURL`), otherwise re-evaluates the same conditions locally — see [Surfacing alerts in the operator UI](#surfacing-alerts-in-the-operator-ui).
 - **Settings (`#/settings`):** configuration wizard (see [Settings Wizard](#settings-wizard) below).
-- **Live updates:** Server-Sent Events (SSE) push changes to all connected browsers in real time — no polling, no page refresh.
+- **Live updates:** Server-Sent Events (SSE) push changes to all connected browsers in real time — no polling, no page refresh. Events are routed by page so editing a destination no longer re-renders the Audit log; bursts are coalesced into a single render via a 200 ms debounce.
+- **Languages:** EN / DE / FR via a sidebar language picker; choice is stored in `localStorage` and falls back to `navigator.language`. Add a language by dropping `<code>.json` into `src/ui/static/i18n/` and registering the code in `app.js` — no build step.
 - **Downloads:** `.age` (encrypted dump, pass-through) and `.json` (analyzer metadata).
 
 ### REST API

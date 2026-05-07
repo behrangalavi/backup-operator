@@ -6,6 +6,91 @@ const $ = (sel, ctx) => (ctx || document).querySelector(sel);
 const $$ = (sel, ctx) => [...(ctx || document).querySelectorAll(sel)];
 const content = $('#content');
 
+// --- i18n ---
+// Adding a language: drop a JSON file in /static/i18n/<code>.json with the
+// same key shape as en.json, and register the code in `availableLangs`.
+// That is the entire contract — no code changes elsewhere.
+const availableLangs = ['en', 'de', 'fr'];
+const fallbackLang = 'en';
+let currentLang = fallbackLang;
+const dictionaries = {};
+
+function detectLang() {
+  const stored = localStorage.getItem('lang');
+  if (stored && availableLangs.includes(stored)) return stored;
+  const nav = (navigator.language || '').slice(0, 2).toLowerCase();
+  if (availableLangs.includes(nav)) return nav;
+  return fallbackLang;
+}
+
+async function loadLang(code) {
+  if (dictionaries[code]) return dictionaries[code];
+  try {
+    const resp = await fetch('/static/i18n/' + code + '.json');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    dictionaries[code] = await resp.json();
+    return dictionaries[code];
+  } catch (e) {
+    console.warn('i18n: failed to load ' + code, e);
+    if (code !== fallbackLang) return loadLang(fallbackLang);
+    dictionaries[fallbackLang] = {};
+    return dictionaries[fallbackLang];
+  }
+}
+
+// tr('nav.dashboard') → "Dashboard". Named `tr` (not `t`) because `t` is
+// already used as a parameter name for `target` in dozens of lambdas in
+// this file. Falls back to en, then to the key itself so a missing
+// translation is visible. Optional vars: tr('toast.exportFail', {error: e.message}).
+function tr(key, vars) {
+  const parts = key.split('.');
+  const lookup = (dict) => {
+    let v = dict;
+    for (const p of parts) {
+      if (v == null || typeof v !== 'object') return undefined;
+      v = v[p];
+    }
+    return typeof v === 'string' ? v : undefined;
+  };
+  let s = lookup(dictionaries[currentLang]);
+  if (s == null) s = lookup(dictionaries[fallbackLang]);
+  if (s == null) s = key;
+  if (vars) {
+    s = s.replace(/\{(\w+)\}/g, (_, k) => (vars[k] != null ? vars[k] : '{' + k + '}'));
+  }
+  return s;
+}
+
+window.tr = tr; // expose for inline handlers and easy console debugging
+
+async function setLang(code) {
+  if (!availableLangs.includes(code)) code = fallbackLang;
+  await loadLang(code);
+  currentLang = code;
+  localStorage.setItem('lang', code);
+  document.documentElement.lang = code;
+  applyStaticTranslations();
+  if (typeof renderPage === 'function') renderPage(currentPage(), false);
+}
+window.setLang = setLang;
+
+// Translates anything in the static shell (sidebar, footer) that carries
+// a data-i18n attribute. Page-rendered content uses t() inline at render
+// time, so it picks up the new language automatically when renderPage()
+// re-runs after setLang.
+function applyStaticTranslations() {
+  $$('[data-i18n]').forEach(el => {
+    const key = el.dataset.i18n;
+    el.textContent = tr(key);
+  });
+  $$('[data-i18n-title]').forEach(el => {
+    el.title = tr(el.dataset.i18nTitle);
+  });
+  // Refresh the language picker label.
+  const picker = $('#langPicker');
+  if (picker) picker.value = currentLang;
+}
+
 // --- API helpers ---
 async function api(path, opts = {}) {
   const resp = await fetch(path, {
@@ -99,7 +184,7 @@ function connectSSE() {
 
   eventSource.addEventListener('connected', () => {
     dot.className = 'status-dot connected';
-    txt.textContent = 'Live';
+    txt.textContent = tr('status.live');
   });
   // Each event re-renders only when the current page actually depends on
   // the changed resource. Other events are dropped — page renderers
@@ -114,7 +199,7 @@ function connectSSE() {
   });
   eventSource.onerror = () => {
     dot.className = 'status-dot error';
-    txt.textContent = 'Disconnected';
+    txt.textContent = tr('status.disconnected');
     setTimeout(connectSSE, 5000);
   };
 }
@@ -393,7 +478,7 @@ async function renderDashboard(loading = true) {
 
   content.innerHTML = `
     <div class="page-header">
-      <div><h1>Dashboard</h1><div class="subtitle">Backup overview</div></div>
+      <div><h1>${tr('page.dashboard.title')}</h1><div class="subtitle">Backup overview</div></div>
     </div>
     <div class="stats-row">
       <div class="stat-card"><div class="label">Sources</div><div class="value">${targets.length}</div></div>
@@ -511,7 +596,7 @@ async function renderSources(loading = true) {
 
   content.innerHTML = `
     <div class="page-header">
-      <div><h1>Sources</h1><div class="subtitle">Database backup sources</div></div>
+      <div><h1>${tr('page.sources.title')}</h1><div class="subtitle">Database backup sources</div></div>
       <div style="display:flex;gap:8px;align-items:center">
         ${targets.length > 0 ? renderSortControl('sources', [
           ['createdAt','Created'],['name','Name'],['lastRun','Last Run'],['dbType','Type'],
@@ -922,7 +1007,7 @@ async function renderDestinations(loading = true) {
 
   content.innerHTML = `
     <div class="page-header">
-      <div><h1>Destinations</h1><div class="subtitle">Storage backends for backup uploads</div></div>
+      <div><h1>${tr('page.destinations.title')}</h1><div class="subtitle">Storage backends for backup uploads</div></div>
       <div style="display:flex;gap:8px;align-items:center">
         ${dests.length > 0 ? renderSortControl('destinations', [
           ['createdAt','Created'],['name','Name'],['storageType','Type'],
@@ -1330,7 +1415,7 @@ receivers:
   content.innerHTML = `
     <div class="page-header">
       <div>
-        <h1>Alerts</h1>
+        <h1>${tr('page.alerts.title')}</h1>
         <div class="subtitle">Backup alert monitoring${amURL ? ' — <a href="' + escAttr(amURL) + '" target="_blank">Open Alertmanager</a>' : ''}</div>
       </div>
       <div style="display:flex;gap:8px">
@@ -1489,7 +1574,7 @@ async function renderJobs(loading = true) {
 
   content.innerHTML = `
     <div class="page-header">
-      <div><h1>Jobs</h1><div class="subtitle">Backup job execution history</div></div>
+      <div><h1>${tr('page.jobs.title')}</h1><div class="subtitle">Backup job execution history</div></div>
     </div>
     <div class="table-card">
       ${jobs.length === 0 ? '<div class="empty-state"><h3>No jobs yet</h3><p>Jobs appear when backups run — either on schedule or triggered manually.</p></div>' : `
@@ -1552,7 +1637,7 @@ async function renderAudit(loading = true) {
 
   content.innerHTML = `
     <div class="page-header">
-      <div><h1>Audit</h1><div class="subtitle">Kubernetes Events emitted by the backup operator and worker</div></div>
+      <div><h1>${tr('page.audit.title')}</h1><div class="subtitle">Kubernetes Events emitted by the backup operator and worker</div></div>
       <div style="display:flex;gap:8px;align-items:center">
         <span style="color:var(--text-muted);font-size:12px">${entries.length}${truncated ? ' of ' + data.total : ''} events</span>
         <button class="btn btn-secondary btn-sm" onclick="renderAudit(true)" title="Re-fetch the events list from Kubernetes">&#8635; Refresh</button>
@@ -2442,7 +2527,7 @@ async function renderSettings(loading = true) {
     window._currentSettings = null;
     content.innerHTML = `
       <div class="page-header">
-        <div><h1>Settings</h1><div class="subtitle">Operator configuration</div></div>
+        <div><h1>${tr('page.settings.title')}</h1><div class="subtitle">Operator configuration</div></div>
       </div>
       <div class="empty-state">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09"/></svg>
@@ -2462,7 +2547,7 @@ async function renderSettings(loading = true) {
 function renderSettingsPage(settings) {
   content.innerHTML = `
     <div class="page-header">
-      <div><h1>Settings</h1><div class="subtitle">Operator configuration wizard</div></div>
+      <div><h1>${tr('page.settings.title')}</h1><div class="subtitle">Operator configuration wizard</div></div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-secondary" onclick="exportSettings()" title="Download a values.yaml snippet matching the current settings — drop into your Helm chart for GitOps-style management">&#8681; Export values.yaml</button>
       </div>
@@ -2774,11 +2859,36 @@ document.addEventListener('click', function(e) {
 });
 
 // --- Init ---
-connectSSE();
-renderPage(currentPage());
-// Sidebar alerts pill — refresh on init and every 30s in the background so
-// the counter is current regardless of which page the user is on.
-refreshAlertsPill();
-setInterval(refreshAlertsPill, 30000);
+(async function init() {
+  // Always preload EN as the fallback dictionary first, so t() has a
+  // safety net even if the user's language fails to load.
+  await loadLang(fallbackLang);
+  currentLang = detectLang();
+  if (currentLang !== fallbackLang) await loadLang(currentLang);
+  document.documentElement.lang = currentLang;
+  applyStaticTranslations();
+  // Wire the language picker (rendered by index.html, populated here).
+  const picker = $('#langPicker');
+  if (picker) {
+    picker.innerHTML = availableLangs.map(code => {
+      const name = (dictionaries[code] && dictionaries[code].lang && dictionaries[code].lang.name) || code;
+      return `<option value="${code}">${name}</option>`;
+    }).join('');
+    picker.value = currentLang;
+    picker.addEventListener('change', () => setLang(picker.value));
+    // Lazy-load the rest of the dictionaries in the background so the
+    // picker's labels render in their native names (e.g. "Deutsch").
+    availableLangs.forEach(c => { if (c !== currentLang && c !== fallbackLang) loadLang(c).then(() => {
+      const opt = picker.querySelector('option[value="' + c + '"]');
+      if (opt && dictionaries[c] && dictionaries[c].lang) opt.textContent = dictionaries[c].lang.name;
+    }); });
+  }
+  connectSSE();
+  renderPage(currentPage());
+  // Sidebar alerts pill — refresh on init and every 30s in the background so
+  // the counter is current regardless of which page the user is on.
+  refreshAlertsPill();
+  setInterval(refreshAlertsPill, 30000);
+})();
 
 })();

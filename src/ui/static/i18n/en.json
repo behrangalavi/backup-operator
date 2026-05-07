@@ -1,0 +1,87 @@
+{
+  "lang": {
+    "name": "English",
+    "code": "en"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "sources": "Sources",
+    "destinations": "Destinations",
+    "jobs": "Jobs",
+    "alerts": "Alerts",
+    "audit": "Audit",
+    "settings": "Settings"
+  },
+  "status": {
+    "connecting": "Connecting…",
+    "live": "Live",
+    "disconnected": "Disconnected"
+  },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "close": "Close",
+    "loading": "Loading…",
+    "yes": "Yes",
+    "no": "No",
+    "language": "Language"
+  },
+  "buttons": {
+    "runNow": "Run Now",
+    "addSource": "Add Source",
+    "addDestination": "Add Destination",
+    "pause": "Pause",
+    "resume": "Resume",
+    "test": "Test",
+    "refresh": "Refresh",
+    "exportValues": "Export values.yaml"
+  },
+  "page": {
+    "dashboard": {
+      "title": "Dashboard"
+    },
+    "sources": {
+      "title": "Sources",
+      "empty": "No sources configured. Click \"Add Source\" to label your first database Secret."
+    },
+    "destinations": {
+      "title": "Destinations",
+      "empty": "No destinations configured. Click \"Add Destination\" to add an SFTP or S3 backend."
+    },
+    "jobs": {
+      "title": "Jobs",
+      "empty": "No jobs recorded yet."
+    },
+    "alerts": {
+      "title": "Alerts",
+      "empty": "No alerts firing.",
+      "sourceLocal": "Local heuristic — duration thresholds (`for:`) are not honored. Alertmanager is the audit-grade source.",
+      "sourcePrometheus": "Live from Prometheus."
+    },
+    "audit": {
+      "title": "Audit Trail"
+    },
+    "settings": {
+      "title": "Settings"
+    }
+  },
+  "target": {
+    "configuration": "Configuration",
+    "latestRun": "Latest Run",
+    "schedule": "Schedule",
+    "noRuns": "No runs recorded",
+    "runHistory": "Run History",
+    "dumpSizeTrend": "Dump Size Trend",
+    "runStatusHeatmap": "Run Status — Last 91 Days",
+    "analysisCoverage": "Analysis Coverage"
+  },
+  "toast": {
+    "saved": "Saved",
+    "deleted": "Deleted",
+    "triggered": "Backup triggered",
+    "exportOk": "values.yaml exported",
+    "exportFail": "Export failed: {error}"
+  }
+}

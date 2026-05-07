@@ -29,7 +29,7 @@ import (
 //go:embed templates/*.html
 var templatesFS embed.FS
 
-//go:embed static/*
+//go:embed static
 var staticFS embed.FS
 
 // Config carries everything the server needs to render itself.

@@ -1,0 +1,87 @@
+{
+  "lang": {
+    "name": "Deutsch",
+    "code": "de"
+  },
+  "nav": {
+    "dashboard": "Übersicht",
+    "sources": "Quellen",
+    "destinations": "Ziele",
+    "jobs": "Jobs",
+    "alerts": "Alarme",
+    "audit": "Audit",
+    "settings": "Einstellungen"
+  },
+  "status": {
+    "connecting": "Verbinde…",
+    "live": "Live",
+    "disconnected": "Getrennt"
+  },
+  "common": {
+    "save": "Speichern",
+    "cancel": "Abbrechen",
+    "delete": "Löschen",
+    "edit": "Bearbeiten",
+    "close": "Schließen",
+    "loading": "Lade…",
+    "yes": "Ja",
+    "no": "Nein",
+    "language": "Sprache"
+  },
+  "buttons": {
+    "runNow": "Jetzt starten",
+    "addSource": "Quelle hinzufügen",
+    "addDestination": "Ziel hinzufügen",
+    "pause": "Pausieren",
+    "resume": "Fortsetzen",
+    "test": "Testen",
+    "refresh": "Aktualisieren",
+    "exportValues": "values.yaml exportieren"
+  },
+  "page": {
+    "dashboard": {
+      "title": "Übersicht"
+    },
+    "sources": {
+      "title": "Quellen",
+      "empty": "Keine Quellen konfiguriert. Klicke \"Quelle hinzufügen\", um dein erstes Datenbank-Secret zu labeln."
+    },
+    "destinations": {
+      "title": "Ziele",
+      "empty": "Keine Ziele konfiguriert. Klicke \"Ziel hinzufügen\", um SFTP oder S3 anzubinden."
+    },
+    "jobs": {
+      "title": "Jobs",
+      "empty": "Noch keine Jobs erfasst."
+    },
+    "alerts": {
+      "title": "Alarme",
+      "empty": "Keine aktiven Alarme.",
+      "sourceLocal": "Lokale Heuristik — Schwellzeit (`for:`) wird nicht berücksichtigt. Alertmanager ist die verbindliche Quelle.",
+      "sourcePrometheus": "Live aus Prometheus."
+    },
+    "audit": {
+      "title": "Audit-Trail"
+    },
+    "settings": {
+      "title": "Einstellungen"
+    }
+  },
+  "target": {
+    "configuration": "Konfiguration",
+    "latestRun": "Letzter Lauf",
+    "schedule": "Zeitplan",
+    "noRuns": "Keine Läufe erfasst",
+    "runHistory": "Lauf-Historie",
+    "dumpSizeTrend": "Dump-Größenverlauf",
+    "runStatusHeatmap": "Lauf-Status — letzte 91 Tage",
+    "analysisCoverage": "Analyse-Abdeckung"
+  },
+  "toast": {
+    "saved": "Gespeichert",
+    "deleted": "Gelöscht",
+    "triggered": "Backup ausgelöst",
+    "exportOk": "values.yaml exportiert",
+    "exportFail": "Export fehlgeschlagen: {error}"
+  }
+}

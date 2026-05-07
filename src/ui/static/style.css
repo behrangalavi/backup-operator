@@ -55,6 +55,13 @@ body {
   padding: 12px 16px; border-top: 1px solid var(--border); font-size: 12px;
 }
 .connection-status { display: flex; align-items: center; gap: 6px; color: var(--text-muted); }
+.lang-picker-row { margin-bottom: 8px; }
+.lang-picker {
+  width: 100%; padding: 4px 8px; font-size: 12px;
+  background: var(--bg-input); color: var(--text); border: 1px solid var(--border);
+  border-radius: 4px; cursor: pointer;
+}
+.lang-picker:focus { outline: 1px solid var(--accent); }
 .status-dot {
   width: 7px; height: 7px; border-radius: 50%;
   background: var(--warning); display: inline-block;

@@ -1,0 +1,87 @@
+{
+  "lang": {
+    "name": "Français",
+    "code": "fr"
+  },
+  "nav": {
+    "dashboard": "Tableau de bord",
+    "sources": "Sources",
+    "destinations": "Destinations",
+    "jobs": "Tâches",
+    "alerts": "Alertes",
+    "audit": "Audit",
+    "settings": "Paramètres"
+  },
+  "status": {
+    "connecting": "Connexion…",
+    "live": "En direct",
+    "disconnected": "Déconnecté"
+  },
+  "common": {
+    "save": "Enregistrer",
+    "cancel": "Annuler",
+    "delete": "Supprimer",
+    "edit": "Modifier",
+    "close": "Fermer",
+    "loading": "Chargement…",
+    "yes": "Oui",
+    "no": "Non",
+    "language": "Langue"
+  },
+  "buttons": {
+    "runNow": "Lancer maintenant",
+    "addSource": "Ajouter une source",
+    "addDestination": "Ajouter une destination",
+    "pause": "Suspendre",
+    "resume": "Reprendre",
+    "test": "Tester",
+    "refresh": "Actualiser",
+    "exportValues": "Exporter values.yaml"
+  },
+  "page": {
+    "dashboard": {
+      "title": "Tableau de bord"
+    },
+    "sources": {
+      "title": "Sources",
+      "empty": "Aucune source configurée. Cliquez sur \"Ajouter une source\" pour étiqueter votre premier Secret de base de données."
+    },
+    "destinations": {
+      "title": "Destinations",
+      "empty": "Aucune destination configurée. Cliquez sur \"Ajouter une destination\" pour brancher SFTP ou S3."
+    },
+    "jobs": {
+      "title": "Tâches",
+      "empty": "Aucune tâche enregistrée."
+    },
+    "alerts": {
+      "title": "Alertes",
+      "empty": "Aucune alerte active.",
+      "sourceLocal": "Heuristique locale — la durée (`for:`) n'est pas respectée. Alertmanager est la source de référence.",
+      "sourcePrometheus": "En direct depuis Prometheus."
+    },
+    "audit": {
+      "title": "Journal d'audit"
+    },
+    "settings": {
+      "title": "Paramètres"
+    }
+  },
+  "target": {
+    "configuration": "Configuration",
+    "latestRun": "Dernière exécution",
+    "schedule": "Planification",
+    "noRuns": "Aucune exécution enregistrée",
+    "runHistory": "Historique des exécutions",
+    "dumpSizeTrend": "Évolution de la taille",
+    "runStatusHeatmap": "État — 91 derniers jours",
+    "analysisCoverage": "Couverture d'analyse"
+  },
+  "toast": {
+    "saved": "Enregistré",
+    "deleted": "Supprimé",
+    "triggered": "Sauvegarde lancée",
+    "exportOk": "values.yaml exporté",
+    "exportFail": "Échec de l'export : {error}"
+  }
+}

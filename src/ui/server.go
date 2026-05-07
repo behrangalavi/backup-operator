@@ -124,11 +124,15 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/legacy", s.handleIndex)
 	mux.HandleFunc("/legacy/target/", s.handleTarget)
 
-	// Read-only JSON API
-	mux.HandleFunc("/api/targets", s.handleAPITargets)
+	// Read-only JSON API. The high-volume read endpoints get ETag + gzip +
+	// short Cache-Control via cachedJSON; SSE-driven UIs poll these on
+	// every refresh tick so cache hits matter. /api/destinations is also
+	// a write entrypoint (POST), but cachedJSON only acts on GET/HEAD so
+	// the route can stay shared.
+	mux.Handle("/api/targets", cachedJSON(http.HandlerFunc(s.handleAPITargets)))
 	mux.HandleFunc("/api/targets/", s.handleAPITargetRuns)
-	mux.HandleFunc("/api/destinations", s.routeDestinationsList)
-	mux.HandleFunc("/api/jobs", s.handleAPIJobs)
+	mux.Handle("/api/destinations", cachedJSON(http.HandlerFunc(s.routeDestinationsList)))
+	mux.Handle("/api/jobs", cachedJSON(http.HandlerFunc(s.handleAPIJobs)))
 
 	// CRUD API
 	mux.HandleFunc("/api/sources", s.handleAPICreateSource)

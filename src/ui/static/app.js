@@ -49,6 +49,47 @@ function apiErrorToast(err, fallback) {
 }
 
 // --- SSE ---
+// Maps each server-sent event type to the pages whose visible state
+// actually depends on the changed resource. Events for pages the user
+// is not currently viewing are dropped — every renderer re-fetches on
+// navigation, so the user lands on fresh data the next time they visit.
+// Without this map, every CRUD action on any object re-rendered the
+// current page, even when it had nothing to do with the change (e.g.
+// editing a destination re-rendered the Audit log).
+const sseEventPages = {
+  source_created:      ['dashboard', 'sources', 'audit'],
+  source_updated:      ['dashboard', 'sources', 'target', 'audit'],
+  source_deleted:      ['dashboard', 'sources', 'audit'],
+  destination_created: ['dashboard', 'destinations', 'audit'],
+  destination_updated: ['dashboard', 'destinations', 'audit'],
+  destination_deleted: ['dashboard', 'destinations', 'audit'],
+  backup_triggered:    ['dashboard', 'jobs', 'target', 'audit'],
+  settings_updated:    ['settings', 'audit'],
+  age_keys_updated:    ['age-keys', 'audit'],
+};
+
+// scheduleSSERender coalesces a burst of events into a single render. The
+// 200 ms window is below the eye's flicker-fusion threshold (~16-50 ms
+// for hard transitions, far higher for content change), so the user
+// perceives no extra delay; under load it folds N rapid events into one
+// expensive renderPage call.
+let sseRenderTimer = null;
+function scheduleSSERender() {
+  if (sseRenderTimer) return;
+  sseRenderTimer = setTimeout(() => {
+    sseRenderTimer = null;
+    renderPage(currentPage(), false);
+  }, 200);
+}
+
+// handleSSEEvent is the single entry point for routed SSE events.
+function handleSSEEvent(eventType) {
+  const pages = sseEventPages[eventType] || [];
+  if (pages.indexOf(currentPage()) !== -1) {
+    scheduleSSERender();
+  }
+}
+
 let eventSource = null;
 function connectSSE() {
   if (eventSource) eventSource.close();
@@ -60,15 +101,16 @@ function connectSSE() {
     dot.className = 'status-dot connected';
     txt.textContent = 'Live';
   });
+  // Each event re-renders only when the current page actually depends on
+  // the changed resource. Other events are dropped — page renderers
+  // always re-fetch on navigation, so a user who lands on the affected
+  // page later still sees fresh data.
   eventSource.addEventListener('refresh', () => {
     const page = currentPage();
-    if (page === 'dashboard') renderDashboard(false);
-    if (page === 'jobs') renderJobs(false);
+    if (page === 'dashboard' || page === 'jobs') scheduleSSERender();
   });
-  ['source_created','source_updated','source_deleted',
-   'destination_created','destination_updated','destination_deleted',
-   'backup_triggered','settings_updated','age_keys_updated'].forEach(ev => {
-    eventSource.addEventListener(ev, () => renderPage(currentPage(), false));
+  Object.keys(sseEventPages).forEach(ev => {
+    eventSource.addEventListener(ev, () => handleSSEEvent(ev));
   });
   eventSource.onerror = () => {
     dot.className = 'status-dot error';

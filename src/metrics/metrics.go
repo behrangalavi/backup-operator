@@ -135,6 +135,21 @@ var (
 		[]string{"target", "destination"},
 	)
 
+	// Set to 1 when the worker tried to load a previous-run meta as the
+	// analyzer baseline but every destination errored before any could be
+	// read. Distinguishes "first run, nothing to compare" (gauge stays 0)
+	// from "all destinations broken, analyzer is running blind" (gauge=1).
+	// Without this signal, a fleet-wide storage outage degrades semantic
+	// alerting silently — the run still succeeds, dumps still upload, but
+	// schema/size drift detection is dark.
+	analyzerBaselineUnavailable = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "backup_operator_analyzer_baseline_unavailable",
+			Help: "1 if every destination failed when loading the analyzer baseline; 0 otherwise (including first run)",
+		},
+		[]string{"target"},
+	)
+
 	destinationFailed = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "backup_operator_destination_failed",
@@ -248,6 +263,7 @@ func Register(registry prometheus.Registerer) {
 		lastRunStatus,
 		lastRunDurationSeconds,
 		lastSuccessTimestamp,
+		analyzerBaselineUnavailable,
 		destinationFailed,
 		retentionLastStatus,
 		retentionLastDeleted,
@@ -361,6 +377,14 @@ func SetDestinationFailed(target, destination string, failed bool) {
 	destinationFailed.WithLabelValues(target, destination).Set(v)
 }
 
+func SetAnalyzerBaselineUnavailable(target string, unavailable bool) {
+	v := 0.0
+	if unavailable {
+		v = 1.0
+	}
+	analyzerBaselineUnavailable.WithLabelValues(target).Set(v)
+}
+
 func SetStorageScrubPassed(target, destination string, passed bool) {
 	v := 0.0
 	if passed {
@@ -408,6 +432,7 @@ func DeleteTargetMetrics(target string) {
 	destinationFailed.DeletePartialMatch(prometheus.Labels{"target": target})
 	lastRunStatus.DeleteLabelValues(target)
 	lastRunAnomalies.DeleteLabelValues(target)
+	analyzerBaselineUnavailable.DeleteLabelValues(target)
 	lastRunDurationSeconds.DeletePartialMatch(prometheus.Labels{"target": target})
 	runDurationSeconds.DeletePartialMatch(prometheus.Labels{"target": target})
 	dumpDurationSeconds.DeletePartialMatch(prometheus.Labels{"target": target})

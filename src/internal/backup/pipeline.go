@@ -880,19 +880,37 @@ func verifyUploadSize(ctx context.Context, st storage.Storage, objectPath string
 // loadPreviousMeta returns the most recent successful meta across destinations.
 // Failure-metas are skipped so a transient failure does not blank the analyzer's
 // baseline. Returns nil when no successful run is yet stored anywhere.
+//
+// As a side effect, sets backup_operator_analyzer_baseline_unavailable: 1 when
+// every destination failed before producing a readable response (every storage
+// init / list errored), 0 otherwise — including the legitimate first-run case
+// where destinations responded but no successful meta exists yet. This lets
+// alerting distinguish "this target has never run" (silent) from "every
+// destination is broken so the analyzer is running blind" (loud).
 func (p *Pipeline) loadPreviousMeta(ctx context.Context, dests []*secrets.Destination, target string) *meta.MetaFile {
+	// destAccessed = at least one destination's storage init AND List
+	// succeeded. If all destinations fail before that point, the analyzer
+	// is running blind and the operator should know.
+	destAccessed := 0
 	for _, d := range dests {
 		st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, p.logger)
 		if err != nil {
+			p.logger.V(1).Info("baseline: storage init failed", "target", target, "destination", d.Name, "err", err.Error())
 			continue
 		}
 		objs, err := st.List(ctx, target+"/")
-		if err != nil || len(objs) == 0 {
+		if err != nil {
+			p.logger.V(1).Info("baseline: list failed", "target", target, "destination", d.Name, "err", err.Error())
 			continue
 		}
-		for _, p := range sortedMetaPaths(objs) {
-			rc, err := st.Get(ctx, p)
+		destAccessed++
+		if len(objs) == 0 {
+			continue
+		}
+		for _, op := range sortedMetaPaths(objs) {
+			rc, err := st.Get(ctx, op)
 			if err != nil {
+				p.logger.V(1).Info("baseline: get failed", "target", target, "destination", d.Name, "path", op, "err", err.Error())
 				continue
 			}
 			raw, err := io.ReadAll(rc)
@@ -907,8 +925,19 @@ func (p *Pipeline) loadPreviousMeta(ctx context.Context, dests []*secrets.Destin
 			if m.IsFailure() {
 				continue
 			}
+			metrics.SetAnalyzerBaselineUnavailable(target, false)
 			return &m
 		}
+	}
+	// No successful baseline. Distinguish "every destination broken" from
+	// "no baseline yet" — both return nil to the caller, the gauge tells
+	// monitoring which case it is.
+	if len(dests) > 0 && destAccessed == 0 {
+		p.logger.Info("analyzer baseline unavailable; every destination failed",
+			"target", target, "destinations", len(dests))
+		metrics.SetAnalyzerBaselineUnavailable(target, true)
+	} else {
+		metrics.SetAnalyzerBaselineUnavailable(target, false)
 	}
 	return nil
 }

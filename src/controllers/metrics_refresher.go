@@ -19,7 +19,19 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const defaultRefreshConcurrency = 4
+const (
+	// defaultGlobalConcurrency caps the number of sources processed
+	// simultaneously per refresh tick. This is the operator pod's
+	// CPU/goroutine budget, not a backend-protection knob.
+	defaultGlobalConcurrency = 8
+
+	// defaultPerDestConcurrency caps in-flight calls against a SINGLE
+	// destination, summed across every source that fans out to it.
+	// This is the actual backend-protection knob — a Hetzner Storage
+	// Box accepts ~10 concurrent SSH sessions; staying at 4 leaves
+	// headroom for worker pods running uploads in parallel.
+	defaultPerDestConcurrency = 4
+)
 
 // MetricsRefresher periodically rebuilds the operator's Prometheus gauges from
 // the latest meta.json sidecar found at each destination. Worker pods are
@@ -42,6 +54,31 @@ type MetricsRefresher struct {
 	// a deleted source would leave stale metrics around indefinitely.
 	mu             sync.Mutex
 	trackedTargets map[string]bool
+
+	// perDestSlots is the per-destination semaphore map shared across
+	// every source's goroutines. A destination shared by 50 sources sees
+	// at most defaultPerDestConcurrency calls at once, regardless of
+	// how the global worker pool schedules the sources. Lazy-initialised
+	// in destSlot to keep zero-value MetricsRefresher usable in tests.
+	destMu       sync.Mutex
+	perDestSlots map[string]chan struct{}
+}
+
+// destSlot returns the (lazy-initialised) per-destination semaphore
+// for name. Same chan is handed out to every caller for the same
+// destination so the cap is global, not per-source.
+func (r *MetricsRefresher) destSlot(name string) chan struct{} {
+	r.destMu.Lock()
+	defer r.destMu.Unlock()
+	if r.perDestSlots == nil {
+		r.perDestSlots = map[string]chan struct{}{}
+	}
+	slot, ok := r.perDestSlots[name]
+	if !ok {
+		slot = make(chan struct{}, defaultPerDestConcurrency)
+		r.perDestSlots[name] = slot
+	}
+	return slot
 }
 
 // Start runs the refresh loop until ctx is cancelled. It satisfies
@@ -81,16 +118,36 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 	r.Pool.Retain(dests)
 	r.Logger.V(1).Info("refresh tick", "sources", len(sources), "destinations", len(dests), "pooled_clients", r.Pool.Size())
 
-	current := make(map[string]bool, len(sources))
-	for _, s := range sources {
-		src, err := secrets.ParseSource(&s, "")
-		if err != nil {
-			r.Logger.V(1).Info("skipping invalid source", "secret", s.Name, "err", err.Error())
-			continue
-		}
-		current[src.TargetName] = true
-		r.refreshSource(ctx, src, dests)
+	// Sources flow through a fixed-size global worker pool. The
+	// per-destination semaphore (see refreshSource) caps backend load
+	// independently — these two limits do different jobs and must not
+	// be conflated.
+	var (
+		currentMu sync.Mutex
+		current   = make(map[string]bool, len(sources))
+		wg        sync.WaitGroup
+		workers   = make(chan struct{}, defaultGlobalConcurrency)
+	)
+	for i := range sources {
+		s := sources[i] // capture by value — defensive even on Go 1.22+ semantics
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			workers <- struct{}{}
+			defer func() { <-workers }()
+
+			src, err := secrets.ParseSource(&s, "")
+			if err != nil {
+				r.Logger.V(1).Info("skipping invalid source", "secret", s.Name, "err", err.Error())
+				return
+			}
+			currentMu.Lock()
+			current[src.TargetName] = true
+			currentMu.Unlock()
+			r.refreshSource(ctx, src, dests)
+		}()
 	}
+	wg.Wait()
 
 	r.mu.Lock()
 	for prev := range r.trackedTargets {
@@ -147,13 +204,17 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 		resultMu               sync.Mutex
 		wg                     sync.WaitGroup
 	)
-	sem := make(chan struct{}, defaultRefreshConcurrency)
 	for _, d := range allowed {
 		wg.Add(1)
 		go func(d *secrets.Destination) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			// Per-destination slot is shared across every source that
+			// fans out to this backend, so a destination cannot be hit
+			// by more than defaultPerDestConcurrency calls in flight at
+			// once even when the global pool runs many sources at once.
+			slot := r.destSlot(d.Name)
+			slot <- struct{}{}
+			defer func() { <-slot }()
 
 			st, err := r.Pool.Get(d)
 			if err != nil {

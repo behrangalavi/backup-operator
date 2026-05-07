@@ -3,6 +3,7 @@ package backup
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -161,7 +162,10 @@ func TestSortedMetaPaths_NoMetas(t *testing.T) {
 
 func TestMetaJSON_SuccessStatus(t *testing.T) {
 	src := testSource("prod-db", "postgres")
-	m := metaJSON(src, nil, "", nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, nil, nil)
+	m, err := metaJSON(src, nil, "", nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("metaJSON: %v", err)
+	}
 	if !bytes.Contains(m, []byte(`"status": "success"`)) {
 		t.Error("meta should contain status=success")
 	}
@@ -175,8 +179,11 @@ func TestMetaJSON_SuccessStatus(t *testing.T) {
 
 func TestMetaJSON_StatsErrorPresent(t *testing.T) {
 	src := testSource("prod-db", "postgres")
-	m := metaJSON(src, nil, `connect: failed to connect to "postgres://app:***@db:5432/app": permission denied`,
+	m, err := metaJSON(src, nil, `connect: failed to connect to "postgres://app:***@db:5432/app": permission denied`,
 		nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("metaJSON: %v", err)
+	}
 	if !bytes.Contains(m, []byte(`"statsError":`)) {
 		t.Error("non-empty statsError must be serialised")
 	}
@@ -191,7 +198,10 @@ func TestMetaJSON_WithDestinations(t *testing.T) {
 		{Name: "hetzner", StorageType: "sftp", Status: meta.StatusSuccess},
 		{Name: "aws-s3", StorageType: "s3", Status: meta.StatusFailed, Error: "connection refused"},
 	}
-	m := metaJSON(src, nil, "", nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, drs, nil, nil)
+	m, err := metaJSON(src, nil, "", nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, drs, nil, nil)
+	if err != nil {
+		t.Fatalf("metaJSON: %v", err)
+	}
 	if !bytes.Contains(m, []byte(`"destinations"`)) {
 		t.Error("meta should contain destinations array")
 	}
@@ -209,7 +219,10 @@ func TestMetaJSON_WithRetention(t *testing.T) {
 		{Name: "hetzner", Status: meta.StatusSuccess, DeletedDumps: 2, DeletedMetas: 2},
 		{Name: "aws-s3", Status: meta.StatusFailed, Error: "list: connection refused"},
 	}
-	m := metaJSON(src, nil, "", nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, nil, rr)
+	m, err := metaJSON(src, nil, "", nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, nil, rr)
+	if err != nil {
+		t.Fatalf("metaJSON: %v", err)
+	}
 	if !bytes.Contains(m, []byte(`"retention"`)) {
 		t.Error("meta should contain retention block")
 	}
@@ -223,7 +236,10 @@ func TestMetaJSON_WithRetention(t *testing.T) {
 
 func TestFailureMetaJSON_FailedStatus(t *testing.T) {
 	src := testSource("prod-db", "postgres")
-	meta := failureMetaJSON(src, "20260501T020000Z", "dump", time.Time{}, fmt.Errorf("pg_dump failed"))
+	meta, err := failureMetaJSON(src, "20260501T020000Z", "dump", time.Time{}, fmt.Errorf("pg_dump failed"))
+	if err != nil {
+		t.Fatalf("failureMetaJSON: %v", err)
+	}
 	if !bytes.Contains(meta, []byte(`"status": "failed"`)) {
 		t.Error("failure meta should contain status=failed")
 	}
@@ -232,6 +248,32 @@ func TestFailureMetaJSON_FailedStatus(t *testing.T) {
 	}
 	if !bytes.Contains(meta, []byte(`pg_dump failed`)) {
 		t.Error("failure meta should contain error message")
+	}
+}
+
+func TestFallbackMetaJSON_ValidParseableJSON(t *testing.T) {
+	// fallbackMetaJSON is the safety net when MarshalIndent of the full
+	// MetaFile fails. The output must be parseable as a MetaFile and must
+	// carry enough information for the UI/refresher to surface the run.
+	body := fallbackMetaJSON("prod-db", "20260501T020000Z", "postgres", "meta-marshal", fmt.Errorf("synthetic"))
+	if len(body) == 0 {
+		t.Fatal("fallback must never return empty bytes")
+	}
+	var parsed meta.MetaFile
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("fallback meta must be valid JSON: %v\n%s", err, body)
+	}
+	if parsed.Target != "prod-db" {
+		t.Errorf("Target round-trip: got %q", parsed.Target)
+	}
+	if parsed.Status != meta.StatusFailed {
+		t.Errorf("Status must be failed in fallback, got %q", parsed.Status)
+	}
+	if parsed.Phase != "meta-marshal" {
+		t.Errorf("Phase round-trip: got %q", parsed.Phase)
+	}
+	if !bytes.Contains(body, []byte("synthetic")) {
+		t.Error("fallback should preserve original marshal error message")
 	}
 }
 
@@ -244,7 +286,10 @@ func TestMetaJSON_WithRestoreVerification(t *testing.T) {
 		EphemeralRecipientFingerprint: "abc1234567890def",
 		DurationSeconds:               1.23,
 	}
-	m := metaJSON(src, nil, "", nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, rv, nil)
+	m, err := metaJSON(src, nil, "", nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, rv, nil)
+	if err != nil {
+		t.Fatalf("metaJSON: %v", err)
+	}
 	if !bytes.Contains(m, []byte(`"restoreVerification"`)) {
 		t.Error("meta should contain restoreVerification")
 	}
@@ -265,7 +310,10 @@ func TestMetaJSON_WithVerification(t *testing.T) {
 			{Name: "users", PreDumpRows: 100, PostDumpRows: 100, DumpRows: 100, Verdict: "match"},
 		},
 	}
-	m := metaJSON(src, nil, "", nil, v, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, nil, nil)
+	m, err := metaJSON(src, nil, "", nil, v, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("metaJSON: %v", err)
+	}
 	if !bytes.Contains(m, []byte(`"verification"`)) {
 		t.Error("meta should contain verification")
 	}

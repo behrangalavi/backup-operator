@@ -485,7 +485,15 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	}
 
 	// Phase 2: build meta with destination results, upload to successful destinations.
-	metaBytes := metaJSON(src, metaStats, preStatsError, metaReport, metaVerification, encryptedSize, sha256sum, timestamp, runStart, schemaChangedAt, destResults, restoreVerification, retentionResults)
+	metaBytes, marshalErr := metaJSON(src, metaStats, preStatsError, metaReport, metaVerification, encryptedSize, sha256sum, timestamp, runStart, schemaChangedAt, destResults, restoreVerification, retentionResults)
+	if marshalErr != nil {
+		// Marshal of basic structs is essentially never expected to fail.
+		// If it does (future schema change adds a non-marshalable field),
+		// upload a minimal hand-built meta so the run still surfaces in
+		// the UI and the failure becomes visible rather than silent.
+		log.Error(marshalErr, "meta marshal failed; uploading fallback meta", "target", src.TargetName)
+		metaBytes = fallbackMetaJSON(src.TargetName, timestamp, src.DBType, "meta-marshal", marshalErr)
+	}
 	p.uploadMeta(ctx, dests, destResults, metaPath, metaBytes, log)
 
 	metrics.SetLastRunStatus(src.TargetName, true)
@@ -585,7 +593,11 @@ func (p *Pipeline) recordFailure(
 	uploadCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	body := failureMetaJSON(src, timestamp, phase, runStart, runErr)
+	body, marshalErr := failureMetaJSON(src, timestamp, phase, runStart, runErr)
+	if marshalErr != nil {
+		log.Error(marshalErr, "failure-meta marshal failed; uploading fallback meta", "target", src.TargetName, "phase", phase)
+		body = fallbackMetaJSON(src.TargetName, timestamp, src.DBType, phase, marshalErr)
+	}
 	metaPath := buildObjectPath(src.TargetName, timestamp, "meta.json")
 
 	var wg sync.WaitGroup
@@ -920,7 +932,7 @@ func sortedMetaPaths(objs []storage.Object) []string {
 	return out
 }
 
-func metaJSON(src *secrets.Source, stats *dumper.Stats, statsError string, report *analyzer.Report, verification *meta.DumpVerification, size int64, sha256sum, timestamp string, runStart time.Time, schemaChangedAt time.Time, destResults []meta.DestinationResult, restoreVerification *meta.RestoreVerificationResult, retention []meta.RetentionResult) []byte {
+func metaJSON(src *secrets.Source, stats *dumper.Stats, statsError string, report *analyzer.Report, verification *meta.DumpVerification, size int64, sha256sum, timestamp string, runStart time.Time, schemaChangedAt time.Time, destResults []meta.DestinationResult, restoreVerification *meta.RestoreVerificationResult, retention []meta.RetentionResult) ([]byte, error) {
 	completedAt := time.Now().UTC()
 	m := meta.MetaFile{
 		Target:              src.TargetName,
@@ -940,14 +952,13 @@ func metaJSON(src *secrets.Source, stats *dumper.Stats, statsError string, repor
 		Destinations:        destResults,
 		Retention:           retention,
 	}
-	out, _ := json.MarshalIndent(m, "", "  ")
-	return out
+	return json.MarshalIndent(m, "", "  ")
 }
 
 // failureMetaJSON produces the sidecar written when a run never reaches the
 // fan-out — there is no dump and no stats, only the cause and the phase
 // where it broke.
-func failureMetaJSON(src *secrets.Source, timestamp, phase string, runStart time.Time, runErr error) []byte {
+func failureMetaJSON(src *secrets.Source, timestamp, phase string, runStart time.Time, runErr error) ([]byte, error) {
 	msg := ""
 	if runErr != nil {
 		msg = runErr.Error()
@@ -963,8 +974,31 @@ func failureMetaJSON(src *secrets.Source, timestamp, phase string, runStart time
 		CompletedAt:     completedAt,
 		DurationSeconds: completedAt.Sub(runStart).Seconds(),
 	}
-	out, _ := json.MarshalIndent(m, "", "  ")
-	return out
+	return json.MarshalIndent(m, "", "  ")
+}
+
+// fallbackMetaJSON hand-builds a minimal valid meta.json for the unlikely
+// case json.MarshalIndent of the full struct fails. Without this, a marshal
+// error would leave the run with no sidecar at all and the UI would never
+// see it. The fields here are the absolute minimum the UI/refresher needs
+// to render "this run happened and it broke".
+func fallbackMetaJSON(target, timestamp, dbType, phase string, marshalErr error) []byte {
+	body, err := json.MarshalIndent(meta.MetaFile{
+		Target:    target,
+		Timestamp: timestamp,
+		DBType:    dbType,
+		Status:    meta.StatusFailed,
+		Phase:     phase,
+		Error:     "meta marshal failed: " + marshalErr.Error(),
+	}, "", "  ")
+	if err != nil {
+		// MarshalIndent of strings cannot fail in practice. If it somehow
+		// does, return a syntactically-valid placeholder rather than
+		// nothing — empty bytes would be uploaded as a 0-byte object and
+		// confuse every consumer.
+		return []byte(`{"status":"failed","error":"meta marshal catastrophic failure"}`)
+	}
+	return body
 }
 
 func emitAnalyzerMetrics(target string, r *analyzer.Report, realStats *dumper.Stats) {

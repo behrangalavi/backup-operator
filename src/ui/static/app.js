@@ -150,6 +150,34 @@ function escHTML(s) {
   d.textContent = s || '';
   return d.innerHTML;
 }
+// escAttr is for HTML attribute *values*. textContent → innerHTML escapes
+// `<`, `>`, `&` but NOT `"` or `'` — so escHTML inside a quoted attribute
+// is XSS-vulnerable when the value can contain a quote that matches the
+// attribute's quoting style. escAttr handles both quoting styles plus
+// backtick (template-string boundary).
+function escAttr(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/`/g, '&#96;');
+}
+// escJS is for JavaScript string literals embedded inside HTML attributes
+// (e.g. onclick="foo('${escJS(name)}')"). escHTML/escAttr produce HTML
+// entities, which the JS parser does NOT decode — wrong escape, wrong
+// context. We unicode-escape every char that could break out of either
+// the JS string or the surrounding HTML attribute. The result is safe
+// regardless of whether the attribute uses ' or " quoting.
+function escJS(s) {
+  // Includes U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR — older
+  // engines treat these as line terminators inside string literals.
+  return String(s == null ? '' : s).replace(
+    /[\\'"<>&\n\r\u2028\u2029`]/g,
+    c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0')
+  );
+}
 // Render a Failed badge with phase suffix and full error in tooltip.
 // Matches the legacy templates' "✗ failed (phase)" + title=error pattern.
 function failedBadge(m) {
@@ -174,7 +202,7 @@ function verificationRow(t) {
     if (verdict === 'match') cls = 'badge-ok';
     else if (verdict === 'mismatch') cls = 'badge-failed';
     const ts = rv.completedAt ? timeAgo(rv.completedAt) : '—';
-    const tip = rv.summary ? ' title="' + escHTML(rv.summary) + '"' : '';
+    const tip = rv.summary ? ' title="' + escAttr(rv.summary) + '"' : '';
     status = `<span class="badge ${cls}" style="font-size:11px"${tip}>${escHTML(verdict)} · ${ts}</span>`;
   }
   return `<div class="detail-row"><span class="key">Verify (${escHTML(cfgMode)})</span><span class="val">${status}</span></div>`;
@@ -322,7 +350,7 @@ async function renderDashboard(loading = true) {
         </tr></thead>
         <tbody>${sortedTargets.map((t, i) => `<tr>
           <td class="num row-num">${i + 1}</td>
-          <td><a href="#/target/${escHTML(t.Name)}" style="color:var(--accent);font-weight:600">${escHTML(t.Name)}</a></td>
+          <td><a href="#/target/${escAttr(t.Name)}" style="color:var(--accent);font-weight:600">${escHTML(t.Name)}</a></td>
           <td><span class="badge badge-${t.DBType}">${t.DBType}</span></td>
           <td><code style="font-size:12px;background:var(--bg-input);padding:2px 6px;border-radius:4px">${escHTML(t.Schedule)}</code>${t.Suspended ? ' <span class="badge badge-warn" style="margin-left:4px" title="Scheduled runs are paused; manual triggers still work">Paused</span>' : ''}</td>
           <td>${t.Latest ? (t.Latest.status === 'failed'
@@ -334,12 +362,12 @@ async function renderDashboard(loading = true) {
           <td style="color:var(--text-muted);font-size:12px">${t.CreatedAt ? timeAgo(t.CreatedAt) : '—'}</td>
           <td>${(t.Destinations || []).map(d => `<span class="badge badge-sftp" style="margin:1px">${escHTML(d)}</span>`).join('')}</td>
           <td style="white-space:nowrap">
-            <button class="btn btn-ghost btn-sm" onclick="triggerBackup('${escHTML(t.Name)}')" title="Trigger a manual backup run now (creates a one-off Job from the CronJob template)">&#9654;</button>
+            <button class="btn btn-ghost btn-sm" onclick="triggerBackup('${escJS(t.Name)}')" title="Trigger a manual backup run now (creates a one-off Job from the CronJob template)">&#9654;</button>
             ${t.Suspended
-              ? `<button class="btn btn-ghost btn-sm" style="color:var(--success)" onclick="toggleSourceSuspend('${escHTML(t.SecretName)}','${escHTML(t.Name)}',false)" title="Resume scheduled runs">&#9655;&#9655;</button>`
-              : `<button class="btn btn-ghost btn-sm" style="color:var(--warning)" onclick="toggleSourceSuspend('${escHTML(t.SecretName)}','${escHTML(t.Name)}',true)" title="Pause scheduled runs — sets backup.mogenius.io/suspended=true. Existing dumps kept; manual triggers still work.">&#10074;&#10074;</button>`}
-            <button class="btn btn-ghost btn-sm" onclick="openSourceForm('${escHTML(t.SecretName)}')" title="Edit this source's connection details and schedule">&#9998;</button>
-            <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteSource('${escHTML(t.SecretName)}','${escHTML(t.Name)}')" title="Delete this source — the CronJob is cascaded; existing dumps in storage are kept">&#10005;</button>
+              ? `<button class="btn btn-ghost btn-sm" style="color:var(--success)" onclick="toggleSourceSuspend('${escJS(t.SecretName)}','${escJS(t.Name)}',false)" title="Resume scheduled runs">&#9655;&#9655;</button>`
+              : `<button class="btn btn-ghost btn-sm" style="color:var(--warning)" onclick="toggleSourceSuspend('${escJS(t.SecretName)}','${escJS(t.Name)}',true)" title="Pause scheduled runs — sets backup.mogenius.io/suspended=true. Existing dumps kept; manual triggers still work.">&#10074;&#10074;</button>`}
+            <button class="btn btn-ghost btn-sm" onclick="openSourceForm('${escJS(t.SecretName)}')" title="Edit this source's connection details and schedule">&#9998;</button>
+            <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteSource('${escJS(t.SecretName)}','${escJS(t.Name)}')" title="Delete this source — the CronJob is cascaded; existing dumps in storage are kept">&#10005;</button>
           </td>
         </tr>`).join('')}</tbody>
       </table>`}
@@ -376,13 +404,13 @@ async function renderDashboard(loading = true) {
           healthEntries.forEach(h => { lookup[h.target + '@' + h.destination] = h; });
           return targetNames.map((t, i) => `<tr>
             <td class="num row-num">${i + 1}</td>
-            <td><a href="#/target/${escHTML(t)}" style="color:var(--accent);font-weight:600">${escHTML(t)}</a></td>
+            <td><a href="#/target/${escAttr(t)}" style="color:var(--accent);font-weight:600">${escHTML(t)}</a></td>
             ${destNames.map(d => {
               const h = lookup[t + '@' + d];
               if (!h) return '<td style="text-align:center"><span class="badge" style="background:var(--bg-input);color:var(--text-muted)">N/A</span></td>';
               const badge = h.status === 'ok' ? 'badge-ok' : h.status === 'failed' ? 'badge-failed' : h.status === 'missing' ? 'badge-pending' : 'badge-failed';
               const label = h.status === 'ok' ? 'OK' : h.status === 'failed' ? 'Failed' : h.status === 'missing' ? 'No data' : 'Unreachable';
-              const tip = h.error ? ' title="' + escHTML(h.error) + '"' : '';
+              const tip = h.error ? ' title="' + escAttr(h.error) + '"' : '';
               return '<td style="text-align:center"><span class="badge ' + badge + '"' + tip + '>' + label + '</span>' +
                 (h.latestRun ? '<div style="font-size:10px;color:var(--text-muted)">' + timeAgo(h.latestRun) + '</div>' : '') +
                 renderScrubChip(h) + '</td>';
@@ -427,7 +455,7 @@ async function renderSources(loading = true) {
     </div>` : `
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px">
       ${sortedTargets.map(t => `
-      <div class="detail-card" style="cursor:pointer" onclick="location.hash='#/target/${escHTML(t.Name)}'">
+      <div class="detail-card" style="cursor:pointer" onclick="location.hash='#/target/${escJS(t.Name)}'">
         <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:12px">
           <div>
             <div style="font-weight:600;font-size:15px;color:var(--text-heading)">${escHTML(t.Name)}</div>
@@ -442,17 +470,17 @@ async function renderSources(loading = true) {
         <div class="detail-row"><span class="key">Schedule</span><code class="val">${escHTML(t.Schedule)}${t.Suspended ? ' <span style="color:var(--warning);font-weight:600">(paused)</span>' : ''}</code></div>
         <div class="detail-row"><span class="key">Last run</span><span class="val">${t.Latest ? timeAgo(t.Latest.timestamp) : 'never'}</span></div>
         ${t.Latest && t.Latest.status === 'failed' && t.Latest.error ? `
-        <div class="detail-row" style="align-items:flex-start"><span class="key">Error</span><span class="val" style="color:var(--danger);font-size:12px;word-break:break-word" title="${escHTML(t.Latest.error)}">${escHTML(truncate(t.Latest.error, 140))}</span></div>` : ''}
+        <div class="detail-row" style="align-items:flex-start"><span class="key">Error</span><span class="val" style="color:var(--danger);font-size:12px;word-break:break-word" title="${escAttr(t.Latest.error)}">${escHTML(truncate(t.Latest.error, 140))}</span></div>` : ''}
         <div class="detail-row"><span class="key">Created</span><span class="val">${t.CreatedAt ? timeAgo(t.CreatedAt) : '—'}</span></div>
         <div class="detail-row"><span class="key">Destinations</span><span class="val">${(t.Destinations||[]).join(', ') || 'all'}</span></div>
         ${verificationRow(t)}
         <div style="display:flex;gap:6px;margin-top:12px;justify-content:flex-end">
-          <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();triggerBackup('${escHTML(t.Name)}')" title="Trigger a manual backup run now (creates a one-off Job from the CronJob template; pause-state ignored for manual triggers)">&#9654; Run</button>
+          <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();triggerBackup('${escJS(t.Name)}')" title="Trigger a manual backup run now (creates a one-off Job from the CronJob template; pause-state ignored for manual triggers)">&#9654; Run</button>
           ${t.Suspended
-            ? `<button class="btn btn-ghost btn-sm" style="color:var(--success)" onclick="event.stopPropagation();toggleSourceSuspend('${escHTML(t.SecretName)}','${escHTML(t.Name)}',false)" title="Resume scheduled runs — the reconciler clears Spec.Suspend on the managed CronJob within seconds">Resume</button>`
-            : `<button class="btn btn-ghost btn-sm" style="color:var(--warning)" onclick="event.stopPropagation();toggleSourceSuspend('${escHTML(t.SecretName)}','${escHTML(t.Name)}',true)" title="Pause scheduled runs — sets backup.mogenius.io/suspended=true on the source Secret. Existing dumps and config are kept; manual Run still works.">Pause</button>`}
-          <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openSourceForm('${escHTML(t.SecretName)}')" title="Edit this source's connection details and schedule">Edit</button>
-          <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="event.stopPropagation();deleteSource('${escHTML(t.SecretName)}','${escHTML(t.Name)}')" title="Delete this source — the managed CronJob is removed via OwnerReference; existing dumps in storage are kept">Delete</button>
+            ? `<button class="btn btn-ghost btn-sm" style="color:var(--success)" onclick="event.stopPropagation();toggleSourceSuspend('${escJS(t.SecretName)}','${escJS(t.Name)}',false)" title="Resume scheduled runs — the reconciler clears Spec.Suspend on the managed CronJob within seconds">Resume</button>`
+            : `<button class="btn btn-ghost btn-sm" style="color:var(--warning)" onclick="event.stopPropagation();toggleSourceSuspend('${escJS(t.SecretName)}','${escJS(t.Name)}',true)" title="Pause scheduled runs — sets backup.mogenius.io/suspended=true on the source Secret. Existing dumps and config are kept; manual Run still works.">Pause</button>`}
+          <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openSourceForm('${escJS(t.SecretName)}')" title="Edit this source's connection details and schedule">Edit</button>
+          <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="event.stopPropagation();deleteSource('${escJS(t.SecretName)}','${escJS(t.Name)}')" title="Delete this source — the managed CronJob is removed via OwnerReference; existing dumps in storage are kept">Delete</button>
         </div>
       </div>`).join('')}
     </div>`}`;
@@ -704,7 +732,7 @@ function loadDestinationsPicker(currentValue) {
     for (const d of dests) {
       const checked = selected.includes(d.name) ? 'checked' : '';
       rows.push(`<label>
-        <input type="checkbox" value="${escHTML(d.name)}" ${checked}>
+        <input type="checkbox" value="${escAttr(d.name)}" ${checked}>
         <span>${escHTML(d.name)}</span>
         <span class="ms-meta">${escHTML(d.storageType || '')}</span>
       </label>`);
@@ -714,7 +742,7 @@ function loadDestinationsPicker(currentValue) {
       // different namespace). Keep it checked so Save doesn't drop it; the
       // disabled checkbox tells the user something is off.
       rows.push(`<label class="ms-missing" title="This destination is in the saved allow-list but no destination Secret with that logical name currently exists.">
-        <input type="checkbox" value="${escHTML(name)}" checked disabled data-ghost="1">
+        <input type="checkbox" value="${escAttr(name)}" checked disabled data-ghost="1">
         <span>${escHTML(name)}</span>
         <span class="ms-meta">missing</span>
       </label>`);
@@ -846,7 +874,7 @@ async function renderDestinations(loading = true) {
             <div style="font-weight:600;font-size:15px;color:var(--text-heading)">${escHTML(d.name)}</div>
             <span class="badge badge-${d.storageType}" style="margin-top:6px">${d.storageType}</span>
           </div>
-          <span class="dest-status" id="dest-status-${escHTML(d.secretName)}"></span>
+          <span class="dest-status" id="dest-status-${escAttr(d.secretName)}"></span>
         </div>
         <div class="detail-row"><span class="key">Secret</span><code class="val">${escHTML(d.secretName)}</code></div>
         <div class="detail-row"><span class="key">Host</span><span class="val">${escHTML(d.host || '—')}</span></div>
@@ -863,9 +891,9 @@ async function renderDestinations(loading = true) {
           Storage unreachable: ${escHTML(st.error)}
         </div>` : ''}
         <div style="display:flex;gap:6px;margin-top:12px;justify-content:flex-end">
-          <button class="btn btn-ghost btn-sm" onclick="testDestConnection('${escHTML(d.secretName)}','${escHTML(d.name)}')" title="Probe this destination — verifies SSH/SFTP login or S3 bucket access without uploading anything">&#128268; Test</button>
-          <button class="btn btn-ghost btn-sm" onclick="openDestForm('${escHTML(d.secretName)}')" title="Edit this destination's credentials and connection details">Edit</button>
-          <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteDest('${escHTML(d.secretName)}','${escHTML(d.name)}')" title="Delete this destination Secret. Existing dumps stored at this destination remain intact.">Delete</button>
+          <button class="btn btn-ghost btn-sm" onclick="testDestConnection('${escJS(d.secretName)}','${escJS(d.name)}')" title="Probe this destination — verifies SSH/SFTP login or S3 bucket access without uploading anything">&#128268; Test</button>
+          <button class="btn btn-ghost btn-sm" onclick="openDestForm('${escJS(d.secretName)}')" title="Edit this destination's credentials and connection details">Edit</button>
+          <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteDest('${escJS(d.secretName)}','${escJS(d.name)}')" title="Delete this destination Secret. Existing dumps stored at this destination remain intact.">Delete</button>
         </div>
       </div>`;
       }).join('')}
@@ -976,7 +1004,7 @@ window.testDestConnection = async function(secretName, displayName) {
       if (el) el.innerHTML = '<span class="badge badge-ok">Connected</span>';
       toast(displayName + ': connection OK', 'success');
     } else {
-      if (el) el.innerHTML = '<span class="badge badge-failed" title="' + escHTML(result.error || '') + '">Failed</span>';
+      if (el) el.innerHTML = '<span class="badge badge-failed" title="' + escAttr(result.error || '') + '">Failed</span>';
       toast(displayName + ': ' + (result.error || 'connection failed'), 'error');
     }
   } catch(e) {
@@ -1230,7 +1258,7 @@ receivers:
     <div class="page-header">
       <div>
         <h1>Alerts</h1>
-        <div class="subtitle">Backup alert monitoring${amURL ? ' — <a href="' + escHTML(amURL) + '" target="_blank">Open Alertmanager</a>' : ''}</div>
+        <div class="subtitle">Backup alert monitoring${amURL ? ' — <a href="' + escAttr(amURL) + '" target="_blank">Open Alertmanager</a>' : ''}</div>
       </div>
       <div style="display:flex;gap:8px">
         ${testBtn}
@@ -1257,7 +1285,7 @@ receivers:
           <tbody>${items.map(a => {
             const info = getAlertDescription(a.alertname);
             return `<tr>
-            <td><span class="badge badge-${escHTML(a.severity || 'info')}">${escHTML(a.severity || 'info')}</span></td>
+            <td><span class="badge badge-${escAttr(a.severity || 'info')}">${escHTML(a.severity || 'info')}</span></td>
             <td>
               <details style="cursor:pointer">
                 <summary><code style="font-size:12px">${escHTML(info.icon)} ${escHTML(info.title)}</code></summary>
@@ -1267,7 +1295,7 @@ receivers:
                 </div>
               </details>
             </td>
-            <td>${a.target ? '<a href="#/target/' + escHTML(a.target) + '" style="color:var(--accent)">' + escHTML(a.target) + '</a>' : '—'}</td>
+            <td>${a.target ? '<a href="#/target/' + escAttr(a.target) + '" style="color:var(--accent)">' + escHTML(a.target) + '</a>' : '—'}</td>
             <td>${a.destination ? escHTML(a.destination) : '—'}</td>
             <td style="font-size:12px;color:var(--text-muted)">${a.activeSince ? timeAgo(a.activeSince) : '—'}</td>
             <td><span class="badge badge-${a.source === 'prometheus' ? 'ok' : 'pending'}" title="${a.source === 'prometheus' ? 'From Prometheus — honors rule for: duration' : 'Local heuristic — fires immediately, no for: debounce'}">${escHTML(a.source || '?')}</span></td>
@@ -1401,7 +1429,7 @@ async function renderJobs(loading = true) {
           <th class="sortable" onclick="toggleSort('jobs','startTime')">Started${sortIndicator('jobs','startTime')}</th>
           <th class="sortable" onclick="toggleSort('jobs','duration')">Duration${sortIndicator('jobs','duration')}</th>
         </tr></thead>
-        <tbody>${sortedJobs.map((j, i) => `<tr data-job-name="${escHTML(j.name)}">
+        <tbody>${sortedJobs.map((j, i) => `<tr data-job-name="${escAttr(j.name)}">
           <td class="num row-num">${i + 1}</td>
           <td style="font-family:ui-monospace,monospace;font-size:12px">${escHTML(j.name)}</td>
           <td><strong>${escHTML(j.target || '—')}</strong></td>
@@ -1460,7 +1488,7 @@ async function renderAudit(loading = true) {
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px">
       ${categories.map(([cat, label, tip]) => `
         <button class="btn btn-${auditFilter === cat ? 'primary' : 'ghost'} btn-sm"
-          onclick="setAuditFilter('${cat}')" title="${escHTML(tip)}">${label}</button>
+          onclick="setAuditFilter('${cat}')" title="${escAttr(tip)}">${label}</button>
       `).join('')}
     </div>
     <div class="table-card">
@@ -1483,7 +1511,7 @@ async function renderAudit(loading = true) {
         </tr></thead>
         <tbody>${entries.map((e, i) => `<tr>
           <td class="num row-num">${i + 1}</td>
-          <td style="font-size:12px;white-space:nowrap" title="${escHTML(e.timestamp)}">${e.timestamp ? new Date(e.timestamp).toLocaleString() : '—'}</td>
+          <td style="font-size:12px;white-space:nowrap" title="${escAttr(e.timestamp)}">${e.timestamp ? new Date(e.timestamp).toLocaleString() : '—'}</td>
           <td><span class="badge badge-${e.type === 'Warning' ? 'failed' : 'ok'}">${escHTML(e.type)}</span></td>
           <td><code style="font-size:11px">${escHTML(e.reason)}</code></td>
           <td style="font-size:12px"><code>${escHTML(e.object)}</code></td>
@@ -1763,9 +1791,9 @@ function renderStorageByDestination(targets, dests) {
     <div class="stack-bar-list">
       ${rows.map(r => `
         <div class="stack-bar-row">
-          <div class="stack-bar-label" title="${escHTML(r.name)}">${escHTML(r.name)}</div>
+          <div class="stack-bar-label" title="${escAttr(r.name)}">${escHTML(r.name)}</div>
           <div class="stack-bar" style="width:${maxTotal > 0 ? (r.total / maxTotal * 100).toFixed(1) : 0}%">
-            ${r.items.map(it => `<div class="stack-segment" style="width:${(it.size / r.total * 100).toFixed(2)}%;background:${colorForTarget(it.target)}" title="${escHTML(it.target + ' — ' + humanBytes(it.size))}"></div>`).join('')}
+            ${r.items.map(it => `<div class="stack-segment" style="width:${(it.size / r.total * 100).toFixed(2)}%;background:${colorForTarget(it.target)}" title="${escAttr(it.target + ' — ' + humanBytes(it.size))}"></div>`).join('')}
           </div>
           <div class="stack-bar-total">${humanBytes(r.total)}</div>
         </div>
@@ -1866,7 +1894,7 @@ async function renderTargetDetail(name, loading = true) {
 
   const target = targets.find(t => t.Name === name);
   if (!target) {
-    content.innerHTML = `<div class="empty-state"><h3>Target not found</h3><p>"${escHTML(name)}" does not exist.</p>
+    content.innerHTML = `<div class="empty-state"><h3>Target not found</h3><p>"${escAttr(name)}" does not exist.</p>
       <a href="#/" class="btn btn-secondary" title="Return to the Dashboard">Back to Dashboard</a></div>`;
     return;
   }
@@ -1880,9 +1908,9 @@ async function renderTargetDetail(name, loading = true) {
         <h1>${escHTML(name)} <span class="badge badge-${target.DBType}">${target.DBType}</span></h1>
       </div>
       <div style="display:flex;gap:8px">
-        <button class="btn btn-secondary btn-sm" onclick="triggerBackup('${escHTML(name)}')" title="Trigger a manual backup run for this target now — creates a one-off Job from the CronJob template">&#9654; Run Now</button>
-        <button class="btn btn-secondary btn-sm" onclick="openSourceForm('${escHTML(target.SecretName)}')" title="Edit this source's connection details and schedule">Edit</button>
-        <button class="btn btn-danger btn-sm" onclick="deleteSource('${escHTML(target.SecretName)}','${escHTML(name)}')" title="Permanently delete this source. The CronJob is cascaded; existing dumps remain in storage.">Delete</button>
+        <button class="btn btn-secondary btn-sm" onclick="triggerBackup('${escJS(name)}')" title="Trigger a manual backup run for this target now — creates a one-off Job from the CronJob template">&#9654; Run Now</button>
+        <button class="btn btn-secondary btn-sm" onclick="openSourceForm('${escJS(target.SecretName)}')" title="Edit this source's connection details and schedule">Edit</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteSource('${escJS(target.SecretName)}','${escJS(name)}')" title="Permanently delete this source. The CronJob is cascaded; existing dumps remain in storage.">Delete</button>
       </div>
     </div>
     <div class="detail-grid">
@@ -1953,7 +1981,7 @@ async function renderTargetDetail(name, loading = true) {
           <td style="font-size:11px">${r.destinations && r.destinations.length > 0
             ? r.destinations.map(d => {
                 const cls = d.status === 'success' ? 'badge-ok' : 'badge-failed';
-                const tip = d.error ? ' title="' + escHTML(d.error) + '"' : '';
+                const tip = d.error ? ' title="' + escAttr(d.error) + '"' : '';
                 return '<span class="badge ' + cls + '" style="margin:1px;font-size:10px"' + tip + '>' + escHTML(d.name) + '</span>';
               }).join('')
             : '<span style="color:var(--text-muted)">—</span>'}</td>
@@ -1962,7 +1990,7 @@ async function renderTargetDetail(name, loading = true) {
           <td>${renderSchemaCharsetCell(r)}</td>
           <td class="num" style="font-size:12px">${r.stats && r.stats.tables ? r.stats.tables.length : '—'}</td>
           <td>${r.status === 'failed'
-            ? `<span style="color:var(--danger);font-size:12px;word-break:break-word" title="${escHTML(r.error || '')}">${escHTML(truncate(r.error, 120) || '(no message)')}</span>`
+            ? `<span style="color:var(--danger);font-size:12px;word-break:break-word" title="${escAttr(r.error || '')}">${escHTML(truncate(r.error, 120) || '(no message)')}</span>`
             : (r.report && r.report.anomalies ? `<span class="num" style="color:var(--danger)">${r.report.anomalies.length}</span>` : '<span class="num">0</span>')}</td>
           <td>${r.status !== 'failed' ? renderDownloadLinks(name, r, target.Destinations) : '—'}</td>
         </tr>`).join('')}</tbody>
@@ -1977,25 +2005,25 @@ function renderDownloadLinks(targetName, run, destNames) {
     const destName = successDests.length === 1 ? successDests[0].name : '';
     const destParam = destName ? '?destination=' + encodeURIComponent(destName) : '';
     const destArg  = destName ? `'${escHTML(destName)}'` : 'null';
-    return `<button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="viewMeta('${escHTML(targetName)}','${ts}',${destArg})" title="View the unencrypted meta.json sidecar (table stats, schema fingerprint, SHA256) in the browser">&#128065;</button>
-      <a href="/download/${escHTML(targetName)}/${ts}/meta${destParam}" download="${escHTML(targetName)}-${ts}.meta.json" class="btn btn-ghost btn-sm" style="font-size:11px" title="Download the unencrypted meta.json sidecar">.json</a>
-      <a href="/download/${escHTML(targetName)}/${ts}/dump${destParam}" class="btn btn-ghost btn-sm" style="font-size:11px" title="Download the age-encrypted dump (.sql.gz.age). Decrypt locally with backup-restore + your offline private key.">.age</a>`;
+    return `<button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="viewMeta('${escJS(targetName)}','${ts}',${destArg})" title="View the unencrypted meta.json sidecar (table stats, schema fingerprint, SHA256) in the browser">&#128065;</button>
+      <a href="/download/${escAttr(targetName)}/${ts}/meta${destParam}" download="${escAttr(targetName)}-${ts}.meta.json" class="btn btn-ghost btn-sm" style="font-size:11px" title="Download the unencrypted meta.json sidecar">.json</a>
+      <a href="/download/${escAttr(targetName)}/${ts}/dump${destParam}" class="btn btn-ghost btn-sm" style="font-size:11px" title="Download the age-encrypted dump (.sql.gz.age). Decrypt locally with backup-restore + your offline private key.">.age</a>`;
   }
   return `<div class="dropdown" style="display:inline-block">
     <button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="this.nextElementSibling.classList.toggle('open')" title="This run was uploaded to multiple destinations — pick one to download or view from">Download &#9662;</button>
     <div class="dropdown-menu">${successDests.map(d =>
-      `<a href="/download/${escHTML(targetName)}/${ts}/dump?destination=${encodeURIComponent(d.name)}" class="dropdown-item" style="font-size:12px" title="Download the age-encrypted dump from ${escHTML(d.name)}">
+      `<a href="/download/${escAttr(targetName)}/${ts}/dump?destination=${encodeURIComponent(d.name)}" class="dropdown-item" style="font-size:12px" title="Download the age-encrypted dump from ${escAttr(d.name)}">
         ${escHTML(d.name)} <span style="opacity:0.6;font-size:10px">(${d.storageType})</span>
       </a>`
     ).join('')}
     <hr style="margin:4px 0;border:none;border-top:1px solid var(--border)">
     ${successDests.map(d =>
-      `<button class="dropdown-item" style="font-size:11px;text-align:left;background:none;border:none;width:100%;cursor:pointer" onclick="viewMeta('${escHTML(targetName)}','${ts}','${escHTML(d.name)}')" title="View the meta.json sidecar from ${escHTML(d.name)} in the browser">
+      `<button class="dropdown-item" style="font-size:11px;text-align:left;background:none;border:none;width:100%;cursor:pointer" onclick="viewMeta('${escJS(targetName)}','${ts}','${escJS(d.name)}')" title="View the meta.json sidecar from ${escAttr(d.name)} in the browser">
         &#128065; view: ${escHTML(d.name)}
       </button>`
     ).join('')}
     ${successDests.map(d =>
-      `<a href="/download/${escHTML(targetName)}/${ts}/meta?destination=${encodeURIComponent(d.name)}" download="${escHTML(targetName)}-${ts}.meta.json" class="dropdown-item" style="font-size:11px;opacity:0.7" title="Download the meta.json sidecar from ${escHTML(d.name)}">
+      `<a href="/download/${escAttr(targetName)}/${ts}/meta?destination=${encodeURIComponent(d.name)}" download="${escAttr(targetName)}-${ts}.meta.json" class="dropdown-item" style="font-size:11px;opacity:0.7" title="Download the meta.json sidecar from ${escAttr(d.name)}">
         meta: ${escHTML(d.name)}
       </a>`
     ).join('')}
@@ -2019,7 +2047,7 @@ window.viewMeta = async function(targetName, timestamp, destination) {
         <span style="color:var(--text-muted);font-size:12px">${destination ? 'destination: <code>' + escHTML(destination) + '</code>' : ''}</span>
         <div style="display:flex;gap:6px">
           <button class="btn btn-ghost btn-sm" onclick="copyToClipboard(this, ${JSON.stringify(JSON.stringify(data, null, 2))})" title="Copy the full pretty-printed JSON to clipboard">Copy</button>
-          <a href="${url}" download="${escHTML(fname)}" class="btn btn-secondary btn-sm" title="Save this meta.json as a file">↓ Download</a>
+          <a href="${url}" download="${escAttr(fname)}" class="btn btn-secondary btn-sm" title="Save this meta.json as a file">↓ Download</a>
         </div>
       </div>
       <pre class="json-viewer">${jsonHighlight(pretty)}</pre>`;
@@ -2442,7 +2470,7 @@ async function loadAgeKeysSection() {
         <td><code style="font-size:11px;word-break:break-all">${escHTML(k.recipient)}</code></td>
         ${canMutate ? `<td style="white-space:nowrap">
           <button class="btn btn-ghost btn-sm" style="color:var(--danger)"
-            onclick="removeAgeKey('${escHTML(k.recipient)}','${escHTML(k.hash)}')"
+            onclick="removeAgeKey('${escJS(k.recipient)}','${escJS(k.hash)}')"
             title="Remove this public key. Future backups will no longer encrypt to it. The last recipient cannot be removed.">&#10005; Remove</button>
         </td>` : ''}
       </tr>`).join('')}</tbody>
@@ -2505,12 +2533,12 @@ function renderSettingsStepContent(step, s) {
       <p class="wizard-desc">Configure the default backup schedule and execution timeout.</p>
       <div class="form-group">
         <label for="defaultSchedule">Default Cron Schedule</label>
-        <input type="text" id="defaultSchedule" name="defaultSchedule" value="${escHTML(s.defaultSchedule)}" placeholder="0 2 * * *">
+        <input type="text" id="defaultSchedule" name="defaultSchedule" value="${escAttr(s.defaultSchedule)}" placeholder="0 2 * * *">
         <div class="hint">Cron expression for new sources without a custom schedule. Example: "0 2 * * *" = daily at 2 AM</div>
       </div>
       <div class="form-group">
         <label for="runTimeoutSeconds">Run Timeout (seconds)</label>
-        <input type="number" id="runTimeoutSeconds" name="runTimeoutSeconds" value="${escHTML(s.runTimeoutSeconds)}" placeholder="3600" min="0">
+        <input type="number" id="runTimeoutSeconds" name="runTimeoutSeconds" value="${escAttr(s.runTimeoutSeconds)}" placeholder="3600" min="0">
         <div class="hint">Maximum duration for a single backup run before it's killed. 3600 = 1 hour.</div>
       </div>`;
 
@@ -2520,24 +2548,24 @@ function renderSettingsStepContent(step, s) {
       <div class="form-row">
         <div class="form-group">
           <label for="defaultRetentionDays">Retention Days</label>
-          <input type="number" id="defaultRetentionDays" name="defaultRetentionDays" value="${escHTML(s.defaultRetentionDays)}" placeholder="30" min="0">
+          <input type="number" id="defaultRetentionDays" name="defaultRetentionDays" value="${escAttr(s.defaultRetentionDays)}" placeholder="30" min="0">
           <div class="hint">Backups older than this are pruned. 0 = keep forever.</div>
         </div>
         <div class="form-group">
           <label for="defaultMinKeep">Minimum Keep</label>
-          <input type="number" id="defaultMinKeep" name="defaultMinKeep" value="${escHTML(s.defaultMinKeep)}" placeholder="3" min="0">
+          <input type="number" id="defaultMinKeep" name="defaultMinKeep" value="${escAttr(s.defaultMinKeep)}" placeholder="3" min="0">
           <div class="hint">Always keep at least this many backups, regardless of retention age.</div>
         </div>
       </div>
       <div class="form-row">
         <div class="form-group">
           <label for="tempDir">Temp Directory</label>
-          <input type="text" id="tempDir" name="tempDir" value="${escHTML(s.tempDir)}" placeholder="/tmp/backup-operator">
+          <input type="text" id="tempDir" name="tempDir" value="${escAttr(s.tempDir)}" placeholder="/tmp/backup-operator">
           <div class="hint">Scratch space for encrypted dumps before upload.</div>
         </div>
         <div class="form-group">
           <label for="tempDirSize">Temp Dir Size</label>
-          <input type="text" id="tempDirSize" name="tempDirSize" value="${escHTML(s.tempDirSize)}" placeholder="10Gi">
+          <input type="text" id="tempDirSize" name="tempDirSize" value="${escAttr(s.tempDirSize)}" placeholder="10Gi">
           <div class="hint">emptyDir size limit. Increase for large dumps.</div>
         </div>
       </div>`;
@@ -2550,12 +2578,12 @@ function renderSettingsStepContent(step, s) {
         <div class="form-row">
           <div class="form-group">
             <label for="workerCpuLimit">CPU Limit</label>
-            <input type="text" id="workerCpuLimit" name="workerCpuLimit" value="${escHTML(s.workerCpuLimit)}" placeholder="2000m">
+            <input type="text" id="workerCpuLimit" name="workerCpuLimit" value="${escAttr(s.workerCpuLimit)}" placeholder="2000m">
             <div class="hint">e.g. 2000m = 2 cores</div>
           </div>
           <div class="form-group">
             <label for="workerMemoryLimit">Memory Limit</label>
-            <input type="text" id="workerMemoryLimit" name="workerMemoryLimit" value="${escHTML(s.workerMemoryLimit)}" placeholder="2Gi">
+            <input type="text" id="workerMemoryLimit" name="workerMemoryLimit" value="${escAttr(s.workerMemoryLimit)}" placeholder="2Gi">
             <div class="hint">e.g. 2Gi, 512Mi</div>
           </div>
         </div>
@@ -2565,12 +2593,12 @@ function renderSettingsStepContent(step, s) {
         <div class="form-row">
           <div class="form-group">
             <label for="workerCpuRequest">CPU Request</label>
-            <input type="text" id="workerCpuRequest" name="workerCpuRequest" value="${escHTML(s.workerCpuRequest)}" placeholder="250m">
+            <input type="text" id="workerCpuRequest" name="workerCpuRequest" value="${escAttr(s.workerCpuRequest)}" placeholder="250m">
             <div class="hint">Minimum guaranteed CPU</div>
           </div>
           <div class="form-group">
             <label for="workerMemoryRequest">Memory Request</label>
-            <input type="text" id="workerMemoryRequest" name="workerMemoryRequest" value="${escHTML(s.workerMemoryRequest)}" placeholder="256Mi">
+            <input type="text" id="workerMemoryRequest" name="workerMemoryRequest" value="${escAttr(s.workerMemoryRequest)}" placeholder="256Mi">
             <div class="hint">Minimum guaranteed memory</div>
           </div>
         </div>

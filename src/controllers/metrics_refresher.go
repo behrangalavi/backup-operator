@@ -13,7 +13,6 @@ import (
 	"backup-operator/internal/secrets"
 	"backup-operator/metrics"
 	"backup-operator/storage"
-	storageFactory "backup-operator/storage/factory"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -31,6 +30,12 @@ type MetricsRefresher struct {
 	Logger    logr.Logger
 	Namespace string
 	Interval  time.Duration
+
+	// Pool is the per-destination storage cache. Optional — left nil the
+	// refresher lazy-builds its own pool on first refresh, but production
+	// wiring shares one pool with the StorageScrubber via main.go to keep
+	// a single client lifecycle per backend on the leader pod.
+	Pool *StoragePool
 
 	// trackedTargets remembers which targets we exposed last refresh, so we
 	// can drop their series when a Source Secret disappears. Without this,
@@ -65,12 +70,16 @@ func (r *MetricsRefresher) Start(ctx context.Context) error {
 func (r *MetricsRefresher) NeedLeaderElection() bool { return true }
 
 func (r *MetricsRefresher) refresh(ctx context.Context) {
+	if r.Pool == nil {
+		r.Pool = NewStoragePool(r.Logger)
+	}
 	sources, dests, err := r.listSecrets(ctx)
 	if err != nil {
 		r.Logger.Error(err, "list secrets")
 		return
 	}
-	r.Logger.V(1).Info("refresh tick", "sources", len(sources), "destinations", len(dests))
+	r.Pool.Retain(dests)
+	r.Logger.V(1).Info("refresh tick", "sources", len(sources), "destinations", len(dests), "pooled_clients", r.Pool.Size())
 
 	current := make(map[string]bool, len(sources))
 	for _, s := range sources {
@@ -146,7 +155,7 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, r.Logger)
+			st, err := r.Pool.Get(d)
 			if err != nil {
 				r.Logger.V(1).Info("storage init failed; treating destination as failing",
 					"target", src.TargetName, "destination", d.Name, "err", err.Error())

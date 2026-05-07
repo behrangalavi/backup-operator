@@ -13,7 +13,6 @@ import (
 	"backup-operator/internal/labels"
 	"backup-operator/internal/secrets"
 	"backup-operator/metrics"
-	storageFactory "backup-operator/storage/factory"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -35,6 +34,10 @@ type StorageScrubber struct {
 	Logger    logr.Logger
 	Namespace string
 	Interval  time.Duration
+
+	// Pool is the per-destination storage cache. Optional; lazy-built when
+	// nil. Production wiring shares one pool with MetricsRefresher.
+	Pool *StoragePool
 }
 
 const (
@@ -146,7 +149,10 @@ func (s *StorageScrubber) scrubSource(ctx context.Context, src *secrets.Source, 
 // gauges/counters so Alertmanager can notice corruption.
 func (s *StorageScrubber) scrubOne(ctx context.Context, target string, d *secrets.Destination) {
 	log := s.Logger.WithValues("target", target, "destination", d.Name)
-	st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, s.Logger)
+	if s.Pool == nil {
+		s.Pool = NewStoragePool(s.Logger)
+	}
+	st, err := s.Pool.Get(d)
 	if err != nil {
 		log.V(1).Info("scrub skipped: storage init failed", "err", err.Error())
 		return

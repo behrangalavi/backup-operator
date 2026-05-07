@@ -211,12 +211,19 @@ func main() {
 	err = reconciler.SetupWithManager(mgr)
 	assert.NoError(err, "failed to setup cronjob reconciler")
 
+	// One pool, shared by the refresher and the scrubber. Long-lived
+	// storage clients per destination, so SFTP handshakes and S3 client
+	// builds happen once per backend instead of once per call. See ADR
+	// in CLAUDE.md §18.
+	storagePool := controllers.NewStoragePool(ctrl.Log.WithName("storage-pool"))
+
 	refreshSec, _ := strconv.Atoi(config.GetValue("METRICS_REFRESH_INTERVAL_SECONDS"))
 	refresher := &controllers.MetricsRefresher{
 		Client:    mgr.GetClient(),
 		Logger:    ctrl.Log.WithName("metrics-refresher"),
 		Namespace: watchNs,
 		Interval:  time.Duration(refreshSec) * time.Second,
+		Pool:      storagePool,
 	}
 	assert.NoError(mgr.Add(refresher), "failed to register metrics refresher")
 
@@ -252,6 +259,7 @@ func main() {
 			Logger:    ctrl.Log.WithName("storage-scrubber"),
 			Namespace: watchNs,
 			Interval:  time.Duration(scrubHours) * time.Hour,
+			Pool:      storagePool,
 		}
 		assert.NoError(mgr.Add(scrubber), "failed to register storage scrubber")
 	}

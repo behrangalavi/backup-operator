@@ -13,6 +13,7 @@ import (
 
 	"backup-operator/internal/labels"
 	"backup-operator/internal/meta"
+	"backup-operator/internal/safe"
 	"backup-operator/internal/secrets"
 	"backup-operator/metrics"
 	storageFactory "backup-operator/storage/factory"
@@ -1087,6 +1088,7 @@ func (s *Server) handleAPIDestinationStats(w http.ResponseWriter, r *http.Reques
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
+			defer safe.Goroutine(s.cfg.Logger, "destination-stats", list.Items[idx].Name)
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
@@ -1239,6 +1241,7 @@ func (s *Server) handleAPIDestinationHealth(w http.ResponseWriter, r *http.Reque
 		wg.Add(1)
 		go func(d *secrets.Destination) {
 			defer wg.Done()
+			defer safe.Goroutine(s.cfg.Logger, "destination-health", d.Name)
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
@@ -1462,6 +1465,7 @@ func (s *Server) handleAPIConsistencyCheck(w http.ResponseWriter, r *http.Reques
 		wg.Add(1)
 		go func(idx int, d *secrets.Destination) {
 			defer wg.Done()
+			defer safe.Goroutine(s.cfg.Logger, "consistency-check", d.Name)
 			sem <- struct{}{}
 			defer func() { <-sem }()
 

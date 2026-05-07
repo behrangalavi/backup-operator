@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"backup-operator/internal/labels"
+	"backup-operator/internal/safe"
 	"backup-operator/internal/secrets"
 	"backup-operator/metrics"
 
@@ -135,6 +136,7 @@ func (s *StorageScrubber) scrubSource(ctx context.Context, src *secrets.Source, 
 		wg.Add(1)
 		go func(d *secrets.Destination) {
 			defer wg.Done()
+			defer safe.Goroutine(s.Logger, "storage-scrub", d.Name)
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			s.scrubOne(ctx, src.TargetName, d)

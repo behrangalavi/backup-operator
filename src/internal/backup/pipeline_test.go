@@ -127,37 +127,6 @@ func TestBuildObjectPath_MalformedTimestamp(t *testing.T) {
 	}
 }
 
-// --- recoverGoroutine tests ---
-
-func TestRecoverGoroutine_NoPanic(t *testing.T) {
-	// Should not interfere when no panic occurs.
-	done := make(chan bool, 1)
-	go func() {
-		defer recoverGoroutine(logr.Discard(), "test", "dest-1")
-		done <- true
-	}()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("goroutine did not complete")
-	}
-}
-
-func TestRecoverGoroutine_CatchesPanic(t *testing.T) {
-	done := make(chan bool, 1)
-	go func() {
-		defer func() { done <- true }()
-		defer recoverGoroutine(logr.Discard(), "upload", "dest-1")
-		panic("simulated nil pointer")
-	}()
-	select {
-	case <-done:
-		// Goroutine completed without crashing the process.
-	case <-time.After(time.Second):
-		t.Fatal("goroutine did not complete after panic recovery")
-	}
-}
-
 // --- sortedMetaPaths tests ---
 
 func TestSortedMetaPaths_NewestFirst(t *testing.T) {

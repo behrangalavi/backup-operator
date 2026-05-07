@@ -10,6 +10,7 @@ import (
 
 	"backup-operator/internal/labels"
 	"backup-operator/internal/meta"
+	"backup-operator/internal/safe"
 	"backup-operator/internal/secrets"
 	"backup-operator/metrics"
 	"backup-operator/storage"
@@ -133,6 +134,7 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer safe.Goroutine(r.Logger, "metrics-refresh-source", s.Name)
 			workers <- struct{}{}
 			defer func() { <-workers }()
 
@@ -208,6 +210,7 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 		wg.Add(1)
 		go func(d *secrets.Destination) {
 			defer wg.Done()
+			defer safe.Goroutine(r.Logger, "metrics-refresh-destination", d.Name)
 			// Per-destination slot is shared across every source that
 			// fans out to this backend, so a destination cannot be hit
 			// by more than defaultPerDestConcurrency calls in flight at

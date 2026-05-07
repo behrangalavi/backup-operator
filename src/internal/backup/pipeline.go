@@ -22,6 +22,7 @@ import (
 	"backup-operator/dumper"
 	dumperFactory "backup-operator/dumper/factory"
 	"backup-operator/internal/meta"
+	"backup-operator/internal/safe"
 	"backup-operator/internal/secrets"
 	"backup-operator/metrics"
 	"backup-operator/storage"
@@ -565,7 +566,7 @@ func (p *Pipeline) recordFailure(
 		wg.Add(1)
 		go func(d *secrets.Destination) {
 			defer wg.Done()
-			defer recoverGoroutine(log, "failure-meta", d.Name)
+			defer safe.Goroutine(log, "failure-meta", d.Name)
 			st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, log)
 			if err != nil {
 				log.V(1).Info("failure-meta: init storage failed", "destination", d.Name, "err", err.Error())
@@ -673,7 +674,7 @@ func (p *Pipeline) fanOutDumps(
 		wg.Add(1)
 		go func(idx int, d *secrets.Destination) {
 			defer wg.Done()
-			defer recoverGoroutine(log, "upload", d.Name)
+			defer safe.Goroutine(log, "upload", d.Name)
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			err := p.uploadDumpWithRetry(ctx, d, target, dumpFile, objectPath, log)
@@ -711,7 +712,7 @@ func (p *Pipeline) uploadMeta(
 		wg.Add(1)
 		go func(d *secrets.Destination) {
 			defer wg.Done()
-			defer recoverGoroutine(log, "meta-upload", d.Name)
+			defer safe.Goroutine(log, "meta-upload", d.Name)
 			st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, p.logger)
 			if err != nil {
 				log.Info("meta upload: init storage failed", "destination", d.Name, "err", err.Error())
@@ -1012,15 +1013,6 @@ func anonymizeVerification(v *meta.DumpVerification) *meta.DumpVerification {
 		}
 	}
 	return anon
-}
-
-// recoverGoroutine catches panics in pipeline goroutines so a single
-// destination failure doesn't crash the entire worker process.
-func recoverGoroutine(log logr.Logger, phase, dest string) {
-	if r := recover(); r != nil {
-		log.Error(fmt.Errorf("panic: %v", r), "goroutine recovered",
-			"phase", phase, "destination", dest)
-	}
 }
 
 func buildObjectPath(target, timestamp, ext string) string {

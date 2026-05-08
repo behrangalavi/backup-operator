@@ -423,5 +423,91 @@
     "BackupSucceeded": "Backup erfolgreich",
     "BackupRestoreVerificationFailed": "Restore-Verifikation fehlgeschlagen",
     "BackupRestoreVerificationStale": "Restore-Verifikation veraltet"
+  },
+  "alertDesc": {
+    "BackupOverdue": {
+      "title": "Backup überfällig",
+      "desc": "Seit über 36 Stunden kein erfolgreiches Backup. Der CronJob läuft möglicherweise nicht, oder alle Ziele schlagen fehl.",
+      "action": "CronJob-Status prüfen: kubectl get cronjobs -n backup. Fehlgeschlagene Jobs ansehen und Worker-Pod-Logs prüfen."
+    },
+    "BackupDestinationFailing": {
+      "title": "Ziel ausgefallen",
+      "desc": "Uploads zu diesem Ziel schlagen fehl. Das Backup kann auf anderen Zielen erfolgreich sein.",
+      "action": "Verbindung im UI testen (Ziele → Testen). Zugangsdaten, Netzwerk und Speicherplatz prüfen."
+    },
+    "BackupDumpSizeCollapsed": {
+      "title": "Dump-Größe eingebrochen",
+      "desc": "Der Dump ist auf weniger als 50% der vorherigen Größe geschrumpft. Datenverlust, abgeschnittener Dump oder ein legitimes großes DELETE möglich.",
+      "action": "Zeilenzahlen im Verifikations-Tab vergleichen. Falls unerwartet: Datenbank auf fehlende Daten prüfen."
+    },
+    "BackupSchemaChanged": {
+      "title": "Schema geändert",
+      "desc": "Tabellenstruktur (Spalten, Typen) hat sich seit dem letzten Backup geändert. Informativ — kann Migration oder unbeabsichtigte Drift sein.",
+      "action": "Aktuelle DB-Migrationen prüfen. Schema-Fingerprints im Target-Detail vergleichen."
+    },
+    "BackupAnomaliesAppearing": {
+      "title": "Anomalien aufgetreten",
+      "desc": "Der Analyzer hat Anomalien im Backup erkannt: unerwartete Zeilenzahlen, fehlende Tabellen oder andere Auffälligkeiten.",
+      "action": "Target-Detail öffnen, um Anomalien zu sehen. Prüfen, ob aktuelle Anwendungsänderungen die Differenzen erklären."
+    },
+    "BackupLastRunFailed": {
+      "title": "Letzter Lauf fehlgeschlagen",
+      "desc": "Der letzte Backup-Lauf hat kein verwertbares Artefakt erzeugt. Dump, Verschlüsselung oder Upload können fehlgeschlagen sein.",
+      "action": "Worker-Pod-Logs prüfen. Häufige Ursachen: DB-Timeout, voller Speicher, abgelaufene Zugangsdaten."
+    },
+    "BackupSucceeded": {
+      "title": "Backup erfolgreich",
+      "desc": "Heartbeat-Alarm — wird nach jedem erfolgreichen Backup kurz ausgelöst, um zu bestätigen, dass die Pipeline funktioniert.",
+      "action": "Keine Aktion nötig. Dieser Alarm löst sich nach ~2 Minuten von selbst auf."
+    },
+    "BackupOperatorTestAlert": {
+      "title": "Testalarm",
+      "desc": "Aus dem UI gesendeter Testalarm zur Verifikation der Notification-Pipeline.",
+      "action": "Keine Aktion nötig. Dieser Alarm löst sich nach 2 Minuten von selbst auf."
+    },
+    "_default": {
+      "desc": "Eigene Alarm-Regel.",
+      "action": "Prometheus-Regeln für Details prüfen."
+    }
+  },
+  "analysis": {
+    "subtitle": "Welche Validierungen sind für diese {dbType}-Quelle aktiv. \"n/v\" heißt, die Engine modelliert das Konzept nicht; \"deaktiviert\" heißt, eine Annotation hat den Check abgeschaltet.",
+    "check": "Check",
+    "notes": "Hinweise",
+    "status": {
+      "na": "n/v",
+      "disabled": "deaktiviert",
+      "active": "aktiv"
+    },
+    "row": {
+      "emptyDumpCheck": "Leerer-Dump-Check",
+      "emptyDumpDescOn": "Fehler, wenn Dump-Zeilen == 0 vs. Vor-Stats > 0",
+      "emptyDumpDescOff": "Fehler, wenn der verschlüsselte Dump < heuristische Schwelle ggü. Quellgröße",
+      "schemaDrift": "Schema-Drift",
+      "schemaDriftDesc": "Schema-Fingerprint zwischen Läufen vergleichen",
+      "charsetDrift": "Charset / Collation-Drift",
+      "charsetDriftDesc": "Änderungen an character_set oder collation der Datenbank melden",
+      "rowCountDrop": "Zeilenanzahl-Rückgang",
+      "rowCountDropDesc": "auslösen, wenn eine Tabelle unter Schwelle schrumpft (Default 0.5)",
+      "dumpSizeCollapse": "Dump-Größen-Einbruch",
+      "dumpSizeCollapseDesc": "auslösen, wenn der verschlüsselte Dump unter Schwelle schrumpft (Default 0.5)",
+      "storageScrub": "Storage-Scrub",
+      "storageScrubDesc": "periodischer SHA256-Re-Hash des gespeicherten Dumps (cluster-weit, opt-in)"
+    }
+  },
+  "verification": {
+    "table": "Tabelle",
+    "preDumpRows": "Zeilen vor Dump",
+    "postDumpRows": "Zeilen nach Dump",
+    "dumpRows": "Dump-Zeilen",
+    "verdict": "Urteil",
+    "detail": "Detail"
+  },
+  "consistency": {
+    "hint": "Backups in einigen Zielen vorhanden, in anderen fehlen sie.",
+    "andMore": "…und {count} weitere"
+  },
+  "auditPage": {
+    "showingMostRecent": "Zeige die neuesten {shown} von {total} Events. Ältere: kubectl -n <ns> get events --sort-by=.lastTimestamp"
   }
 }

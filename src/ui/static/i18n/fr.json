@@ -423,5 +423,91 @@
     "BackupSucceeded": "Sauvegarde réussie",
     "BackupRestoreVerificationFailed": "Vérification de restauration échouée",
     "BackupRestoreVerificationStale": "Vérification de restauration obsolète"
+  },
+  "alertDesc": {
+    "BackupOverdue": {
+      "title": "Sauvegarde en retard",
+      "desc": "Aucune sauvegarde réussie depuis plus de 36 heures. Le CronJob peut être arrêté ou toutes les destinations échouent.",
+      "action": "Vérifier le CronJob : kubectl get cronjobs -n backup. Examiner les Jobs en échec et les logs du worker."
+    },
+    "BackupDestinationFailing": {
+      "title": "Destination en échec",
+      "desc": "Les uploads vers cette destination échouent. La sauvegarde peut réussir sur d'autres destinations.",
+      "action": "Tester la destination via l'UI (Destinations → Tester). Vérifier identifiants, réseau et espace disque."
+    },
+    "BackupDumpSizeCollapsed": {
+      "title": "Effondrement de la taille",
+      "desc": "Le dump est tombé à moins de 50% de la taille précédente. Possible perte de données, dump tronqué ou DELETE volumineux légitime.",
+      "action": "Comparer le nombre de lignes dans l'onglet Vérification. Si inattendu, vérifier les données manquantes en base."
+    },
+    "BackupSchemaChanged": {
+      "title": "Schéma modifié",
+      "desc": "La structure des tables (colonnes, types) a changé depuis la dernière sauvegarde. Informatif — peut indiquer une migration ou une dérive non voulue.",
+      "action": "Examiner les migrations récentes. Comparer les empreintes de schéma dans la vue détaillée de la cible."
+    },
+    "BackupAnomaliesAppearing": {
+      "title": "Anomalies détectées",
+      "desc": "L'analyseur a détecté des anomalies : changements de lignes inattendus, tables manquantes ou autres irrégularités.",
+      "action": "Ouvrir la vue détaillée pour voir les anomalies. Vérifier si des changements applicatifs récents les expliquent."
+    },
+    "BackupLastRunFailed": {
+      "title": "Dernière exécution échouée",
+      "desc": "La dernière exécution n'a pas produit d'artefact utilisable. Le dump, le chiffrement ou l'upload peut avoir échoué.",
+      "action": "Vérifier les logs du pod worker. Causes courantes : timeout DB, disque plein, identifiants expirés."
+    },
+    "BackupSucceeded": {
+      "title": "Sauvegarde réussie",
+      "desc": "Alerte heartbeat — déclenchée brièvement après chaque sauvegarde réussie pour confirmer le bon fonctionnement.",
+      "action": "Aucune action requise. Cette alerte se résout automatiquement après ~2 minutes."
+    },
+    "BackupOperatorTestAlert": {
+      "title": "Alerte de test",
+      "desc": "Alerte de test envoyée depuis l'UI pour vérifier le pipeline de notification.",
+      "action": "Aucune action requise. Cette alerte se résout automatiquement après 2 minutes."
+    },
+    "_default": {
+      "desc": "Règle d'alerte personnalisée.",
+      "action": "Consulter les règles Prometheus pour plus de détails."
+    }
+  },
+  "analysis": {
+    "subtitle": "Quelles validations sont armées pour cette source {dbType}. \"n/d\" signifie que le moteur ne modélise pas le concept ; \"désactivé\" signifie qu'une annotation a coupé le contrôle.",
+    "check": "Contrôle",
+    "notes": "Notes",
+    "status": {
+      "na": "n/d",
+      "disabled": "désactivé",
+      "active": "actif"
+    },
+    "row": {
+      "emptyDumpCheck": "Détection dump vide",
+      "emptyDumpDescOn": "échec si lignes du dump == 0 vs pré-stats > 0",
+      "emptyDumpDescOff": "échec si dump chiffré < seuil heuristique vs taille source",
+      "schemaDrift": "Dérive de schéma",
+      "schemaDriftDesc": "compare l'empreinte du schéma entre exécutions",
+      "charsetDrift": "Dérive Charset / Collation",
+      "charsetDriftDesc": "signaler les changements de character_set ou collation de la base",
+      "rowCountDrop": "Chute de lignes",
+      "rowCountDropDesc": "déclenche si une table chute sous le seuil (défaut 0,5)",
+      "dumpSizeCollapse": "Effondrement de taille",
+      "dumpSizeCollapseDesc": "déclenche si le dump chiffré chute sous le seuil (défaut 0,5)",
+      "storageScrub": "Storage Scrub",
+      "storageScrubDesc": "re-hash SHA256 périodique du dump stocké (cluster, opt-in)"
+    }
+  },
+  "verification": {
+    "table": "Table",
+    "preDumpRows": "Lignes avant dump",
+    "postDumpRows": "Lignes après dump",
+    "dumpRows": "Lignes du dump",
+    "verdict": "Verdict",
+    "detail": "Détail"
+  },
+  "consistency": {
+    "hint": "Sauvegardes présentes dans certaines destinations mais absentes d'autres.",
+    "andMore": "…et {count} de plus"
+  },
+  "auditPage": {
+    "showingMostRecent": "Affichage des {shown} événements les plus récents sur {total}. Plus anciens : kubectl -n <ns> get events --sort-by=.lastTimestamp"
   }
 }

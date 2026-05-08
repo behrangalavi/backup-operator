@@ -533,7 +533,7 @@ async function renderDashboard(loading = true) {
     ${consistencyIssues.length > 0 ? `
     <div class="table-card" style="border-left:3px solid var(--danger)">
       <div class="table-card-header"><h2 style="color:var(--danger)">${tr('page.dashboard.consistency')}</h2></div>
-      <p style="padding:0 16px;color:var(--text-muted);font-size:13px;margin:0 0 8px">Backups found in some destinations but missing from others.</p>
+      <p style="padding:0 16px;color:var(--text-muted);font-size:13px;margin:0 0 8px">${tr('consistency.hint')}</p>
       <table>
         <thead><tr><th class="num row-num">#</th><th>${tr('table.target')}</th><th>${tr('table.timestamp')}</th><th>${tr('table.presentIn')}</th><th>${tr('table.missingFrom')}</th></tr></thead>
         <tbody>${consistencyIssues.slice(0, 20).map((ci, i) => `<tr>
@@ -544,7 +544,7 @@ async function renderDashboard(loading = true) {
           <td>${(ci.missingFrom||[]).map(d => `<span class="badge badge-failed" style="margin:1px">${escHTML(d)}</span>`).join('')}</td>
         </tr>`).join('')}</tbody>
       </table>
-      ${consistencyIssues.length > 20 ? `<p style="padding:8px 16px;color:var(--text-muted);font-size:12px">...and ${consistencyIssues.length - 20} more</p>` : ''}
+      ${consistencyIssues.length > 20 ? `<p style="padding:8px 16px;color:var(--text-muted);font-size:12px">${tr('consistency.andMore', {count: consistencyIssues.length - 20})}</p>` : ''}
     </div>` : ''}
     ${healthEntries.length > 0 && dests.length > 1 ? `
     <div class="table-card">
@@ -1195,64 +1195,32 @@ window.confirmDeleteDest = async function(secretName) {
 };
 
 // --- Alert descriptions for each alert type ---
-const ALERT_DESCRIPTIONS = {
-  BackupOverdue: {
-    title: 'Backup Overdue',
-    icon: '⏰',
-    desc: 'No successful backup in over 36 hours. The scheduled CronJob may not be running, or all destinations are failing.',
-    action: 'Check CronJob status: kubectl get cronjobs -n backup. Look for failed Jobs: kubectl get jobs -n backup --sort-by=.metadata.creationTimestamp. Check worker pod logs for errors.',
-  },
-  BackupDestinationFailing: {
-    title: 'Destination Failing',
-    icon: '💾',
-    desc: 'Uploads to this storage destination are failing. The backup may still succeed on other destinations.',
-    action: 'Test destination connectivity via the UI (Destinations → Test Connection). Check credentials, network access, and available storage space.',
-  },
-  BackupDumpSizeCollapsed: {
-    title: 'Dump Size Collapsed',
-    icon: '📉',
-    desc: 'The dump shrank to less than 50% of the previous size. This could indicate data loss, a truncated dump, or a legitimate large DELETE operation.',
-    action: 'Compare row counts in the Verification tab. If legitimate, the alert will auto-resolve on the next run. If unexpected, check the database for missing data.',
-  },
-  BackupSchemaChanged: {
-    title: 'Schema Changed',
-    icon: '🔧',
-    desc: 'Table structure (columns, types) changed since the last backup. Informational — may indicate a migration or an unintended schema drift.',
-    action: 'Review recent database migrations. Compare schema fingerprints in the target detail view.',
-  },
-  BackupAnomaliesAppearing: {
-    title: 'Anomalies Detected',
-    icon: '⚠️',
-    desc: 'The analyzer detected anomalies in the backup: unexpected row-count changes, missing tables, or other irregularities.',
-    action: 'Open the target detail view to see specific anomalies. Check if recent application changes explain the differences.',
-  },
-  BackupLastRunFailed: {
-    title: 'Last Run Failed',
-    icon: '❌',
-    desc: 'The most recent backup run did not produce a usable artifact. The dump, encryption, or upload may have failed.',
-    action: 'Check worker pod logs: kubectl logs -l job-name=backup-<target> -n backup --tail=100. Common causes: DB connection timeout, disk full, credential expiry.',
-  },
-  BackupSucceeded: {
-    title: 'Backup Succeeded',
-    icon: '🟢',
-    desc: 'Heartbeat alert — fires briefly after each successful backup to confirm the pipeline is working.',
-    action: 'No action needed. This alert auto-resolves after ~2 minutes.',
-  },
-  BackupOperatorTestAlert: {
-    title: 'Test Alert',
-    icon: '🧪',
-    desc: 'Test alert sent from the UI to verify the notification pipeline.',
-    action: 'No action needed. This alert auto-resolves after 2 minutes.',
-  },
+// Icons stay static (universal emoji); titles, desc and action come from
+// the active dictionary so a language switch updates the text without
+// shipping per-language icons.
+const ALERT_ICONS = {
+  BackupOverdue: '⏰',
+  BackupDestinationFailing: '💾',
+  BackupDumpSizeCollapsed: '📉',
+  BackupSchemaChanged: '🔧',
+  BackupAnomaliesAppearing: '⚠️',
+  BackupLastRunFailed: '❌',
+  BackupSucceeded: '🟢',
+  BackupOperatorTestAlert: '🧪',
 };
+const ALERT_DESCRIPTIONS = ALERT_ICONS; // legacy alias used by the rules-reference table
 
 function getAlertDescription(alertname) {
-  return ALERT_DESCRIPTIONS[alertname] || {
-    title: alertname,
-    icon: '🔔',
-    desc: 'Custom alert rule.',
-    action: 'Check Prometheus rules for details.',
-  };
+  const icon = ALERT_ICONS[alertname] || '🔔';
+  const titleKey = 'alertDesc.' + alertname + '.title';
+  const descKey  = 'alertDesc.' + alertname + '.desc';
+  const actKey   = 'alertDesc.' + alertname + '.action';
+  // tr() falls back to the raw key when missing; that's how we detect
+  // "unknown alertname" and substitute the _default text without an extra branch.
+  const title = tr(titleKey) === titleKey ? alertname : tr(titleKey);
+  const desc  = tr(descKey)  === descKey  ? tr('alertDesc._default.desc')   : tr(descKey);
+  const action = tr(actKey)  === actKey   ? tr('alertDesc._default.action') : tr(actKey);
+  return { title, icon, desc, action };
 }
 
 // --- Alerts ---
@@ -1475,12 +1443,15 @@ receivers:
       <table>
         <thead><tr><th>${tr('page.alerts.alertCol')}</th><th>${tr('page.alerts.severityCol')}</th><th>${tr('page.alerts.conditionCol')}</th><th>${tr('page.alerts.descriptionCol')}</th></tr></thead>
         <tbody>
-          ${Object.entries(ALERT_DESCRIPTIONS).filter(([k]) => k !== 'BackupOperatorTestAlert').map(([name, info]) => `<tr>
+          ${Object.keys(ALERT_DESCRIPTIONS).filter(k => k !== 'BackupOperatorTestAlert').map(name => {
+            const info = getAlertDescription(name);
+            return `<tr>
             <td><code style="font-size:12px">${escHTML(info.icon)} ${escHTML(info.title)}</code></td>
             <td><span class="badge badge-${name === 'BackupDumpSizeCollapsed' ? 'critical' : name === 'BackupSchemaChanged' || name === 'BackupSucceeded' ? 'info' : 'warning'}">${name === 'BackupDumpSizeCollapsed' ? 'critical' : name === 'BackupSchemaChanged' || name === 'BackupSucceeded' ? 'info' : 'warning'}</span></td>
             <td style="font-size:12px">${escHTML(info.desc)}</td>
             <td style="font-size:12px;color:var(--text-muted)">${escHTML(info.action)}</td>
-          </tr>`).join('')}
+          </tr>`;
+          }).join('')}
         </tbody>
       </table>
     </div>`;
@@ -1679,7 +1650,7 @@ async function renderAudit(loading = true) {
           <td style="font-size:12px;word-break:break-word">${escHTML(e.message)}</td>
         </tr>`).join('')}</tbody>
       </table>
-      ${truncated ? `<p style="padding:8px 16px;color:var(--text-muted);font-size:12px">Showing the most recent ${entries.length} of ${data.total} events. Older events: <code>kubectl -n &lt;ns&gt; get events --sort-by=.lastTimestamp</code></p>` : ''}`}
+      ${truncated ? `<p style="padding:8px 16px;color:var(--text-muted);font-size:12px">${tr('auditPage.showingMostRecent', {shown: entries.length, total: data.total})}</p>` : ''}`}
     </div>`;
 }
 
@@ -1999,7 +1970,7 @@ function renderTablesCard(runs) {
     <h3>${tr('card.tablesLatest')} <span class="chart-card-sub">${tr(latest.length === 1 ? 'card.tablesSubtitle' : 'card.tablesSubtitlePlural', {count: latest.length, runs: sorted.length})}</span></h3>
     <div class="table-scroll">
     <table class="tbl-compact">
-      <thead><tr><th>Table</th><th class="num">Rows</th><th>Trend</th><th class="num">Size</th></tr></thead>
+      <thead><tr><th>${tr('verification.table')}</th><th class="num">${tr('table.runCount')}</th><th>Trend</th><th class="num">${tr('table.size')}</th></tr></thead>
       <tbody>${latest.map(t => `<tr>
         <td class="cell-mono">${escHTML(t.name)}</td>
         <td class="num">${formatNum(t.rowCount)}</td>
@@ -2118,19 +2089,19 @@ async function renderTargetDetail(name, loading = true) {
     ${renderTablesCard(runs)}` : ''}
     <div class="table-card">
       <div class="table-card-header"><h2>${tr('target.runHistory')}</h2></div>
-      ${runs.length === 0 ? '<div class="empty-state"><p>No runs recorded for this target.</p></div>' : `
+      ${runs.length === 0 ? `<div class="empty-state"><p>${tr('target.noRuns')}</p></div>` : `
       <table>
         <thead><tr>
           <th class="num row-num">#</th>
-          <th class="sortable" onclick="toggleSort('runs','timestamp')">Timestamp${sortIndicator('runs','timestamp')}</th>
-          <th class="sortable" onclick="toggleSort('runs','status')">Status${sortIndicator('runs','status')}</th>
-          <th class="num sortable" onclick="toggleSort('runs','size')">Size${sortIndicator('runs','size')}</th>
-          <th>Destinations</th>
-          <th class="sortable" onclick="toggleSort('runs','verification')">Verification${sortIndicator('runs','verification')}</th>
-          <th class="sortable" onclick="toggleSort('runs','restoreVerification')">Restore Verify${sortIndicator('runs','restoreVerification')}</th>
+          <th class="sortable" onclick="toggleSort('runs','timestamp')">${tr('table.timestamp')}${sortIndicator('runs','timestamp')}</th>
+          <th class="sortable" onclick="toggleSort('runs','status')">${tr('table.status')}${sortIndicator('runs','status')}</th>
+          <th class="num sortable" onclick="toggleSort('runs','size')">${tr('table.size')}${sortIndicator('runs','size')}</th>
+          <th>${tr('table.destinations')}</th>
+          <th class="sortable" onclick="toggleSort('runs','verification')">${tr('table.verification')}${sortIndicator('runs','verification')}</th>
+          <th class="sortable" onclick="toggleSort('runs','restoreVerification')">${tr('target.restoreLabel')}${sortIndicator('runs','restoreVerification')}</th>
           <th class="sortable" onclick="toggleSort('runs','schema')">Schema${sortIndicator('runs','schema')}</th>
-          <th class="num sortable" onclick="toggleSort('runs','tables')">Tables${sortIndicator('runs','tables')}</th>
-          <th class="sortable" onclick="toggleSort('runs','anomalies')">Anomalies / Error${sortIndicator('runs','anomalies')}</th>
+          <th class="num sortable" onclick="toggleSort('runs','tables')">${tr('verification.table')}${sortIndicator('runs','tables')}</th>
+          <th class="sortable" onclick="toggleSort('runs','anomalies')">${tr('table.anomalies')} / ${tr('table.error')}${sortIndicator('runs','anomalies')}</th>
           <th>Download</th>
         </tr></thead>
         <tbody>${sortRuns(runs).map((r, i) => `<tr>
@@ -2258,9 +2229,9 @@ const ANALYSIS_CAPS = {
 //   disabled → toggle is off (operator opted out)
 //   n/a      → DB type doesn't support this check at all
 function analysisStatus(toggleOn, supported) {
-  if (!supported) return { cls: 'badge-pending', label: 'n/a', icon: '—' };
-  if (!toggleOn)  return { cls: 'badge-warn',    label: 'disabled', icon: '⊘' };
-  return                 { cls: 'badge-ok',      label: 'active', icon: '✓' };
+  if (!supported) return { cls: 'badge-pending', label: tr('analysis.status.na'), icon: '—' };
+  if (!toggleOn)  return { cls: 'badge-warn',    label: tr('analysis.status.disabled'), icon: '⊘' };
+  return                 { cls: 'badge-ok',      label: tr('analysis.status.active'), icon: '✓' };
 }
 
 function renderAnalysisCoverageCard(target) {
@@ -2275,36 +2246,36 @@ function renderAnalysisCoverageCard(target) {
   // toggle because turning the analyzer off skips stats collection entirely
   // — the underlying gauges go absent and no alert can fire.
   const rows = [
-    { name: 'Empty-Dump Check',
-      desc: caps.rowCounter ? 'fail when dump rows == 0 vs pre-stats > 0' : 'fail when encrypted dump < heuristic threshold for source size',
+    { name: tr('analysis.row.emptyDumpCheck'),
+      desc: caps.rowCounter ? tr('analysis.row.emptyDumpDescOn') : tr('analysis.row.emptyDumpDescOff'),
       status: analysisStatus(emptyOn, caps.emptyDump) },
-    { name: 'Schema Drift',
-      desc: 'compare schema fingerprint across runs',
+    { name: tr('analysis.row.schemaDrift'),
+      desc: tr('analysis.row.schemaDriftDesc'),
       status: analysisStatus(analyzerOn, caps.schema) },
-    { name: 'Charset / Collation Drift',
-      desc: 'flag database character_set or collation changes',
+    { name: tr('analysis.row.charsetDrift'),
+      desc: tr('analysis.row.charsetDriftDesc'),
       status: analysisStatus(analyzerOn, caps.charset) },
-    { name: 'Row-Drop Anomaly',
-      desc: 'fire when a table shrinks below threshold (default 0.5)',
+    { name: tr('analysis.row.rowCountDrop'),
+      desc: tr('analysis.row.rowCountDropDesc'),
       status: analysisStatus(analyzerOn, caps.rowCounter) },
-    { name: 'Dump-Size Collapse',
-      desc: 'fire when the encrypted dump shrinks below threshold (default 0.5)',
+    { name: tr('analysis.row.dumpSizeCollapse'),
+      desc: tr('analysis.row.dumpSizeCollapseDesc'),
       status: analysisStatus(analyzerOn, caps.sizeDrop) },
-    { name: 'Storage Scrub',
-      desc: 'periodic SHA256 re-hash of stored dump (cluster-wide, opt-in)',
-      status: analysisStatus(true, caps.scrub) }, // scrub is opt-in cluster-wide, not per source
+    { name: tr('analysis.row.storageScrub'),
+      desc: tr('analysis.row.storageScrubDesc'),
+      status: analysisStatus(true, caps.scrub) },
   ];
 
   return `
     <div class="table-card">
       <div class="table-card-header"><h2>${tr('target.analysisCoverage')}</h2></div>
-      <div style="padding:8px 16px 4px;color:var(--text-muted);font-size:12px">Which validations are armed for this <strong>${escHTML(target.DBType)}</strong> source. "n/a" means the engine doesn't model the concept; "disabled" means an annotation has switched the check off.</div>
+      <div style="padding:8px 16px 4px;color:var(--text-muted);font-size:12px">${tr('analysis.subtitle', {dbType: target.DBType})}</div>
       <table>
         <thead><tr>
           <th class="num row-num">#</th>
-          <th>Check</th>
-          <th>Status</th>
-          <th>Notes</th>
+          <th>${tr('analysis.check')}</th>
+          <th>${tr('table.status')}</th>
+          <th>${tr('analysis.notes')}</th>
         </tr></thead>
         <tbody>${rows.map((r, i) => `<tr>
           <td class="num row-num">${i + 1}</td>
@@ -2459,12 +2430,12 @@ function renderVerificationDetail(run) {
       <table>
         <thead><tr>
           <th class="num row-num">#</th>
-          <th>Table</th>
-          <th class="num">Pre-Dump Rows</th>
-          <th class="num">Post-Dump Rows</th>
-          ${hasDumpCounts ? '<th class="num">Dump Rows</th>' : ''}
-          <th>Verdict</th>
-          <th>Detail</th>
+          <th>${tr('verification.table')}</th>
+          <th class="num">${tr('verification.preDumpRows')}</th>
+          <th class="num">${tr('verification.postDumpRows')}</th>
+          ${hasDumpCounts ? '<th class="num">' + tr('verification.dumpRows') + '</th>' : ''}
+          <th>${tr('verification.verdict')}</th>
+          <th>${tr('verification.detail')}</th>
         </tr></thead>
         <tbody>${v.tables.map((t, i) => `<tr>
           <td class="num row-num">${i + 1}</td>
@@ -2626,7 +2597,7 @@ async function loadAgeKeysSection() {
       <thead><tr>
         <th class="num row-num">#</th>
         <th>Fingerprint</th>
-        <th>Recipient</th>
+        <th>${tr('common.name')}</th>
         ${canMutate ? '<th style="width:1%"></th>' : ''}
       </tr></thead>
       <tbody>${keys.map((k, i) => `<tr>

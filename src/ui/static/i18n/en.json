@@ -501,7 +501,56 @@
     "postDumpRows": "Post-Dump Rows",
     "dumpRows": "Dump Rows",
     "verdict": "Verdict",
-    "detail": "Detail"
+    "detail": "Detail",
+    "verdictLabel": {
+      "match": "Verified",
+      "mismatch": "Mismatch",
+      "partial": "Partial",
+      "skipped": "Skipped",
+      "configured": "configured"
+    },
+    "verifyOf": "Verify ({mode})",
+    "statsError": "Stats error"
+  },
+  "time": {
+    "never": "never",
+    "justNow": "just now",
+    "minutesAgo": "{n}m ago",
+    "hoursAgo": "{n}h ago",
+    "daysAgo": "{n}d ago",
+    "today": "today",
+    "oneDay": "1 day",
+    "nDays": "{n} days",
+    "unchangedFor": "unchanged for {label}"
+  },
+  "badge": {
+    "ok": "OK",
+    "noRuns": "No runs",
+    "paused": "Paused",
+    "noData": "No data",
+    "unreachable": "Unreachable",
+    "failed": "Failed",
+    "missing": "missing",
+    "configured": "configured",
+    "testing": "Testing…",
+    "connected": "Connected",
+    "error": "Error"
+  },
+  "runStatus": {
+    "success": "success",
+    "failed": "failed",
+    "running": "running",
+    "completed": "completed",
+    "pending": "pending",
+    "ok": "ok",
+    "noRuns": "no runs"
+  },
+  "schemaAge": {
+    "label": "Schema age"
+  },
+  "schemaCell": {
+    "changed": "Schema",
+    "stable": "Stable"
   },
   "consistency": {
     "hint": "Backups found in some destinations but missing from others.",

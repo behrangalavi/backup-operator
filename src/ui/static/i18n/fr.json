@@ -501,7 +501,56 @@
     "postDumpRows": "Lignes après dump",
     "dumpRows": "Lignes du dump",
     "verdict": "Verdict",
-    "detail": "Détail"
+    "detail": "Détail",
+    "verdictLabel": {
+      "match": "Vérifié",
+      "mismatch": "Divergence",
+      "partial": "Partiel",
+      "skipped": "Ignoré",
+      "configured": "configuré"
+    },
+    "verifyOf": "Vérif. ({mode})",
+    "statsError": "Erreur de stats"
+  },
+  "time": {
+    "never": "jamais",
+    "justNow": "à l'instant",
+    "minutesAgo": "il y a {n} min",
+    "hoursAgo": "il y a {n} h",
+    "daysAgo": "il y a {n} j",
+    "today": "aujourd'hui",
+    "oneDay": "1 jour",
+    "nDays": "{n} jours",
+    "unchangedFor": "inchangé depuis {label}"
+  },
+  "badge": {
+    "ok": "OK",
+    "noRuns": "Aucune exécution",
+    "paused": "Suspendu",
+    "noData": "Aucune donnée",
+    "unreachable": "Injoignable",
+    "failed": "Échec",
+    "missing": "manquant",
+    "configured": "configuré",
+    "testing": "Test…",
+    "connected": "Connecté",
+    "error": "Erreur"
+  },
+  "runStatus": {
+    "success": "réussi",
+    "failed": "échec",
+    "running": "en cours",
+    "completed": "terminé",
+    "pending": "en attente",
+    "ok": "ok",
+    "noRuns": "aucune exécution"
+  },
+  "schemaAge": {
+    "label": "Âge du schéma"
+  },
+  "schemaCell": {
+    "changed": "Schéma",
+    "stable": "Stable"
   },
   "consistency": {
     "hint": "Sauvegardes présentes dans certaines destinations mais absentes d'autres.",

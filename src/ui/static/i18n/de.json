@@ -501,7 +501,56 @@
     "postDumpRows": "Zeilen nach Dump",
     "dumpRows": "Dump-Zeilen",
     "verdict": "Urteil",
-    "detail": "Detail"
+    "detail": "Detail",
+    "verdictLabel": {
+      "match": "Verifiziert",
+      "mismatch": "Abweichung",
+      "partial": "Teilweise",
+      "skipped": "Übersprungen",
+      "configured": "konfiguriert"
+    },
+    "verifyOf": "Verifikation ({mode})",
+    "statsError": "Stats-Fehler"
+  },
+  "time": {
+    "never": "nie",
+    "justNow": "gerade eben",
+    "minutesAgo": "vor {n} Min.",
+    "hoursAgo": "vor {n} Std.",
+    "daysAgo": "vor {n} T.",
+    "today": "heute",
+    "oneDay": "1 Tag",
+    "nDays": "{n} Tage",
+    "unchangedFor": "unverändert seit {label}"
+  },
+  "badge": {
+    "ok": "OK",
+    "noRuns": "Keine Läufe",
+    "paused": "Pausiert",
+    "noData": "Keine Daten",
+    "unreachable": "Nicht erreichbar",
+    "failed": "Fehlgeschlagen",
+    "missing": "fehlt",
+    "configured": "konfiguriert",
+    "testing": "Teste…",
+    "connected": "Verbunden",
+    "error": "Fehler"
+  },
+  "runStatus": {
+    "success": "erfolgreich",
+    "failed": "fehlgeschlagen",
+    "running": "läuft",
+    "completed": "abgeschlossen",
+    "pending": "ausstehend",
+    "ok": "ok",
+    "noRuns": "keine Läufe"
+  },
+  "schemaAge": {
+    "label": "Schema-Alter"
+  },
+  "schemaCell": {
+    "changed": "Schema",
+    "stable": "Stabil"
   },
   "consistency": {
     "hint": "Backups in einigen Zielen vorhanden, in anderen fehlen sie.",

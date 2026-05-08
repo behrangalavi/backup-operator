@@ -293,15 +293,15 @@ function humanBytes(n) {
   return (i === 0 ? n : n.toFixed(1)) + ' ' + units[i];
 }
 function timeAgo(ts) {
-  if (!ts) return 'never';
+  if (!ts) return tr('time.never');
   const d = new Date(ts.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/,
     '$1-$2-$3T$4:$5:$6Z'));
   if (isNaN(d)) return ts;
   const diff = (Date.now() - d.getTime()) / 1000;
-  if (diff < 60) return 'just now';
-  if (diff < 3600) return Math.floor(diff/60) + 'm ago';
-  if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
-  return Math.floor(diff/86400) + 'd ago';
+  if (diff < 60) return tr('time.justNow');
+  if (diff < 3600) return tr('time.minutesAgo', {n: Math.floor(diff/60)});
+  if (diff < 86400) return tr('time.hoursAgo', {n: Math.floor(diff/3600)});
+  return tr('time.daysAgo', {n: Math.floor(diff/86400)});
 }
 function escHTML(s) {
   const d = document.createElement('div');
@@ -353,7 +353,7 @@ function verificationRow(t) {
   const cfgMode = (t.verification && t.verification.mode) || '';
   if (!cfgMode || cfgMode === 'off') return '';
   const rv = t.Latest && t.Latest.restoreVerification;
-  let status = '<span class="badge badge-pending" style="font-size:11px">configured</span>';
+  let status = `<span class="badge badge-pending" style="font-size:11px">${tr('verification.verdictLabel.configured')}</span>`;
   if (rv) {
     const verdict = rv.verdict || '';
     let cls = 'badge-pending';
@@ -361,9 +361,11 @@ function verificationRow(t) {
     else if (verdict === 'mismatch') cls = 'badge-failed';
     const ts = rv.completedAt ? timeAgo(rv.completedAt) : '—';
     const tip = rv.summary ? ' title="' + escAttr(rv.summary) + '"' : '';
-    status = `<span class="badge ${cls}" style="font-size:11px"${tip}>${escHTML(verdict)} · ${ts}</span>`;
+    const verdictKey = 'verification.verdictLabel.' + verdict;
+    const verdictText = tr(verdictKey) === verdictKey ? verdict : tr(verdictKey);
+    status = `<span class="badge ${cls}" style="font-size:11px"${tip}>${escHTML(verdictText)} · ${ts}</span>`;
   }
-  return `<div class="detail-row"><span class="key">Verify (${escHTML(cfgMode)})</span><span class="val">${status}</span></div>`;
+  return `<div class="detail-row"><span class="key">${tr('verification.verifyOf', {mode: cfgMode})}</span><span class="val">${status}</span></div>`;
 }
 function truncate(s, n) {
   if (!s) return '';
@@ -510,12 +512,12 @@ async function renderDashboard(loading = true) {
           <td class="num row-num">${i + 1}</td>
           <td><a href="#/target/${escAttr(t.Name)}" style="color:var(--accent);font-weight:600">${escHTML(t.Name)}</a></td>
           <td><span class="badge badge-${t.DBType}">${t.DBType}</span></td>
-          <td><code style="font-size:12px;background:var(--bg-input);padding:2px 6px;border-radius:4px">${escHTML(t.Schedule)}</code>${t.Suspended ? ' <span class="badge badge-warn" style="margin-left:4px" title="Scheduled runs are paused; manual triggers still work">Paused</span>' : ''}</td>
+          <td><code style="font-size:12px;background:var(--bg-input);padding:2px 6px;border-radius:4px">${escHTML(t.Schedule)}</code>${t.Suspended ? ` <span class="badge badge-warn" style="margin-left:4px" title="Scheduled runs are paused; manual triggers still work">${tr('badge.paused')}</span>` : ''}</td>
           <td>${t.Latest ? (t.Latest.status === 'failed'
             ? failedBadge(t.Latest)
-            : '<span class="badge badge-ok">OK</span>')
-            : '<span class="badge badge-pending">No runs</span>'}</td>
-          <td style="color:var(--text-muted);font-size:12px">${t.Latest ? timeAgo(t.Latest.timestamp) : 'never'}</td>
+            : `<span class="badge badge-ok">${tr('badge.ok')}</span>`)
+            : `<span class="badge badge-pending">${tr('badge.noRuns')}</span>`}</td>
+          <td style="color:var(--text-muted);font-size:12px">${t.Latest ? timeAgo(t.Latest.timestamp) : tr('time.never')}</td>
           <td class="num" style="font-size:12px">${t.Latest && !t.Latest.status?.includes('fail') ? humanBytes(t.Latest.encryptedSizeBytes) : '—'}</td>
           <td style="color:var(--text-muted);font-size:12px">${t.CreatedAt ? timeAgo(t.CreatedAt) : '—'}</td>
           <td>${(t.Destinations || []).map(d => `<span class="badge badge-sftp" style="margin:1px">${escHTML(d)}</span>`).join('')}</td>
@@ -567,7 +569,7 @@ async function renderDashboard(loading = true) {
               const h = lookup[t + '@' + d];
               if (!h) return '<td style="text-align:center"><span class="badge" style="background:var(--bg-input);color:var(--text-muted)">N/A</span></td>';
               const badge = h.status === 'ok' ? 'badge-ok' : h.status === 'failed' ? 'badge-failed' : h.status === 'missing' ? 'badge-pending' : 'badge-failed';
-              const label = h.status === 'ok' ? 'OK' : h.status === 'failed' ? 'Failed' : h.status === 'missing' ? 'No data' : 'Unreachable';
+              const label = h.status === 'ok' ? tr('badge.ok') : h.status === 'failed' ? tr('badge.failed') : h.status === 'missing' ? tr('badge.noData') : tr('badge.unreachable');
               const tip = h.error ? ' title="' + escAttr(h.error) + '"' : '';
               return '<td style="text-align:center"><span class="badge ' + badge + '"' + tip + '>' + label + '</span>' +
                 (h.latestRun ? '<div style="font-size:10px;color:var(--text-muted)">' + timeAgo(h.latestRun) + '</div>' : '') +
@@ -618,12 +620,12 @@ async function renderSources(loading = true) {
           <div>
             <div style="font-weight:600;font-size:15px;color:var(--text-heading)">${escHTML(t.Name)}</div>
             <span class="badge badge-${t.DBType}" style="margin-top:6px">${t.DBType}</span>
-            ${t.Suspended ? '<span class="badge badge-warn" style="margin-top:6px;margin-left:4px" title="Scheduled runs are paused; manual triggers still work">Paused</span>' : ''}
+            ${t.Suspended ? `<span class="badge badge-warn" style="margin-top:6px;margin-left:4px" title="Scheduled runs are paused; manual triggers still work">${tr('badge.paused')}</span>` : ''}
           </div>
           ${t.Latest ? (t.Latest.status === 'failed'
             ? failedBadge(t.Latest)
-            : '<span class="badge badge-ok">OK</span>')
-            : '<span class="badge badge-pending">No runs</span>'}
+            : `<span class="badge badge-ok">${tr('badge.ok')}</span>`)
+            : `<span class="badge badge-pending">${tr('badge.noRuns')}</span>`}
         </div>
         <div class="detail-row"><span class="key">${tr('table.schedule')}</span><code class="val">${escHTML(t.Schedule)}${t.Suspended ? ' <span style="color:var(--warning);font-weight:600">(' + tr('buttons.pause').toLowerCase() + ')</span>' : ''}</code></div>
         <div class="detail-row"><span class="key">${tr('table.lastRun')}</span><span class="val">${t.Latest ? timeAgo(t.Latest.timestamp) : tr('common.none')}</span></div>
@@ -1045,10 +1047,10 @@ async function renderDestinations(loading = true) {
         <div class="detail-row"><span class="key">${tr('table.createdAt')}</span><span class="val">${d.createdAt ? timeAgo(d.createdAt) : '—'}</span></div>
         ${st && !st.error ? `
         <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
-          <div class="detail-row"><span class="key">Backups</span><span class="val">${st.backupCount}</span></div>
-          <div class="detail-row"><span class="key">${tr('table.size')}</span><span class="val">${humanBytes(st.totalSizeBytes)}</span></div>
-          <div class="detail-row"><span class="key">Oldest</span><span class="val">${st.oldestBackup ? timeAgo(st.oldestBackup) : '—'}</span></div>
-          <div class="detail-row"><span class="key">Newest</span><span class="val">${st.newestBackup ? timeAgo(st.newestBackup) : '—'}</span></div>
+          <div class="detail-row"><span class="key">${tr('stat.backups')}</span><span class="val">${st.backupCount}</span></div>
+          <div class="detail-row"><span class="key">${tr('stat.totalSize')}</span><span class="val">${humanBytes(st.totalSizeBytes)}</span></div>
+          <div class="detail-row"><span class="key">${tr('stat.oldest')}</span><span class="val">${st.oldestBackup ? timeAgo(st.oldestBackup) : '—'}</span></div>
+          <div class="detail-row"><span class="key">${tr('stat.newest')}</span><span class="val">${st.newestBackup ? timeAgo(st.newestBackup) : '—'}</span></div>
         </div>` : st && st.error ? `
         <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);color:var(--danger);font-size:12px">
           ${tr('card.storageUnreachable')}: ${escHTML(st.error)}
@@ -1160,19 +1162,19 @@ window.submitDestForm = async function(e, secretName) {
 
 window.testDestConnection = async function(secretName, displayName) {
   const el = document.getElementById('dest-status-' + secretName);
-  if (el) { el.innerHTML = '<span class="badge badge-pending">Testing...</span>'; }
+  if (el) { el.innerHTML = `<span class="badge badge-pending">${tr('badge.testing')}</span>`; }
   try {
     const result = await api('/api/destinations/' + secretName + '/test', { method: 'POST' });
     if (result.ok) {
-      if (el) el.innerHTML = '<span class="badge badge-ok">Connected</span>';
-      toast(displayName + ': connection OK', 'success');
+      if (el) el.innerHTML = `<span class="badge badge-ok">${tr('badge.connected')}</span>`;
+      toast(displayName + ': ' + tr('badge.ok'), 'success');
     } else {
-      if (el) el.innerHTML = '<span class="badge badge-failed" title="' + escAttr(result.error || '') + '">Failed</span>';
-      toast(displayName + ': ' + (result.error || 'connection failed'), 'error');
+      if (el) el.innerHTML = `<span class="badge badge-failed" title="${escAttr(result.error || '')}">${tr('badge.failed')}</span>`;
+      toast(displayName + ': ' + (result.error || tr('badge.failed')), 'error');
     }
   } catch(e) {
-    if (el) el.innerHTML = '<span class="badge badge-failed">Error</span>';
-    toast('Test failed: ' + e.message, 'error');
+    if (el) el.innerHTML = `<span class="badge badge-failed">${tr('badge.error')}</span>`;
+    toast(tr('toast.loadFailed', {error: e.message}), 'error');
   }
 };
 
@@ -2052,8 +2054,8 @@ async function renderTargetDetail(name, loading = true) {
         <div class="detail-row"><span class="key">${tr('table.status')}</span>
           ${target.Latest ? (target.Latest.status === 'failed'
             ? failedBadge(target.Latest)
-            : '<span class="badge badge-ok">OK</span>')
-            : '<span class="badge badge-pending">No runs</span>'}</div>
+            : `<span class="badge badge-ok">${tr('badge.ok')}</span>`)
+            : `<span class="badge badge-pending">${tr('badge.noRuns')}</span>`}</div>
       </div>
       <div class="detail-card">
         <h3>${tr('target.latestRun')}</h3>
@@ -2107,7 +2109,7 @@ async function renderTargetDetail(name, loading = true) {
         <tbody>${sortRuns(runs).map((r, i) => `<tr>
           <td class="num row-num">${i + 1}</td>
           <td style="font-size:12px">${r.timestamp ? new Date(r.timestamp.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/,'$1-$2-$3T$4:$5:$6Z')).toLocaleString() : '—'}</td>
-          <td>${r.status === 'failed' ? failedBadge(r) : '<span class="badge badge-ok">OK</span>'}</td>
+          <td>${r.status === 'failed' ? failedBadge(r) : `<span class="badge badge-ok">${tr('badge.ok')}</span>`}</td>
           <td class="num" style="font-size:12px">${r.status !== 'failed' ? humanBytes(r.encryptedSizeBytes) : '—'}</td>
           <td style="font-size:11px">${r.destinations && r.destinations.length > 0
             ? r.destinations.map(d => {
@@ -2312,8 +2314,8 @@ function renderScrubChip(h) {
 function renderSchemaCharsetCell(r) {
   if (!r.report) return '—';
   const schemaBadge = r.report.schemaChanged
-    ? '<span class="badge badge-failed">Schema</span>'
-    : '<span class="badge badge-ok">Stable</span>';
+    ? `<span class="badge badge-failed">${tr('schemaCell.changed')}</span>`
+    : `<span class="badge badge-ok">${tr('schemaCell.stable')}</span>`;
   const charsetBadge = r.report.charsetChanged
     ? ' <span class="badge badge-warn" style="font-size:10px" title="charset/collation changed since previous run">CS</span>'
     : '';
@@ -2345,23 +2347,25 @@ function renderSchemaAgeRow(run) {
   const t = new Date(run.schemaChangedAt);
   if (isNaN(t.getTime())) return '';
   const days = Math.floor((Date.now() - t.getTime()) / 86400000);
-  const label = days <= 0 ? 'today' : days === 1 ? '1 day' : `${days} days`;
+  const label = days <= 0 ? tr('time.today') : days === 1 ? tr('time.oneDay') : tr('time.nDays', {n: days});
   const tip = ' title="Schema fingerprint last changed at ' + escHTML(t.toISOString()) + '. Old schemas may not match the current application."';
-  return `<div class="detail-row"><span class="key">Schema age</span><span class="val"${tip}>unchanged for ${label}</span></div>`;
+  return `<div class="detail-row"><span class="key">${tr('schemaAge.label')}</span><span class="val"${tip}>${tr('time.unchangedFor', {label})}</span></div>`;
 }
 
 // --- Verification ---
 function renderVerificationBadge(v) {
   if (!v) return '<span style="color:var(--text-muted)">—</span>';
-  const verdictMap = {
-    'match': { cls: 'badge-ok', label: 'Verified' },
-    'mismatch': { cls: 'badge-failed', label: 'Mismatch' },
-    'partial': { cls: 'badge-warn', label: 'Partial' },
-    'skipped': { cls: 'badge-pending', label: 'Skipped' }
+  const clsMap = {
+    'match': 'badge-ok',
+    'mismatch': 'badge-failed',
+    'partial': 'badge-warn',
+    'skipped': 'badge-pending'
   };
-  const info = verdictMap[v.verdict] || { cls: 'badge-pending', label: v.verdict };
+  const cls = clsMap[v.verdict] || 'badge-pending';
+  const labelKey = 'verification.verdictLabel.' + v.verdict;
+  const label = tr(labelKey) === labelKey ? (v.verdict || '?') : tr(labelKey);
   const tip = v.summary ? ' title="' + escHTML(v.summary) + '"' : '';
-  return `<span class="badge ${info.cls}"${tip}>${info.label}</span>`;
+  return `<span class="badge ${cls}"${tip}>${label}</span>`;
 }
 
 // renderRestoreVerificationBadge renders the verdict for a single run's
@@ -2371,16 +2375,18 @@ function renderVerificationBadge(v) {
 // proof (decrypt → parse / restore against an ephemeral DB pod).
 function renderRestoreVerificationBadge(rv) {
   if (!rv) return '<span style="color:var(--text-muted)">—</span>';
-  const verdictMap = {
-    'match':    { cls: 'badge-ok',     label: 'Verified' },
-    'mismatch': { cls: 'badge-failed', label: 'Mismatch' },
-    'partial':  { cls: 'badge-warn',   label: 'Partial' },
-    'skipped':  { cls: 'badge-pending',label: 'Skipped' }
+  const clsMap = {
+    'match':    'badge-ok',
+    'mismatch': 'badge-failed',
+    'partial':  'badge-warn',
+    'skipped':  'badge-pending'
   };
-  const info = verdictMap[rv.verdict] || { cls: 'badge-pending', label: rv.verdict || '?' };
+  const cls = clsMap[rv.verdict] || 'badge-pending';
+  const labelKey = 'verification.verdictLabel.' + rv.verdict;
+  const label = tr(labelKey) === labelKey ? (rv.verdict || '?') : tr(labelKey);
   const mode = rv.mode ? ' · ' + escHTML(rv.mode) : '';
   const tip = rv.summary ? ' title="' + escHTML(rv.summary) + '"' : '';
-  return `<span class="badge ${info.cls}"${tip}>${info.label}${mode}</span>`;
+  return `<span class="badge ${cls}"${tip}>${label}${mode}</span>`;
 }
 
 function renderRestoreVerificationDetail(run) {

@@ -287,6 +287,22 @@
         "sizeDrop": "0.5",
         "selectType": "Sélectionner…"
       },
+      "hint": {
+        "schedule": "Expression cron (défaut : 0 2 * * *)",
+        "jitter": "Étale le champ minutes du cron sur une fenêtre de N minutes par source pour éviter un thundering herd à l'échelle du parc. Le défaut ne s'applique qu'aux plans 0 H * * * ; les minutes explicites sont respectées. 0 fige le plan. Multi-déclenchement (*/15, 0,30) est laissé tel quel.",
+        "username": "Requis pour tous les types sauf Redis (Redis < 6 n'a pas de noms d'utilisateur ; les ACL sont apparues en 6.0).",
+        "destinationsHint": "Tout décoché = distribution à toutes les destinations.",
+        "verifyIntro": "Vérifie périodiquement que le dump chiffré est restaurable. Le worker génère une paire de clés age éphémère, chiffre l'exécution avec le destinataire DR et l'éphémère, puis re-streame ou restaure l'artefact avant la fin du pod. La clé DR n'est pas affectée.",
+        "verifyMode": "stream-validate ne nécessite pas de RBAC. schema-only / sample / full requièrent restoreVerification.enableEphemeralPodSpawn=true dans le chart.",
+        "verifyInterval": "Durée Go. Défaut 168h (hebdomadaire). Le worker compare avec la dernière vérification et saute si pas encore due.",
+        "verifyImage": "Verrouillez l'image du verifier sur la version de la base source. Vide → défaut par type de BDD.",
+        "verifyVolumeSize": "emptyDir.sizeLimit du pod verifier. Défauts : 1Gi schema-only, 5Gi sample, 50Gi full.",
+        "analysisIntro": "Chaque interrupteur contrôle un garde-fou. Défauts activés ; ne désactiver que pour des sources où le contrôle est bruyant (ex. base schema-only volontairement vide).",
+        "analyzer": "Désactivé → pas de collecte de stats : pas de détection de dérive de schéma/charset ni de chute de lignes.",
+        "emptyDumpCheck": "Désactivé → ne pas échouer si le dump semble vide. Uniquement pour les sources schema-only légitimement vides.",
+        "rowDropThreshold": "Anomalie déclenchée si une table chute sous cette fraction de sa taille précédente. 0..1.",
+        "sizeDropThreshold": "Anomalie déclenchée si le dump chute sous cette fraction de sa taille précédente. 0..1."
+      },
       "verifyMode": {
         "off": "Désactivé (défaut)",
         "streamValidate": "stream-validate (en mémoire, sans pod DB)",
@@ -551,6 +567,16 @@
   "schemaCell": {
     "changed": "Schéma",
     "stable": "Stable"
+  },
+  "row": {
+    "charset": "Charset",
+    "download": "Téléchargement",
+    "fingerprint": "Empreinte"
+  },
+  "banner": {
+    "localEvaluator": "Affichage des alertes évaluées localement (sans for:). Configurez alerts.prometheusURL pour la vue Prometheus de référence.",
+    "phase2RBAC": "Le RBAC du cluster bloque la vérification Phase-2. L'enregistrement est autorisé, mais chaque exécution échouera avec \"pods is forbidden\" jusqu'à ce que restoreVerification.enableEphemeralPodSpawn=true soit défini dans les valeurs Helm. Sans changement RBAC : choisissez stream-validate — il ne nécessite pas de RBAC.",
+    "alertsLoadFailed": "Impossible de charger les alertes : {error}. L'évaluateur local n'est peut-être pas encore initialisé — attendre la première sauvegarde."
   },
   "consistency": {
     "hint": "Sauvegardes présentes dans certaines destinations mais absentes d'autres.",

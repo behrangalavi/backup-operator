@@ -685,13 +685,7 @@ function refreshPhase2RBACWarning(formEl, caps) {
     return;
   }
   banner.style.display = 'block';
-  banner.innerHTML =
-    '<strong>⚠ Cluster RBAC blocks Phase-2 verification.</strong> ' +
-    escHTML(caps.reason || 'pods/create is denied for the worker ServiceAccount.') +
-    ' Saving is allowed, but every backup run will fail with <code>pods is forbidden</code> ' +
-    'until a cluster admin sets <code>restoreVerification.enableEphemeralPodSpawn=true</code> ' +
-    'in the Helm values. To proceed without the RBAC change, pick <code>stream-validate</code> — ' +
-    'it does the same decrypt + parse round-trip in-process and needs no extra permissions.';
+  banner.innerHTML = '⚠ ' + escHTML(tr('banner.phase2RBAC')) + (caps.reason ? ' ' + escHTML(caps.reason) : '');
 }
 
 window.openSourceForm = function(secretName) {
@@ -720,17 +714,17 @@ window.openSourceForm = function(secretName) {
       <div class="form-group"><label>${tr('form.source.label.database')}</label><input name="database" placeholder="${tr('form.source.placeholder.database')}"></div>
       <div class="form-group"><label>${tr('form.source.label.schedule')}</label>
         <input name="schedule" placeholder="${tr('form.source.placeholder.schedule')}">
-        <div class="hint">Cron expression (default: 0 2 * * *)</div></div>
+        <div class="hint">${tr('form.source.hint.schedule')}</div></div>
     </div>
     <div class="form-row">
       <div class="form-group"><label>${tr('form.source.label.jitter')}</label>
         <input name="jitterMinutes" placeholder="${tr('form.source.placeholder.jitter')}">
-        <div class="hint">Spread the cron's minute field across an N-minute window per source to avoid fleet-wide thundering herd. Default applies to <code>0 H * * *</code>-style schedules only; explicit minutes are respected. <code>0</code> pins the schedule. Multi-fire (<code>*/15</code>, <code>0,30</code>) is always left alone.</div></div>
+        <div class="hint">${tr('form.source.hint.jitter')}</div></div>
     </div>
     <div class="form-row">
       <div class="form-group"><label>${tr('form.source.label.username')}</label>
         <input name="username">
-        <div class="hint">Required for all types except Redis (Redis &lt; 6 has no usernames; ACL usernames came in 6.0)</div></div>
+        <div class="hint">${tr('form.source.hint.username')}</div></div>
       <div class="form-group"><label>${tr('form.source.label.password')}</label><input name="password" type="password" placeholder="${isEdit ? tr('form.source.placeholder.passwordEdit') : ''}"></div>
     </div>
     <div class="form-section"><h4>${tr('form.source.section.retention')}</h4>
@@ -750,7 +744,7 @@ window.openSourceForm = function(secretName) {
       </div>
     </div>
     <div class="form-section"><h4>${tr('form.source.section.verification')}</h4>
-      <div class="hint" style="margin-bottom:12px">Periodically prove the encrypted dump can be restored. The worker generates a one-shot age keypair, encrypts the run with both the DR recipient and the ephemeral one, then re-streams or restores the artifact before the pod terminates. The DR key is unaffected.</div>
+      <div class="hint" style="margin-bottom:12px">${tr('form.source.hint.verifyIntro')}</div>
       <div id="phase2-rbac-warning" style="display:none;margin-bottom:12px;padding:10px 12px;border-left:3px solid var(--warning);background:var(--warning-bg);color:var(--warning);font-size:12px;border-radius:4px"></div>
       <div class="form-row">
         <div class="form-group"><label>${tr('form.source.label.verificationMode')}</label>
@@ -762,22 +756,22 @@ window.openSourceForm = function(secretName) {
             <option value="sample">${tr('form.source.verifyMode.sample')}</option>
             <option value="full">${tr('form.source.verifyMode.full')}</option>
           </select>
-          <div class="hint">stream-validate is RBAC-free. schema-only / sample / full need the chart's <code>restoreVerification.enableEphemeralPodSpawn=true</code>.</div></div>
+          <div class="hint">${tr('form.source.hint.verifyMode')}</div></div>
         <div class="form-group"><label>${tr('form.source.label.verificationInterval')}</label>
           <input name="restoreVerificationInterval" placeholder="${tr('form.source.placeholder.interval')}">
-          <div class="hint">Go duration. Default 168h (weekly). Worker checks since the last completed verification and skips when not yet due.</div></div>
+          <div class="hint">${tr('form.source.hint.verifyInterval')}</div></div>
       </div>
       <div class="form-row">
         <div class="form-group"><label>${tr('form.source.label.verificationImage')}</label>
           <input name="verificationImage" placeholder="${tr('form.source.placeholder.image')}">
-          <div class="hint">Pin the verifier-pod image to match your source DB version. Empty → per-DB-type default.</div></div>
+          <div class="hint">${tr('form.source.hint.verifyImage')}</div></div>
         <div class="form-group"><label>${tr('form.source.label.verificationVolumeSize')}</label>
           <input name="verificationVolumeSize" placeholder="${tr('form.source.placeholder.volumeSize')}">
-          <div class="hint"><code>emptyDir.sizeLimit</code> on the verifier pod. Defaults: 1Gi schema-only, 5Gi sample, 50Gi full.</div></div>
+          <div class="hint">${tr('form.source.hint.verifyVolumeSize')}</div></div>
       </div>
     </div>
     <div class="form-section"><h4>${tr('form.source.section.analysis')}</h4>
-      <div class="hint" style="margin-bottom:12px">Each toggle controls one safety net. Defaults are on; switch off only for sources where the check produces noise (e.g. an intentionally empty schema-only DB).</div>
+      <div class="hint" style="margin-bottom:12px">${tr('form.source.hint.analysisIntro')}</div>
       <div class="form-row">
         <div class="form-group"><label>${tr('form.source.label.analyzer')}</label>
           <select name="analyzerEnabled">
@@ -785,22 +779,22 @@ window.openSourceForm = function(secretName) {
             <option value="true">${tr('form.source.select.enabled')}</option>
             <option value="false">${tr('form.source.select.disabled')}</option>
           </select>
-          <div class="hint">Off → skip stats collection: no schema-drift / charset-drift / row-count anomaly detection.</div></div>
+          <div class="hint">${tr('form.source.hint.analyzer')}</div></div>
         <div class="form-group"><label>${tr('form.source.label.emptyDumpCheck')}</label>
           <select name="emptyDumpCheck">
             <option value="">${tr('form.source.select.defaultOn')}</option>
             <option value="true">${tr('form.source.select.enabled')}</option>
             <option value="false">${tr('form.source.select.disabled')}</option>
           </select>
-          <div class="hint">Off → don't fail when a dump appears empty. Use only for legitimately empty schema-only sources.</div></div>
+          <div class="hint">${tr('form.source.hint.emptyDumpCheck')}</div></div>
       </div>
       <div class="form-row">
         <div class="form-group"><label>${tr('form.source.label.rowDropThreshold')}</label>
           <input name="rowDropThreshold" placeholder="${tr('form.source.placeholder.rowDrop')}">
-          <div class="hint">Anomaly fires when a table shrinks below this fraction of its previous size. 0..1.</div></div>
+          <div class="hint">${tr('form.source.hint.rowDropThreshold')}</div></div>
         <div class="form-group"><label>${tr('form.source.label.sizeDropThreshold')}</label>
           <input name="sizeDropThreshold" placeholder="${tr('form.source.placeholder.sizeDrop')}">
-          <div class="hint">Anomaly fires when the dump shrinks below this fraction of its previous size. 0..1.</div></div>
+          <div class="hint">${tr('form.source.hint.sizeDropThreshold')}</div></div>
       </div>
     </div>
     <div class="form-actions">
@@ -1372,13 +1366,13 @@ receivers:
   // --- Source mode banner ---
   const localCount = items.filter(a => a.source === 'local').length;
   const sourceBanner = localCount === items.length && items.length > 0
-    ? '<div class="banner banner-info" style="margin-bottom:12px">Showing locally evaluated alerts (no <code>for:</code> debounce). Configure <code>alerts.prometheusURL</code> for the canonical Prometheus-based view.</div>'
+    ? `<div class="banner banner-info" style="margin-bottom:12px">${tr('banner.localEvaluator')}</div>`
     : '';
 
   // --- Alert info/error banner ---
   let alertError = '';
   if (!alertsResp) {
-    alertError = `<div class="banner banner-warning" style="margin-bottom:12px">Could not fetch alerts: ${escHTML(errMsg)}. The local evaluator may not be initialized yet — wait for the first backup to complete.</div>`;
+    alertError = `<div class="banner banner-warning" style="margin-bottom:12px">${tr('banner.alertsLoadFailed', {error: errMsg})}</div>`;
   }
 
   // --- Test alert button ---
@@ -2104,7 +2098,7 @@ async function renderTargetDetail(name, loading = true) {
           <th class="sortable" onclick="toggleSort('runs','schema')">Schema${sortIndicator('runs','schema')}</th>
           <th class="num sortable" onclick="toggleSort('runs','tables')">${tr('verification.table')}${sortIndicator('runs','tables')}</th>
           <th class="sortable" onclick="toggleSort('runs','anomalies')">${tr('table.anomalies')} / ${tr('table.error')}${sortIndicator('runs','anomalies')}</th>
-          <th>Download</th>
+          <th>${tr('row.download')}</th>
         </tr></thead>
         <tbody>${sortRuns(runs).map((r, i) => `<tr>
           <td class="num row-num">${i + 1}</td>
@@ -2336,7 +2330,7 @@ function renderCharsetRow(run) {
   const badge = drift
     ? '<span class="badge badge-warn" style="margin-left:8px;font-size:10px" title="character_set or collation differs from previous run — multibyte chars may truncate on restore">drift</span>'
     : '';
-  return `<div class="detail-row"><span class="key">Charset</span><span class="val" style="font-family:var(--font-mono,monospace);font-size:12px">${value}${badge}</span></div>`;
+  return `<div class="detail-row"><span class="key">${tr('row.charset')}</span><span class="val" style="font-family:var(--font-mono,monospace);font-size:12px">${value}${badge}</span></div>`;
 }
 
 // "Schema unchanged for N days" — leverages meta.schemaChangedAt which is
@@ -2602,7 +2596,7 @@ async function loadAgeKeysSection() {
     <table>
       <thead><tr>
         <th class="num row-num">#</th>
-        <th>Fingerprint</th>
+        <th>${tr('row.fingerprint')}</th>
         <th>${tr('common.name')}</th>
         ${canMutate ? '<th style="width:1%"></th>' : ''}
       </tr></thead>

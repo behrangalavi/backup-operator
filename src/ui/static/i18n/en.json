@@ -287,6 +287,22 @@
         "sizeDrop": "0.5",
         "selectType": "Select…"
       },
+      "hint": {
+        "schedule": "Cron expression (default: 0 2 * * *)",
+        "jitter": "Spread the cron's minute field across an N-minute window per source to avoid fleet-wide thundering herd. Default applies to 0 H * * *-style schedules only; explicit minutes are respected. 0 pins the schedule. Multi-fire (*/15, 0,30) is always left alone.",
+        "username": "Required for all types except Redis (Redis < 6 has no usernames; ACL usernames came in 6.0)",
+        "destinationsHint": "Leave all unchecked to fan out to every destination.",
+        "verifyIntro": "Periodically prove the encrypted dump can be restored. The worker generates a one-shot age keypair, encrypts the run with both the DR recipient and the ephemeral one, then re-streams or restores the artifact before the pod terminates. The DR key is unaffected.",
+        "verifyMode": "stream-validate is RBAC-free. schema-only / sample / full need the chart's restoreVerification.enableEphemeralPodSpawn=true.",
+        "verifyInterval": "Go duration. Default 168h (weekly). Worker checks since the last completed verification and skips when not yet due.",
+        "verifyImage": "Pin the verifier-pod image to match your source DB version. Empty → per-DB-type default.",
+        "verifyVolumeSize": "emptyDir.sizeLimit on the verifier pod. Defaults: 1Gi schema-only, 5Gi sample, 50Gi full.",
+        "analysisIntro": "Each toggle controls one safety net. Defaults are on; switch off only for sources where the check produces noise (e.g. an intentionally empty schema-only DB).",
+        "analyzer": "Off → skip stats collection: no schema-drift / charset-drift / row-count anomaly detection.",
+        "emptyDumpCheck": "Off → don't fail when a dump appears empty. Use only for legitimately empty schema-only sources.",
+        "rowDropThreshold": "Anomaly fires when a table shrinks below this fraction of its previous size. 0..1.",
+        "sizeDropThreshold": "Anomaly fires when the dump shrinks below this fraction of its previous size. 0..1."
+      },
       "verifyMode": {
         "off": "Off (default)",
         "streamValidate": "stream-validate (in-process, no DB pod)",
@@ -551,6 +567,16 @@
   "schemaCell": {
     "changed": "Schema",
     "stable": "Stable"
+  },
+  "row": {
+    "charset": "Charset",
+    "download": "Download",
+    "fingerprint": "Fingerprint"
+  },
+  "banner": {
+    "localEvaluator": "Showing locally evaluated alerts (no for: debounce). Configure alerts.prometheusURL for the canonical Prometheus-based view.",
+    "phase2RBAC": "Cluster RBAC blocks Phase-2 verification. Saving is allowed, but every backup run will fail with \"pods is forbidden\" until restoreVerification.enableEphemeralPodSpawn=true is set in the Helm values. To proceed without the RBAC change, pick stream-validate — it is RBAC-free.",
+    "alertsLoadFailed": "Could not fetch alerts: {error}. The local evaluator may not be initialized yet — wait for the first backup to complete."
   },
   "consistency": {
     "hint": "Backups found in some destinations but missing from others.",

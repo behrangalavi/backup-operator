@@ -38,6 +38,29 @@ const (
 	AnnotationVerificationVolumeSize = "backup.mogenius.io/verification-volume-size"
 )
 
+// AnnotationPrefix is the common prefix for all project annotations.
+const AnnotationPrefix = "backup.mogenius.io/"
+
+// KnownAnnotations is the set of annotations the operator understands.
+// Used by the parser to warn about likely typos.
+var KnownAnnotations = map[string]bool{
+	AnnotationName:                        true,
+	AnnotationSchedule:                    true,
+	AnnotationPathPrefix:                  true,
+	AnnotationAnalyzerEnabled:             true,
+	AnnotationDestinations:                true,
+	AnnotationRetentionDays:               true,
+	AnnotationMinKeep:                     true,
+	AnnotationRowDropThreshold:            true,
+	AnnotationSizeDropThreshold:           true,
+	AnnotationAnonymizeTables:             true,
+	AnnotationEmptyDumpCheck:              true,
+	AnnotationRestoreVerificationMode:     true,
+	AnnotationRestoreVerificationInterval: true,
+	AnnotationVerificationImage:           true,
+	AnnotationVerificationVolumeSize:      true,
+}
+
 // Restore-verification mode values. RestoreVerificationOff /
 // StreamValidate run without extra RBAC. The remaining three (SchemaOnly /
 // Sample / Full) are Phase-2 modes that spawn an ephemeral DB pod via

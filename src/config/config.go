@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"backup-operator/assert"
 )
@@ -23,10 +24,13 @@ type configModule struct {
 	settings map[string]ConfigItem
 }
 
-var staticConfigModule *configModule
+var (
+	staticConfigModule *configModule
+	configMu           sync.RWMutex
+)
 
 func InitializeConfigModule(configs []ConfigItemDescription) error {
-	staticConfigModule = &configModule{
+	mod := &configModule{
 		settings: make(map[string]ConfigItem, len(configs)),
 	}
 
@@ -48,15 +52,22 @@ func InitializeConfigModule(configs []ConfigItemDescription) error {
 			}
 		}
 
-		staticConfigModule.settings[decl.Key] = ConfigItem{
+		mod.settings[decl.Key] = ConfigItem{
 			Key:   decl.Key,
 			Value: value,
 		}
 	}
+
+	configMu.Lock()
+	staticConfigModule = mod
+	configMu.Unlock()
 	return nil
 }
 
 func GetValue(key string) string {
-	assert.Assert(staticConfigModule != nil, "static config module has never been initialized")
-	return staticConfigModule.settings[key].Value
+	configMu.RLock()
+	mod := staticConfigModule
+	configMu.RUnlock()
+	assert.Assert(mod != nil, "static config module has never been initialized")
+	return mod.settings[key].Value
 }

@@ -144,6 +144,26 @@ func (s *sftpStorage) dial(ctx context.Context) (*ssh.Client, *sftp.Client, erro
 		return nil, nil, fmt.Errorf("ssh handshake: %w", err)
 	}
 	client := ssh.NewClient(sshConn, chans, reqs)
+
+	// Send keep-alive requests every 30 seconds so long-running sessions
+	// (retention with many deletes) are not killed by idle-timeout on the
+	// server side. The goroutine exits when the SSH connection closes.
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+				if err != nil {
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	sftpClient, err := sftp.NewClient(client)
 	if err != nil {
 		_ = client.Close()

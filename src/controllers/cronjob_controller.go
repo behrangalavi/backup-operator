@@ -9,6 +9,7 @@ import (
 
 	"backup-operator/internal/labels"
 	"backup-operator/internal/secrets"
+	"backup-operator/metrics"
 
 	"github.com/go-logr/logr"
 	batchv1 "k8s.io/api/batch/v1"
@@ -95,9 +96,15 @@ func (r *CronJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 }
 
 func (r *CronJobReconciler) ensureCronJob(ctx context.Context, sec *corev1.Secret, log logr.Logger) error {
+	if unknown := secrets.WarnUnknownAnnotations(sec.Annotations); len(unknown) > 0 {
+		log.Info("secret has unrecognised backup.mogenius.io annotations (possible typo)",
+			"unknown", strings.Join(unknown, ", "))
+	}
+
 	src, err := secrets.ParseSource(sec, r.Worker.DefaultSchedule)
 	if err != nil {
 		log.Error(err, "skipping invalid source secret")
+		metrics.IncSourceParseError(sec.Name)
 		return nil
 	}
 

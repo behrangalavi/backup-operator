@@ -76,7 +76,12 @@ func New(name string, data storage.SecretData, logger logr.Logger) (storage.Stor
 		bucket:     bucket,
 		pathPrefix: strings.TrimRight(string(data[keyPrefix]), "/"),
 		client:     client,
-		uploader:   manager.NewUploader(client),
+		uploader: manager.NewUploader(client, func(u *manager.Uploader) {
+			// 64 MiB parts instead of the 5 MiB default. For a 10 GB dump
+			// this reduces the number of parts from ~2000 to ~160, which
+			// cuts per-part overhead and avoids the S3 10,000-part limit.
+			u.PartSize = 64 * 1024 * 1024
+		}),
 		logger:     logger,
 	}, nil
 }

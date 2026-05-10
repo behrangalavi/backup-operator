@@ -32,6 +32,13 @@ const (
 	// Box accepts ~10 concurrent SSH sessions; staying at 4 leaves
 	// headroom for worker pods running uploads in parallel.
 	defaultPerDestConcurrency = 4
+
+	// fullRefreshInterval forces a complete storage walk even when the
+	// Secret list ResourceVersion hasn't changed. Needed to pick up new
+	// meta.json files produced by CronJob runs (which don't touch the
+	// Secrets). Between forced refreshes, unchanged RVs let us skip the
+	// expensive storage calls entirely.
+	fullRefreshInterval = 5 * time.Minute
 )
 
 // MetricsRefresher periodically rebuilds the operator's Prometheus gauges from
@@ -55,6 +62,14 @@ type MetricsRefresher struct {
 	// a deleted source would leave stale metrics around indefinitely.
 	mu             sync.Mutex
 	trackedTargets map[string]bool
+
+	// lastSrcRV / lastDestRV track the ResourceVersion of the most recent
+	// Secret list responses. When neither has changed since the previous
+	// tick AND the full refresh interval hasn't elapsed, the refresher
+	// skips the expensive storage walk.
+	lastSrcRV       string
+	lastDestRV      string
+	lastFullRefresh time.Time
 
 	// perDestSlots is the per-destination semaphore map shared across
 	// every source's goroutines. A destination shared by 50 sources sees
@@ -111,11 +126,28 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 	if r.Pool == nil {
 		r.Pool = NewStoragePool(r.Logger)
 	}
-	sources, dests, err := r.listSecrets(ctx)
+	sources, dests, srcRV, destRV, err := r.listSecrets(ctx)
 	if err != nil {
 		r.Logger.Error(err, "list secrets")
 		return
 	}
+
+	// Fast path: when neither the source nor destination Secret list has
+	// changed since the last tick (same ResourceVersion) AND the full
+	// refresh interval hasn't elapsed, skip the expensive storage walk.
+	// This reduces ~150 storage API calls to two cheap K8s list calls on
+	// idle clusters while still picking up new CronJob runs every 5 minutes.
+	now := time.Now()
+	rvUnchanged := srcRV != "" && srcRV == r.lastSrcRV && destRV == r.lastDestRV
+	forceRefresh := r.lastFullRefresh.IsZero() || now.Sub(r.lastFullRefresh) >= fullRefreshInterval
+	if rvUnchanged && !forceRefresh {
+		r.Logger.V(2).Info("refresh skipped: no secret changes", "srcRV", srcRV, "destRV", destRV)
+		return
+	}
+	r.lastSrcRV = srcRV
+	r.lastDestRV = destRV
+	r.lastFullRefresh = now
+
 	r.Pool.Retain(dests)
 	r.Logger.V(1).Info("refresh tick", "sources", len(sources), "destinations", len(dests), "pooled_clients", r.Pool.Size())
 
@@ -161,14 +193,14 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 	r.mu.Unlock()
 }
 
-func (r *MetricsRefresher) listSecrets(ctx context.Context) ([]corev1.Secret, []*secrets.Destination, error) {
+func (r *MetricsRefresher) listSecrets(ctx context.Context) ([]corev1.Secret, []*secrets.Destination, string, string, error) {
 	var srcList corev1.SecretList
 	srcOpts := []client.ListOption{client.MatchingLabels{labels.LabelRole: labels.RoleSource}}
 	if r.Namespace != "" {
 		srcOpts = append(srcOpts, client.InNamespace(r.Namespace))
 	}
 	if err := r.Client.List(ctx, &srcList, srcOpts...); err != nil {
-		return nil, nil, err
+		return nil, nil, "", "", err
 	}
 
 	var destList corev1.SecretList
@@ -177,7 +209,7 @@ func (r *MetricsRefresher) listSecrets(ctx context.Context) ([]corev1.Secret, []
 		destOpts = append(destOpts, client.InNamespace(r.Namespace))
 	}
 	if err := r.Client.List(ctx, &destList, destOpts...); err != nil {
-		return nil, nil, err
+		return nil, nil, "", "", err
 	}
 
 	dests := make([]*secrets.Destination, 0, len(destList.Items))
@@ -189,7 +221,7 @@ func (r *MetricsRefresher) listSecrets(ctx context.Context) ([]corev1.Secret, []
 		}
 		dests = append(dests, d)
 	}
-	return srcList.Items, dests, nil
+	return srcList.Items, dests, srcList.ResourceVersion, destList.ResourceVersion, nil
 }
 
 func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Source, all []*secrets.Destination) {

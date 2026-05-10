@@ -180,6 +180,26 @@ func (s *StorageScrubber) scrubOne(ctx context.Context, target string, d *secret
 		return
 	}
 
+	// Size pre-check: if the meta records a size and we can get the object
+	// list cheaply, detect truncation/corruption before downloading the
+	// entire dump. This catches the common failure mode (truncated write,
+	// partial upload) without any egress cost.
+	if m.EncryptedSizeBytes > 0 {
+		objs, listErr := st.List(ctx, dumpPath)
+		if listErr == nil {
+			for _, o := range objs {
+				if o.Path == dumpPath && o.Size != m.EncryptedSizeBytes {
+					log.Error(fmt.Errorf("size mismatch"), "scrub: storage corruption detected (size pre-check)",
+						"path", dumpPath, "want_bytes", m.EncryptedSizeBytes, "got_bytes", o.Size)
+					metrics.SetStorageScrubPassed(target, d.Name, false)
+					metrics.IncStorageScrubFailed(target, d.Name)
+					metrics.SetStorageScrubLastCheck(target, d.Name, time.Now())
+					return
+				}
+			}
+		}
+	}
+
 	rc, err := st.Get(ctx, dumpPath)
 	if err != nil {
 		log.Info("scrub: dump fetch failed", "path", dumpPath, "err", err.Error())

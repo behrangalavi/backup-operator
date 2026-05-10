@@ -20,7 +20,6 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -118,8 +117,7 @@ func run() int {
 
 	sigCtx, sigStop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer sigStop()
-	runTimeoutSec, _ := strconv.Atoi(config.GetValue("RUN_TIMEOUT_SECONDS"))
-	ctx, cancel := context.WithTimeout(sigCtx, time.Duration(runTimeoutSec)*time.Second)
+	ctx, cancel := context.WithTimeout(sigCtx, config.GetDurationSeconds("RUN_TIMEOUT_SECONDS"))
 	defer cancel()
 
 	srcSecret, err := cs.CoreV1().Secrets(ns).Get(ctx, *sourceSecret, metav1.GetOptions{})
@@ -147,9 +145,10 @@ func run() int {
 	enc, err := crypto.NewFromPublicKeys(config.GetValue("AGE_PUBLIC_KEYS"))
 	assert.NoError(err, "failed to initialize age encryptor")
 
-	defaultRet, _ := strconv.Atoi(config.GetValue("DEFAULT_RETENTION_DAYS"))
-	defaultMin, _ := strconv.Atoi(config.GetValue("DEFAULT_MIN_KEEP"))
-	policy := backup.RetentionPolicy{Days: defaultRet, MinKeep: defaultMin}
+	policy := backup.RetentionPolicy{
+		Days:    config.GetInt("DEFAULT_RETENTION_DAYS"),
+		MinKeep: config.GetInt("DEFAULT_MIN_KEEP"),
+	}
 
 	events, flushEvents := buildEventEmitter(cs, srcSecret)
 	defer flushEvents()

@@ -184,9 +184,6 @@ func main() {
 	assert.NoError(mgr.AddHealthzCheck("healthz", healthz.Ping), "failed to add healthz check")
 	assert.NoError(mgr.AddReadyzCheck("readyz", healthz.Ping), "failed to add readyz check")
 
-	runTimeoutSec, _ := strconv.Atoi(config.GetValue("RUN_TIMEOUT_SECONDS"))
-	backoffLimit, _ := strconv.Atoi(config.GetValue("WORKER_BACKOFF_LIMIT"))
-
 	worker := controllers.WorkerSpec{
 		Image:              config.GetValue("WORKER_IMAGE"),
 		ImagePullPolicy:    corev1.PullPolicy(config.GetValue("WORKER_IMAGE_PULL_POLICY")),
@@ -194,8 +191,8 @@ func main() {
 		AgeSecretName:      config.GetValue("AGE_SECRET_NAME"),
 		TempDir:            config.GetValue("TEMP_DIR"),
 		TempDirSize:        config.GetValue("TEMP_DIR_SIZE"),
-		RunTimeoutSeconds:  int64(runTimeoutSec),
-		BackoffLimit:       int32(backoffLimit),
+		RunTimeoutSeconds:  int64(config.GetInt("RUN_TIMEOUT_SECONDS")),
+		BackoffLimit:       int32(config.GetInt("WORKER_BACKOFF_LIMIT")),
 		RetentionDaysDef:   config.GetValue("DEFAULT_RETENTION_DAYS"),
 		MinKeepDef:         config.GetValue("DEFAULT_MIN_KEEP"),
 		DefaultSchedule:    config.GetValue("DEFAULT_SCHEDULE"),
@@ -217,12 +214,11 @@ func main() {
 	// in CLAUDE.md §18.
 	storagePool := controllers.NewStoragePool(ctrl.Log.WithName("storage-pool"))
 
-	refreshSec, _ := strconv.Atoi(config.GetValue("METRICS_REFRESH_INTERVAL_SECONDS"))
 	refresher := &controllers.MetricsRefresher{
 		Client:    mgr.GetClient(),
 		Logger:    ctrl.Log.WithName("metrics-refresher"),
 		Namespace: watchNs,
-		Interval:  time.Duration(refreshSec) * time.Second,
+		Interval:  config.GetDurationSeconds("METRICS_REFRESH_INTERVAL_SECONDS"),
 		Pool:      storagePool,
 	}
 	assert.NoError(mgr.Add(refresher), "failed to register metrics refresher")
@@ -252,21 +248,20 @@ func main() {
 
 	assert.NoError(recipientReconciler.SetupWithManager(mgr), "failed to setup recipient reconciler")
 
-	if config.GetValue("STORAGE_SCRUB_ENABLED") == "true" {
-		scrubHours, _ := strconv.Atoi(config.GetValue("STORAGE_SCRUB_INTERVAL_HOURS"))
+	if config.GetBool("STORAGE_SCRUB_ENABLED") {
 		scrubber := &controllers.StorageScrubber{
 			Client:    mgr.GetClient(),
 			Logger:    ctrl.Log.WithName("storage-scrubber"),
 			Namespace: watchNs,
-			Interval:  time.Duration(scrubHours) * time.Hour,
+			Interval:  time.Duration(config.GetInt("STORAGE_SCRUB_INTERVAL_HOURS")) * time.Hour,
 			Pool:      storagePool,
 		}
 		assert.NoError(mgr.Add(scrubber), "failed to register storage scrubber")
 	}
 
-	if config.GetValue("UI_ENABLED") == "true" {
-		maxBody, _ := strconv.ParseInt(config.GetValue("UI_MAX_BODY_BYTES"), 10, 64)
-		maxSSE, _ := strconv.Atoi(config.GetValue("UI_MAX_SSE_CLIENTS"))
+	if config.GetBool("UI_ENABLED") {
+		maxBody := config.GetInt64("UI_MAX_BODY_BYTES")
+		maxSSE := config.GetInt("UI_MAX_SSE_CLIENTS")
 
 		// Pick an alerts provider. Order: explicit Prometheus > local
 		// fallback over our own metric registry. The chained provider
@@ -296,8 +291,8 @@ func main() {
 			Logger:            ctrl.Log.WithName("ui"),
 			SettingsConfigMap: config.GetValue("SETTINGS_CONFIGMAP"),
 			AgeSecretName:     config.GetValue("AGE_SECRET_NAME"),
-			ReadOnly:          config.GetValue("UI_READ_ONLY") == "true",
-			AllowKeyMutation:  config.GetValue("UI_ALLOW_KEY_MUTATION") == "true",
+			ReadOnly:          config.GetBool("UI_READ_ONLY"),
+			AllowKeyMutation:  config.GetBool("UI_ALLOW_KEY_MUTATION"),
 			MaxBodyBytes:      maxBody,
 			MaxSSEClients:     maxSSE,
 			AlertsProvider:    alertsProvider,
@@ -311,7 +306,7 @@ func main() {
 		assert.NoError(mgr.Add(uiServer), "failed to register UI server")
 	}
 
-	if config.GetValue("DOCS_ENABLED") == "true" {
+	if config.GetBool("DOCS_ENABLED") {
 		docsServer, err := docs.New(docs.Config{
 			Addr:    config.GetValue("DOCS_ADDR"),
 			DocsDir: config.GetValue("DOCS_DIR"),

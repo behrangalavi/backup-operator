@@ -3,7 +3,9 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"sync"
+	"time"
 
 	"backup-operator/assert"
 )
@@ -70,4 +72,27 @@ func GetValue(key string) string {
 	configMu.RUnlock()
 	assert.Assert(mod != nil, "static config module has never been initialized")
 	return mod.settings[key].Value
+}
+
+// GetInt returns the config value parsed as int. Returns 0 on parse error.
+func GetInt(key string) int {
+	v, _ := strconv.Atoi(GetValue(key))
+	return v
+}
+
+// GetInt64 returns the config value parsed as int64. Returns 0 on parse error.
+func GetInt64(key string) int64 {
+	v, _ := strconv.ParseInt(GetValue(key), 10, 64)
+	return v
+}
+
+// GetBool returns true when the config value is "true" (case-sensitive).
+func GetBool(key string) bool {
+	return GetValue(key) == "true"
+}
+
+// GetDurationSeconds parses the config value as an integer number of seconds
+// and returns it as a time.Duration.
+func GetDurationSeconds(key string) time.Duration {
+	return time.Duration(GetInt(key)) * time.Second
 }

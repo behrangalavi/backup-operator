@@ -10,13 +10,11 @@ import (
 	"sync"
 	"time"
 
-	"backup-operator/internal/labels"
 	"backup-operator/internal/safe"
 	"backup-operator/internal/secrets"
 	"backup-operator/metrics"
 
 	"github.com/go-logr/logr"
-	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -79,50 +77,20 @@ func (s *StorageScrubber) Start(ctx context.Context) error {
 func (s *StorageScrubber) NeedLeaderElection() bool { return true }
 
 func (s *StorageScrubber) scrub(ctx context.Context) {
-	sources, dests, err := s.listSecrets(ctx)
+	res, err := listBackupSecrets(ctx, s.Client, s.Namespace)
 	if err != nil {
 		s.Logger.Error(err, "list secrets")
 		return
 	}
-	s.Logger.V(1).Info("scrub tick", "sources", len(sources), "destinations", len(dests))
+	s.Logger.V(1).Info("scrub tick", "sources", len(res.Sources), "destinations", len(res.Dests))
 
-	for i := range sources {
-		src, err := secrets.ParseSource(&sources[i], "")
+	for i := range res.Sources {
+		src, err := secrets.ParseSource(&res.Sources[i], "")
 		if err != nil {
 			continue
 		}
-		s.scrubSource(ctx, src, dests)
+		s.scrubSource(ctx, src, res.Dests)
 	}
-}
-
-func (s *StorageScrubber) listSecrets(ctx context.Context) ([]corev1.Secret, []*secrets.Destination, error) {
-	var srcList corev1.SecretList
-	srcOpts := []client.ListOption{client.MatchingLabels{labels.LabelRole: labels.RoleSource}}
-	if s.Namespace != "" {
-		srcOpts = append(srcOpts, client.InNamespace(s.Namespace))
-	}
-	if err := s.Client.List(ctx, &srcList, srcOpts...); err != nil {
-		return nil, nil, err
-	}
-
-	var destList corev1.SecretList
-	destOpts := []client.ListOption{client.MatchingLabels{labels.LabelRole: labels.RoleDestination}}
-	if s.Namespace != "" {
-		destOpts = append(destOpts, client.InNamespace(s.Namespace))
-	}
-	if err := s.Client.List(ctx, &destList, destOpts...); err != nil {
-		return nil, nil, err
-	}
-
-	dests := make([]*secrets.Destination, 0, len(destList.Items))
-	for i := range destList.Items {
-		d, err := secrets.ParseDestination(&destList.Items[i])
-		if err != nil {
-			continue
-		}
-		dests = append(dests, d)
-	}
-	return srcList.Items, dests, nil
 }
 
 func (s *StorageScrubber) scrubSource(ctx context.Context, src *secrets.Source, all []*secrets.Destination) {

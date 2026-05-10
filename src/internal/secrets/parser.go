@@ -346,6 +346,26 @@ func extraFromAnnotations(ann map[string]string) map[string]string {
 	return out
 }
 
+// WarnUnknownAnnotations returns the list of annotations with the project
+// prefix that are not recognised. Callers should log these as warnings so
+// typos like "analyzer-enable" (instead of "analyzer-enabled") are visible.
+func WarnUnknownAnnotations(annotations map[string]string) []string {
+	var unknown []string
+	for k := range annotations {
+		if !strings.HasPrefix(k, labels.AnnotationPrefix) {
+			continue
+		}
+		// extra-* annotations are intentionally open-ended.
+		if strings.HasPrefix(k, labels.AnnotationPrefix+"extra-") {
+			continue
+		}
+		if !labels.KnownAnnotations[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	return unknown
+}
+
 // FilterDestinations returns the subset of destinations the source's
 // allow-list permits. An empty allow-list means all destinations pass.
 func FilterDestinations(src *Source, all []*Destination) []*Destination {

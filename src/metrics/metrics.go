@@ -179,6 +179,14 @@ var (
 		[]string{"target", "destination"},
 	)
 
+	sourceParseErrors = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "backup_operator_source_parse_errors_total",
+			Help: "Source Secrets that failed annotation/data parsing during reconciliation",
+		},
+		[]string{"secret"},
+	)
+
 	// Storage scrub metrics — produced by the operator-side scrubber that
 	// re-hashes stored dumps to detect silent corruption. The operator pod is
 	// long-lived and Prometheus-scraped, so a Counter is well-defined here
@@ -270,6 +278,7 @@ func Register(registry prometheus.Registerer) {
 		storageScrubPassed,
 		storageScrubLastCheck,
 		storageScrubFailedTotal,
+		sourceParseErrors,
 		restoreVerificationPassed,
 		restoreVerificationLastTimestamp,
 		restoreVerificationDuration,
@@ -395,6 +404,10 @@ func SetStorageScrubPassed(target, destination string, passed bool) {
 
 func SetStorageScrubLastCheck(target, destination string, t time.Time) {
 	storageScrubLastCheck.WithLabelValues(target, destination).Set(float64(t.Unix()))
+}
+
+func IncSourceParseError(secret string) {
+	sourceParseErrors.WithLabelValues(secret).Inc()
 }
 
 func IncStorageScrubFailed(target, destination string) {

@@ -47,11 +47,30 @@ func supportsColumnStatistics(binary string) bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	// Primary check: probe --version for "MariaDB" in the banner.
 	out, err := exec.CommandContext(ctx, binary, "--version").CombinedOutput()
-	supports := false
-	if err == nil && !strings.Contains(string(out), "MariaDB") {
-		supports = true
+	if err != nil {
+		binaryProbeCache.Store(binary, false)
+		return false
 	}
+	banner := string(out)
+
+	// Case-insensitive check catches future banner variations
+	// (e.g. "mariadb", "MARIADB", "MariaDB").
+	if strings.Contains(strings.ToLower(banner), "mariadb") {
+		binaryProbeCache.Store(binary, false)
+		return false
+	}
+
+	// Secondary check: verify the binary actually accepts the flag.
+	// This catches edge cases where the version banner changes format
+	// in future releases.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	testOut, testErr := exec.CommandContext(ctx2, binary, "--column-statistics=0", "--version").CombinedOutput()
+	supports := testErr == nil && !strings.Contains(string(testOut), "unknown variable")
+
 	binaryProbeCache.Store(binary, supports)
 	return supports
 }
@@ -146,29 +165,32 @@ func (d *mysqlDumper) Dump(ctx context.Context, w io.Writer) error {
 // InnoDB (the default engine) — accurate enough for anomaly detection and
 // orders of magnitude cheaper than COUNT(*) on large tables.
 func (d *mysqlDumper) CollectStats(ctx context.Context) (*dumper.Stats, error) {
+	statsCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
 	db, err := sql.Open("mysql", d.dsn())
 	if err != nil {
 		return nil, dumper.SanitizeError("open", err, d.cfg.Password)
 	}
 	defer func() { _ = db.Close() }()
 
-	if err := db.PingContext(ctx); err != nil {
+	if err := db.PingContext(statsCtx); err != nil {
 		return nil, dumper.SanitizeError("ping", err, d.cfg.Password)
 	}
 
-	tables, err := d.queryTables(ctx, db)
+	tables, err := d.queryTables(statsCtx, db)
 	if err != nil {
 		return nil, fmt.Errorf("query tables: %w", err)
 	}
 
-	hash, err := d.querySchemaHash(ctx, db)
+	hash, err := d.querySchemaHash(statsCtx, db)
 	if err != nil {
 		return nil, fmt.Errorf("query schema: %w", err)
 	}
 
 	// Best-effort encoding capture: drift between runs flags a server upgrade
 	// or migration that may silently break utf8 → utf8mb4 on restore.
-	charset, collation := d.queryEncoding(ctx, db)
+	charset, collation := d.queryEncoding(statsCtx, db)
 
 	return &dumper.Stats{
 		SchemaHash:  hash,

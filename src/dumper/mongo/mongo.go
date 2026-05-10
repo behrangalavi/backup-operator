@@ -139,18 +139,21 @@ func (d *mongoDumper) buildURI(withCreds bool) string {
 // hash fingerprints collection names + index specs — Mongo is schemaless
 // at the document level, so hashing documents would just produce noise.
 func (d *mongoDumper) CollectStats(ctx context.Context) (*dumper.Stats, error) {
+	statsCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
 	clientOpts := options.Client().ApplyURI(d.buildURI(true))
 	client, err := mongo.Connect(clientOpts)
 	if err != nil {
 		return nil, dumper.SanitizeError("connect", err, d.cfg.Password)
 	}
-	defer func() { _ = client.Disconnect(ctx) }()
+	defer func() { _ = client.Disconnect(statsCtx) }()
 
-	if err := client.Ping(ctx, nil); err != nil {
+	if err := client.Ping(statsCtx, nil); err != nil {
 		return nil, dumper.SanitizeError("ping", err, d.cfg.Password)
 	}
 
-	dbNames, err := d.listTargetDatabases(ctx, client)
+	dbNames, err := d.listTargetDatabases(statsCtx, client)
 	if err != nil {
 		return nil, fmt.Errorf("list databases: %w", err)
 	}
@@ -161,7 +164,7 @@ func (d *mongoDumper) CollectStats(ctx context.Context) (*dumper.Stats, error) {
 	)
 	for _, dbName := range dbNames {
 		db := client.Database(dbName)
-		collNames, err := db.ListCollectionNames(ctx, bson.D{})
+		collNames, err := db.ListCollectionNames(statsCtx, bson.D{})
 		if err != nil {
 			return nil, fmt.Errorf("list collections in %s: %w", dbName, err)
 		}
@@ -170,11 +173,11 @@ func (d *mongoDumper) CollectStats(ctx context.Context) (*dumper.Stats, error) {
 		for _, collName := range collNames {
 			coll := db.Collection(collName)
 
-			count, err := coll.EstimatedDocumentCount(ctx)
+			count, err := coll.EstimatedDocumentCount(statsCtx)
 			if err != nil {
 				return nil, fmt.Errorf("count %s.%s: %w", dbName, collName, err)
 			}
-			size, err := collectionSize(ctx, db, collName)
+			size, err := collectionSize(statsCtx, db, collName)
 			if err != nil {
 				return nil, fmt.Errorf("collStats %s.%s: %w", dbName, collName, err)
 			}
@@ -184,7 +187,7 @@ func (d *mongoDumper) CollectStats(ctx context.Context) (*dumper.Stats, error) {
 				SizeBytes: size,
 			})
 
-			indexSig, err := indexSignature(ctx, coll)
+			indexSig, err := indexSignature(statsCtx, coll)
 			if err != nil {
 				return nil, fmt.Errorf("indexes %s.%s: %w", dbName, collName, err)
 			}

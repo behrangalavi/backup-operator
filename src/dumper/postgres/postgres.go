@@ -58,18 +58,21 @@ func (d *postgresDumper) Dump(ctx context.Context, w io.Writer) error {
 // accurate enough for anomaly detection — exact COUNT(*) on every table would
 // be cost-prohibitive on large databases.
 func (d *postgresDumper) CollectStats(ctx context.Context) (*dumper.Stats, error) {
-	conn, err := pgx.Connect(ctx, d.connString())
+	statsCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	conn, err := pgx.Connect(statsCtx, d.connString())
 	if err != nil {
 		return nil, dumper.SanitizeError("connect", err, d.cfg.Password)
 	}
-	defer func() { _ = conn.Close(ctx) }()
+	defer func() { _ = conn.Close(statsCtx) }()
 
-	tables, err := d.queryTables(ctx, conn)
+	tables, err := d.queryTables(statsCtx, conn)
 	if err != nil {
 		return nil, fmt.Errorf("query tables: %w", err)
 	}
 
-	hash, err := d.querySchemaHash(ctx, conn)
+	hash, err := d.querySchemaHash(statsCtx, conn)
 	if err != nil {
 		return nil, fmt.Errorf("query schema: %w", err)
 	}
@@ -77,7 +80,7 @@ func (d *postgresDumper) CollectStats(ctx context.Context) (*dumper.Stats, error
 	// Best-effort: charset/collation drift is a useful drift signal but should
 	// never fail the run. pg_database.datcollate is per-database; encoding
 	// comes from pg_encoding_to_char(encoding).
-	charset, collation := d.queryEncoding(ctx, conn)
+	charset, collation := d.queryEncoding(statsCtx, conn)
 
 	return &dumper.Stats{
 		SchemaHash:  hash,

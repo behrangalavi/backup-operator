@@ -378,6 +378,7 @@ func loadLatestMeta(ctx context.Context, st storage.Storage, target string) (*me
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, time.Time{}, false
 	}
+	m.Path = latest.Path
 	ts := latest.LastModified
 	if parsed := m.ParsedTimestamp(); !parsed.IsZero() {
 		// Prefer the timestamp baked into the meta payload over the storage

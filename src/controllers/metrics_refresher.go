@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"backup-operator/internal/labels"
 	"backup-operator/internal/meta"
 	"backup-operator/internal/safe"
 	"backup-operator/internal/secrets"
@@ -16,7 +15,6 @@ import (
 	"backup-operator/storage"
 
 	"github.com/go-logr/logr"
-	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -126,7 +124,7 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 	if r.Pool == nil {
 		r.Pool = NewStoragePool(r.Logger)
 	}
-	sources, dests, srcRV, destRV, err := r.listSecrets(ctx)
+	res, err := listBackupSecrets(ctx, r.Client, r.Namespace)
 	if err != nil {
 		r.Logger.Error(err, "list secrets")
 		return
@@ -138,6 +136,7 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 	// This reduces ~150 storage API calls to two cheap K8s list calls on
 	// idle clusters while still picking up new CronJob runs every 5 minutes.
 	now := time.Now()
+	srcRV, destRV := res.SrcRV, res.DestRV
 	rvUnchanged := srcRV != "" && srcRV == r.lastSrcRV && destRV == r.lastDestRV
 	forceRefresh := r.lastFullRefresh.IsZero() || now.Sub(r.lastFullRefresh) >= fullRefreshInterval
 	if rvUnchanged && !forceRefresh {
@@ -148,6 +147,7 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 	r.lastDestRV = destRV
 	r.lastFullRefresh = now
 
+	sources, dests := res.Sources, res.Dests
 	r.Pool.Retain(dests)
 	r.Logger.V(1).Info("refresh tick", "sources", len(sources), "destinations", len(dests), "pooled_clients", r.Pool.Size())
 
@@ -191,37 +191,6 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 	}
 	r.trackedTargets = current
 	r.mu.Unlock()
-}
-
-func (r *MetricsRefresher) listSecrets(ctx context.Context) ([]corev1.Secret, []*secrets.Destination, string, string, error) {
-	var srcList corev1.SecretList
-	srcOpts := []client.ListOption{client.MatchingLabels{labels.LabelRole: labels.RoleSource}}
-	if r.Namespace != "" {
-		srcOpts = append(srcOpts, client.InNamespace(r.Namespace))
-	}
-	if err := r.Client.List(ctx, &srcList, srcOpts...); err != nil {
-		return nil, nil, "", "", err
-	}
-
-	var destList corev1.SecretList
-	destOpts := []client.ListOption{client.MatchingLabels{labels.LabelRole: labels.RoleDestination}}
-	if r.Namespace != "" {
-		destOpts = append(destOpts, client.InNamespace(r.Namespace))
-	}
-	if err := r.Client.List(ctx, &destList, destOpts...); err != nil {
-		return nil, nil, "", "", err
-	}
-
-	dests := make([]*secrets.Destination, 0, len(destList.Items))
-	for i := range destList.Items {
-		d, err := secrets.ParseDestination(&destList.Items[i])
-		if err != nil {
-			r.Logger.V(1).Info("skipping invalid destination", "secret", destList.Items[i].Name, "err", err.Error())
-			continue
-		}
-		dests = append(dests, d)
-	}
-	return srcList.Items, dests, srcList.ResourceVersion, destList.ResourceVersion, nil
 }
 
 func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Source, all []*secrets.Destination) {

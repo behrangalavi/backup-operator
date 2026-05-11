@@ -333,6 +333,8 @@
         "authMethodPassword": "Password",
         "knownHosts": "Known Hosts",
         "insecureSkipHostVerify": "Skip host-key verification (testing only)",
+        "insecureSkipCertVerify": "Skip TLS certificate verification (testing only)",
+        "tlsMode": "TLS Mode",
         "bucket": "Bucket",
         "region": "Region",
         "endpoint": "Endpoint",
@@ -352,11 +354,18 @@
       "type": {
         "sftp": "SFTP",
         "hetznerSftp": "Hetzner Storage Box (SFTP)",
+        "ftps": "FTPS (FTP over TLS)",
         "s3": "S3 / S3-compatible"
+      },
+      "tlsMode": {
+        "explicit": "Explicit (AUTH TLS, default port 21)",
+        "implicit": "Implicit (TLS from start, default port 990)"
       },
       "hint": {
         "knownHosts": "Run <code>ssh-keyscan -p &lt;port&gt; -t ed25519,rsa &lt;host&gt;</code> and paste the output here. Required unless 'Skip host-key verification' below is checked.",
-        "insecureSkipHostVerify": "Accepts ANY host key — vulnerable to MITM. Use only for initial testing; populate Known Hosts for production."
+        "insecureSkipHostVerify": "Accepts ANY host key — vulnerable to MITM. Use only for initial testing; populate Known Hosts for production.",
+        "tlsMode": "Most NAS firmware (QNAP, Synology) labels this 'FTP with SSL/TLS (explicit)' — pick Explicit. Implicit is the older port-990 variant.",
+        "insecureSkipCertVerify": "Skips TLS certificate validation. Accept any server cert — vulnerable to MITM. Use only when the NAS ships a self-signed cert you cannot replace."
       }
     }
   },

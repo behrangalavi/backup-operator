@@ -333,6 +333,8 @@
         "authMethodPassword": "Mot de passe",
         "knownHosts": "Known Hosts",
         "insecureSkipHostVerify": "Ignorer la vérification de la clé d'hôte (tests uniquement)",
+        "insecureSkipCertVerify": "Ignorer la vérification du certificat TLS (tests uniquement)",
+        "tlsMode": "Mode TLS",
         "bucket": "Bucket",
         "region": "Région",
         "endpoint": "Endpoint",
@@ -352,11 +354,18 @@
       "type": {
         "sftp": "SFTP",
         "hetznerSftp": "Hetzner Storage Box (SFTP)",
+        "ftps": "FTPS (FTP via TLS)",
         "s3": "S3 / compatible S3"
+      },
+      "tlsMode": {
+        "explicit": "Explicite (AUTH TLS, port 21 par défaut)",
+        "implicit": "Implicite (TLS dès le départ, port 990 par défaut)"
       },
       "hint": {
         "knownHosts": "Exécute <code>ssh-keyscan -p &lt;port&gt; -t ed25519,rsa &lt;hôte&gt;</code> et colle la sortie ici. Obligatoire sauf si 'Ignorer la vérification' ci-dessous est coché.",
-        "insecureSkipHostVerify": "Accepte N'IMPORTE QUELLE clé d'hôte — vulnérable au MITM. Uniquement pour les tests initiaux ; renseigne Known Hosts en production."
+        "insecureSkipHostVerify": "Accepte N'IMPORTE QUELLE clé d'hôte — vulnérable au MITM. Uniquement pour les tests initiaux ; renseigne Known Hosts en production.",
+        "tlsMode": "La plupart des firmwares NAS (QNAP, Synology) appellent ceci 'FTP avec SSL/TLS (explicite)' — choisis Explicite. Implicite est l'ancienne variante port 990.",
+        "insecureSkipCertVerify": "Ignore la validation du certificat TLS. Accepte n'importe quel certificat serveur — vulnérable au MITM. Uniquement quand le NAS fournit un certificat auto-signé que tu ne peux pas remplacer."
       }
     }
   },

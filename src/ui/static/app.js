@@ -1095,6 +1095,26 @@ window.openDestForm = function(secretName) {
     <div class="form-row"><div class="form-group"><label>${tr('form.destination.label.accessKey')}</label><input name="data_access-key"></div>
       <div class="form-group"><label>${tr('form.destination.label.secretKey')}</label><input name="data_secret-key" type="password"></div></div>`;
 
+  const ftpsFields = `
+    <div class="form-row"><div class="form-group"><label>${tr('form.destination.label.host')} *</label><input name="data_host" required></div>
+      <div class="form-group"><label>${tr('form.destination.label.port')}</label><input name="data_port" placeholder="21"></div></div>
+    <div class="form-group"><label>${tr('form.destination.label.username')} *</label><input name="data_username" required></div>
+    <div class="form-group"><label>${tr('form.destination.label.password')} *</label><input name="data_password" type="password" autocomplete="new-password" required></div>
+    <div class="form-group"><label>${tr('form.destination.label.tlsMode')}</label>
+      <select name="data_tls-mode">
+        <option value="explicit">${tr('form.destination.tlsMode.explicit')}</option>
+        <option value="implicit">${tr('form.destination.tlsMode.implicit')}</option>
+      </select>
+      <div class="hint">${tr('form.destination.hint.tlsMode')}</div>
+    </div>
+    <div class="form-group">
+      <label style="font-weight:normal;cursor:pointer">
+        <input type="checkbox" name="data_insecure-skip-cert-verify" value="true">
+        ${tr('form.destination.label.insecureSkipCertVerify')}
+      </label>
+      <div class="hint hint-warn">${tr('form.destination.hint.insecureSkipCertVerify')}</div>
+    </div>`;
+
   openModal(title, `<form id="destForm" onsubmit="submitDestForm(event, '${secretName || ''}')">
     <div class="form-row">
       <div class="form-group"><label>${tr('common.name')} *</label><input name="name" required placeholder="${tr('form.destination.placeholder.name')}" ${isEdit ? 'disabled' : ''}></div>
@@ -1103,6 +1123,7 @@ window.openDestForm = function(secretName) {
           <option value="">${tr('form.source.placeholder.selectType')}</option>
           <option value="sftp">${tr('form.destination.type.sftp')}</option>
           <option value="hetzner-sftp">${tr('form.destination.type.hetznerSftp')}</option>
+          <option value="ftps">${tr('form.destination.type.ftps')}</option>
           <option value="s3">${tr('form.destination.type.s3')}</option>
         </select></div>
     </div>
@@ -1114,7 +1135,8 @@ window.openDestForm = function(secretName) {
     </div>
   </form>
   <div id="destSFTPTemplate" style="display:none">${sftpFields}</div>
-  <div id="destS3Template" style="display:none">${s3Fields}</div>`);
+  <div id="destS3Template" style="display:none">${s3Fields}</div>
+  <div id="destFTPSTemplate" style="display:none">${ftpsFields}</div>`);
 
   if (isEdit) {
     api('/api/destinations/' + secretName).then(d => {
@@ -1156,6 +1178,8 @@ window.toggleDestFields = function(type) {
     container.innerHTML = $('#destSFTPTemplate').innerHTML;
   } else if (type === 's3') {
     container.innerHTML = $('#destS3Template').innerHTML;
+  } else if (type === 'ftps') {
+    container.innerHTML = $('#destFTPSTemplate').innerHTML;
   } else {
     container.innerHTML = '';
   }
@@ -1204,6 +1228,10 @@ window.submitDestForm = async function(e, secretName) {
     // Checkboxes: if unchecked on edit, explicitly drop the existing key.
     const skipBox = f.querySelector('input[name="data_insecure-skip-host-verify"]');
     if (skipBox && !skipBox.checked) removeKeys.push('insecure-skip-host-verify');
+  }
+  if (sType === 'ftps') {
+    const skipBox = f.querySelector('input[name="data_insecure-skip-cert-verify"]');
+    if (skipBox && !skipBox.checked) removeKeys.push('insecure-skip-cert-verify');
   }
   const body = {
     name: f.name.value,

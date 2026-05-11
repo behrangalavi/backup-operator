@@ -237,6 +237,7 @@ src/
 ├── storage/             # Upload destination abstraction
 │   ├── factory/         # Creates the right Storage from storage-type label
 │   ├── sftp/            # Hetzner Storage Box and generic SFTP
+│   ├── ftps/            # FTP over TLS (QNAP, Synology, FreeNAS-style NAS firmware)
 │   └── s3/              # AWS S3, MinIO, Hetzner Object Storage, R2, B2, ...
 ├── verifier/            # Restore-verification: prove the uploaded artifact is decryptable+parseable
 │   ├── verifier.go      # Verifier interface, ShouldVerify schedule logic, FailureResult helper
@@ -349,7 +350,7 @@ backup-restore --storage-secret hetzner-sb -n backup --target prod-users \
 |---|---|---|
 | `backup.mogenius.io/role` | **yes** | `source` \| `destination` \| `age-recipient` |
 | `backup.mogenius.io/db-type` | yes (sources only) | `postgres` \| `mysql` \| `mariadb` \| `mongo` \| `redis` |
-| `backup.mogenius.io/storage-type` | yes (destinations only) | `sftp` \| `hetzner-sftp` \| `s3` |
+| `backup.mogenius.io/storage-type` | yes (destinations only) | `sftp` \| `hetzner-sftp` \| `ftps` \| `s3` |
 
 ### 6.2 Source Secret annotations
 
@@ -406,6 +407,19 @@ A typo on a feature-flag annotation falls back to the default rather than reject
 | `password` | one of | Plain SFTP password. Provide this OR `ssh-private-key`. Key-based auth is the recommended path; password support is mostly for legacy servers. |
 | `known-hosts` | recommended | Standard `ssh-keyscan` output. Use `[host]:port` for non-22 ports. Without it the connection is **rejected** unless `insecure-skip-host-verify` is set. |
 | `insecure-skip-host-verify` | no | Set to `"true"` to accept any host key when `known-hosts` is absent. Logs an `INSECURE` warning. Use only for initial testing. |
+
+#### `storage-type: ftps`
+
+For NAS firmware (QNAP, older Synology, FreeNAS) that only offers FTP over TLS, not SFTP. The data channel is always encrypted (PROT P) — plain control + plain data is intentionally not exposed. If your NAS supports SSH/SFTP, prefer that: FTPS has worse NAT/firewall behaviour (PASV data sockets), a weaker historical security record, and the protocol's data-channel/control-channel split makes it more fragile.
+
+| Key | Required | Notes |
+|---|---|---|
+| `host` | **yes** | |
+| `port` | no | Default 21 (explicit) / 990 (implicit) |
+| `username` | **yes** | |
+| `password` | **yes** | Key-based auth is not part of the FTP spec; password is the only option. |
+| `tls-mode` | no | `explicit` (default, port 21 + AUTH TLS — what most NAS UIs call "FTP with SSL/TLS (explicit)") or `implicit` (port 990, TLS from byte zero). |
+| `insecure-skip-cert-verify` | no | Set to `"true"` to skip TLS certificate validation. Logs an `INSECURE` warning. Use only when the NAS ships a self-signed cert you cannot replace. |
 
 #### `storage-type: s3`
 
@@ -1057,6 +1071,8 @@ The notable ones, with the reasoning that future readers should preserve.
 - **Exponential retry on transient upload failures.** Upload operations tagged as `RetryableError` are retried up to 3 times with 2s/4s exponential backoff. `PermanentError` (bad credentials, missing bucket) aborts immediately. This makes the backup resilient to short network glitches without wasting time on configuration errors. Context cancellation is respected between retries.
 
 - **SSH handshake timeout.** The SFTP `ssh.ClientConfig` sets `Timeout: 30s`. Without it, the SSH handshake (key exchange, auth) blocks indefinitely on an unresponsive server — the ctx-based TCP dialer only covers the initial connect, not the protocol handshake.
+
+- **FTPS as a separate driver, not "SFTP with a TLS toggle".** A user with a QNAP that only advertises "FTP with SSL/TLS (explicit)" prompted this — same usage pattern as SFTP (NAS box, write a backup, read it back) but completely different wire protocol. Reusing the SFTP code path was never on the table: SFTP rides SSH (one encrypted bidirectional channel, port 22, public-key auth available), FTPS is FTP with a TLS upgrade (separate control and data sockets, port 21 explicit / 990 implicit, password-only auth, PASV firewall traversal). The Storage interface intentionally hides protocol — implementations only see byte-stream Upload/Get/List/Delete — so dropping in `storage/ftps/` was 300 lines and one factory line. PROT P (encrypt the data channel) is sent automatically by `jlaffaye/ftp` when a tls.Config is configured, so we can't accidentally ship plaintext data sockets even though FTPS technically allows it. Considered: (a) defer FTPS, tell users to enable SSH on the NAS; (b) build a generic "TLS-wrapped legacy protocol" abstraction. (a) is correct most of the time but doesn't help operators locked out of the device's SSH settings (compliance appliances, hosted NAS). (b) is over-engineered for two driver types; the protocols share so little at the wire level that the abstraction would be lipstick. Trade-off explicitly accepted: FTPS has worse NAT behaviour (PASV data sockets can be blocked) and weaker auth (no SSH-key equivalent), so the §6.5 doc recommends SFTP when both are available. Public-key auth was deliberately NOT bolted on — FTP doesn't have it in the spec, and emulating it via TLS client certificates would be a third auth path users would need to understand. Same reasoning as why we don't ship "FTP without TLS": if the user picked an FTP destination they want encryption, plaintext FTP would be a footgun, not a feature.
 
 - **Worker resource limits via env vars.** `WORKER_CPU_LIMIT`, `WORKER_MEMORY_LIMIT`, `WORKER_CPU_REQUEST`, `WORKER_MEMORY_REQUEST` flow from Helm into every CronJob's container spec. Sensible defaults ship (2 CPU / 2Gi); empty disables. Without limits, a large dump can OOM the node.
 

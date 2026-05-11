@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"backup-operator/storage"
+	"backup-operator/storage/ftps"
 	"backup-operator/storage/s3"
 	"backup-operator/storage/sftp"
 
@@ -14,6 +15,7 @@ const (
 	TypeSFTP        = "sftp"
 	TypeHetznerSFTP = "hetzner-sftp" // alias
 	TypeS3          = "s3"
+	TypeFTPS        = "ftps"
 )
 
 // NewStorage creates the right Storage for the given storage-type label.
@@ -25,6 +27,8 @@ func NewStorage(storageType, name string, data storage.SecretData, logger logr.L
 		return sftp.New(name, data, logger.WithName("sftp"))
 	case TypeS3:
 		return s3.New(name, data, logger.WithName("s3"))
+	case TypeFTPS:
+		return ftps.New(name, data, logger.WithName("ftps"))
 	default:
 		return nil, fmt.Errorf("unsupported storage-type %q", storageType)
 	}

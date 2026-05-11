@@ -40,16 +40,17 @@ func (p *Pipeline) runRestoreVerifier(
 	}
 	started := time.Now().UTC()
 	res, err := v.Verify(ctx, verifier.Input{
-		Source:    src,
-		DumpPath:  dumpFile,
-		Identity:  id,
-		PreStats:  preStats,
-		DumpRows:  dumpCounts,
-		StartedAt: started,
-		Logger:    log,
-		Spawner:   p.spawner,
-		Namespace: p.namespace,
-		OwnerRef:  p.ownerRef,
+		Source:      src,
+		DumpPath:    dumpFile,
+		Identity:    id,
+		PreStats:    preStats,
+		DumpRows:    dumpCounts,
+		Compression: src.Compression,
+		StartedAt:   started,
+		Logger:      log,
+		Spawner:     p.spawner,
+		Namespace:   p.namespace,
+		OwnerRef:    p.ownerRef,
 	})
 	if err != nil {
 		log.Error(err, "restore-verifier hard failure", "mode", mode)

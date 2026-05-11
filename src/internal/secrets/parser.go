@@ -70,6 +70,10 @@ type Source struct {
 	// >0 = explicit window. See scheduler.ApplyJitter for the full
 	// decision tree.
 	JitterMinutes int
+	// Compression selects the algorithm used to compress the dump before
+	// age encryption. "gzip" (default) or "zstd". Stored in meta.json so
+	// the restore CLI and verifiers know which decompressor to use.
+	Compression   string
 	Config             dumper.Config
 }
 
@@ -155,6 +159,7 @@ func ParseSource(s *corev1.Secret, defaultSchedule string) (*Source, error) {
 		AnonymizeTables:    parseBoolAnnotation(s.Annotations[labels.AnnotationAnonymizeTables], false),
 		EmptyDumpCheck:     parseBoolAnnotation(s.Annotations[labels.AnnotationEmptyDumpCheck], true),
 		JitterMinutes:      parseIntAnnotation(s.Annotations[labels.AnnotationJitterMinutes], -1),
+		Compression:        parseCompression(s.Annotations[labels.AnnotationCompression]),
 		Suspended:          parseBoolAnnotation(s.Annotations[labels.AnnotationSuspended], false),
 		RestoreVerificationMode:     parseRestoreVerificationMode(s.Annotations[labels.AnnotationRestoreVerificationMode]),
 		RestoreVerificationInterval: parseDurationAnnotation(s.Annotations[labels.AnnotationRestoreVerificationInterval]),
@@ -364,6 +369,15 @@ func WarnUnknownAnnotations(annotations map[string]string) []string {
 		}
 	}
 	return unknown
+}
+
+func parseCompression(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case labels.CompressionZstd:
+		return labels.CompressionZstd
+	default:
+		return labels.CompressionGzip
+	}
 }
 
 // FilterDestinations returns the subset of destinations the source's

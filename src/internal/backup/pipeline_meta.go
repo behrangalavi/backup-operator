@@ -112,6 +112,7 @@ func metaJSON(src *secrets.Source, stats *dumper.Stats, statsError string, repor
 		Status:              meta.StatusSuccess,
 		EncryptedSizeBytes:  size,
 		SHA256:              sha256sum,
+		Compression:         src.Compression,
 		SchemaChangedAt:     schemaChangedAt,
 		CompletedAt:         completedAt,
 		DurationSeconds:     completedAt.Sub(runStart).Seconds(),

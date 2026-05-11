@@ -34,7 +34,8 @@ const (
 	// minute=="0"; setting it explicitly opts in to spreading even when
 	// the user wrote a non-zero literal minute. 0 disables. See the
 	// scheduler.ApplyJitter contract for the full semantics.
-	AnnotationJitterMinutes = "backup.mogenius.io/jitter-minutes"
+	AnnotationJitterMinutes  = "backup.mogenius.io/jitter-minutes"
+	AnnotationCompression    = "backup.mogenius.io/compression"
 
 	// Restore-Verification annotations control the post-upload check that
 	// proves the encrypted dump is still decryptable and parseable. The
@@ -85,6 +86,7 @@ var KnownAnnotations = map[string]bool{
 	AnnotationRestoreVerificationInterval: true,
 	AnnotationVerificationImage:           true,
 	AnnotationVerificationVolumeSize:      true,
+	AnnotationCompression:                 true,
 }
 
 // Restore-verification mode values. RestoreVerificationOff /
@@ -99,4 +101,10 @@ const (
 	RestoreVerificationSchemaOnly     = "schema-only"
 	RestoreVerificationSample         = "sample"
 	RestoreVerificationFull           = "full"
+)
+
+// Compression algorithm values for the compression annotation.
+const (
+	CompressionGzip = "gzip"
+	CompressionZstd = "zstd"
 )

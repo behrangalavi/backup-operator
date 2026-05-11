@@ -14,8 +14,8 @@
 package main
 
 import (
-	"compress/gzip"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"backup-operator/crypto"
+	"backup-operator/internal/meta"
 	"backup-operator/internal/secrets"
 	"backup-operator/storage"
 	storageFactory "backup-operator/storage/factory"
@@ -54,7 +55,8 @@ func main() {
 		timestamp     = flag.String("timestamp", "", "specific dump timestamp (e.g. 20260429T020000Z); empty = latest")
 		listOnly      = flag.Bool("list", false, "list available dumps for the target instead of downloading")
 		output        = flag.String("o", "-", "output file; '-' = stdout")
-		decompress    = flag.Bool("decompress", false, "gunzip the decrypted stream before writing to output")
+		decompress    = flag.Bool("decompress", false, "decompress the decrypted stream before writing to output")
+		compression   = flag.String("compression", "", "compression algorithm (gzip or zstd); auto-detected from meta.json when omitted")
 		purge         = flag.Bool("purge", false, "delete all dumps for the target (use --before to limit)")
 		before        = flag.String("before", "", "only purge dumps older than this date (YYYY-MM-DD or 20060102T150405Z)")
 		dryRun        = flag.Bool("dry-run", false, "show what --purge would delete without actually deleting")
@@ -156,12 +158,16 @@ func main() {
 
 	srcReader := plain
 	if *decompress {
-		gz, err := gzip.NewReader(plain)
-		if err != nil {
-			die("gunzip: %v", err)
+		algo := *compression
+		if algo == "" {
+			algo = detectCompression(ctx, st, pick.path, log)
 		}
-		defer func() { _ = gz.Close() }()
-		srcReader = gz
+		dc, err := meta.NewDecompressor(plain, algo)
+		if err != nil {
+			die("decompress (%s): %v", algo, err)
+		}
+		defer func() { _ = dc.Close() }()
+		srcReader = dc
 	}
 
 	if _, err := io.Copy(out, srcReader); err != nil {
@@ -282,6 +288,28 @@ func parseCutoff(s string) (time.Time, error) {
 		return t, nil
 	}
 	return time.Time{}, fmt.Errorf("unsupported format")
+}
+
+// detectCompression reads the meta.json sidecar next to the dump and returns
+// the compression field. Falls back to "gzip" when meta is absent or unparseable.
+func detectCompression(ctx context.Context, st storage.Storage, dumpPath string, log logr.Logger) string {
+	metaPath := strings.TrimSuffix(dumpPath, dumpSuffix) + ".meta.json"
+	rc, err := st.Get(ctx, metaPath)
+	if err != nil {
+		log.V(1).Info("meta.json not found, defaulting to gzip", "path", metaPath, "err", err)
+		return "gzip"
+	}
+	defer func() { _ = rc.Close() }()
+	var m meta.MetaFile
+	if err := json.NewDecoder(rc).Decode(&m); err != nil {
+		log.V(1).Info("meta.json decode failed, defaulting to gzip", "err", err)
+		return "gzip"
+	}
+	if m.Compression == "" {
+		return "gzip"
+	}
+	log.Info("detected compression from meta.json", "compression", m.Compression)
+	return m.Compression
 }
 
 func extractTimestamp(p string) time.Time {

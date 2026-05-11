@@ -1,7 +1,6 @@
 package restore
 
 import (
-	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -95,7 +94,7 @@ func (v *restoreVerifier) Verify(ctx context.Context, in verifier.Input) (*meta.
 		return v.failureWith(started, fingerprint, fmt.Errorf("ephemeral DB never became ready: %w", err)), nil
 	}
 
-	plaintext, closer, err := openDecryptedStream(in.DumpPath, in.Identity)
+	plaintext, closer, err := openDecryptedStream(in.DumpPath, in.Identity, in.Compression)
 	if err != nil {
 		return v.failureWith(started, fingerprint, fmt.Errorf("open decrypted stream: %w", err)), nil
 	}
@@ -140,10 +139,10 @@ func (v *restoreVerifier) mismatchWith(started time.Time, fp, summary string) *m
 	}
 }
 
-// openDecryptedStream returns the plaintext (decrypted + gunzipped)
+// openDecryptedStream returns the plaintext (decrypted + decompressed)
 // reader for the dump file, plus a closer that releases all wrapping
 // resources. Caller MUST defer-call closer().
-func openDecryptedStream(path string, id *crypto.EphemeralIdentity) (io.Reader, func(), error) {
+func openDecryptedStream(path string, id *crypto.EphemeralIdentity, compression string) (io.Reader, func(), error) {
 	noop := func() {}
 	f, err := os.Open(path)
 	if err != nil {
@@ -163,16 +162,16 @@ func openDecryptedStream(path string, id *crypto.EphemeralIdentity) (io.Reader, 
 		_ = f.Close()
 		return nil, noop, fmt.Errorf("age decrypt: %w", err)
 	}
-	gz, err := gzip.NewReader(plain)
+	dc, err := meta.NewDecompressor(plain, compression)
 	if err != nil {
 		_ = f.Close()
-		return nil, noop, fmt.Errorf("gunzip: %w", err)
+		return nil, noop, fmt.Errorf("decompress: %w", err)
 	}
 	closer := func() {
-		_ = gz.Close()
+		_ = dc.Close()
 		_ = f.Close()
 	}
-	return gz, closer, nil
+	return dc, closer, nil
 }
 
 // imageOverrideFromSource returns Source.VerificationImage, the

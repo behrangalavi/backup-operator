@@ -1098,13 +1098,13 @@ window.openDestForm = function(secretName) {
     </div>
     <div class="form-group"><label>${tr('form.destination.label.pathPrefix')}</label><input name="pathPrefix" placeholder="${tr('form.destination.placeholder.pathPrefix')}"></div>
     <div id="destTypeFields"></div>
-    <div id="destSFTPTemplate" style="display:none">${sftpFields}</div>
-    <div id="destS3Template" style="display:none">${s3Fields}</div>
     <div class="form-actions">
       <button type="button" class="btn btn-secondary" onclick="closeModal()" title="Discard changes and close this dialog">${tr('common.cancel')}</button>
       <button type="submit" class="btn btn-primary" title="${isEdit ? 'Save the modified destination Secret — the operator picks up changes on the next run' : 'Create the destination Secret — sources can target it via the destinations annotation or pick it up on next run if the source has no allow-list'}">${isEdit ? tr('common.update') : tr('common.create')}</button>
     </div>
-  </form>`);
+  </form>
+  <div id="destSFTPTemplate" style="display:none">${sftpFields}</div>
+  <div id="destS3Template" style="display:none">${s3Fields}</div>`);
 
   if (isEdit) {
     api('/api/destinations/' + secretName).then(d => {

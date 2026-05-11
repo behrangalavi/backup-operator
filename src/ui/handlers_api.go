@@ -137,6 +137,7 @@ func (s *Server) handleAPICreateSource(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, codeConflict, "failed to create: " + sanitizeError(err))
 		return
 	}
+	s.emitMutationEvent(r.Context(), secret, "SourceCreated", fmt.Sprintf("Source %q created via UI", req.Name))
 	s.broadcast(sseEvent{Type: "source_created", Data: req.Name})
 	writeJSON(w, http.StatusCreated, apiResponse{OK: true, Name: secretName})
 }
@@ -182,6 +183,7 @@ func (s *Server) handleAPIUpdateSource(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, codeInternal, "update failed")
 		return
 	}
+	s.emitMutationEvent(r.Context(), existing, "SourceUpdated", fmt.Sprintf("Source %q updated via UI", secretName))
 	s.broadcast(sseEvent{Type: "source_updated", Data: secretName})
 	writeJSON(w, http.StatusOK, apiResponse{OK: true, Name: secretName})
 }
@@ -210,6 +212,7 @@ func (s *Server) handleAPIDeleteSource(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, codeInternal, "delete failed")
 		return
 	}
+	s.emitMutationEvent(r.Context(), existing, "SourceDeleted", fmt.Sprintf("Source %q deleted via UI", secretName))
 	s.broadcast(sseEvent{Type: "source_deleted", Data: secretName})
 	writeJSON(w, http.StatusOK, apiResponse{OK: true})
 }
@@ -374,6 +377,7 @@ func (s *Server) handleAPICreateDestination(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusConflict, codeConflict, "failed to create: " + sanitizeError(err))
 		return
 	}
+	s.emitMutationEvent(r.Context(), secret, "DestinationCreated", fmt.Sprintf("Destination %q created via UI", req.Name))
 	s.broadcast(sseEvent{Type: "destination_created", Data: req.Name})
 	writeJSON(w, http.StatusCreated, apiResponse{OK: true, Name: secretName})
 }
@@ -435,6 +439,7 @@ func (s *Server) handleAPIUpdateDestination(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, codeInternal, "update failed")
 		return
 	}
+	s.emitMutationEvent(r.Context(), existing, "DestinationUpdated", fmt.Sprintf("Destination %q updated via UI", secretName))
 	s.broadcast(sseEvent{Type: "destination_updated", Data: secretName})
 	writeJSON(w, http.StatusOK, apiResponse{OK: true, Name: secretName})
 }
@@ -463,6 +468,7 @@ func (s *Server) handleAPIDeleteDestination(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, codeInternal, "delete failed")
 		return
 	}
+	s.emitMutationEvent(r.Context(), existing, "DestinationDeleted", fmt.Sprintf("Destination %q deleted via UI", secretName))
 	s.broadcast(sseEvent{Type: "destination_deleted", Data: secretName})
 	writeJSON(w, http.StatusOK, apiResponse{OK: true})
 }
@@ -1598,6 +1604,68 @@ func validateCronSchedule(schedule string) string {
 		return "schedule must have exactly 5 fields (minute hour day-of-month month day-of-week)"
 	}
 	return ""
+}
+
+// emitMutationEvent records a Kubernetes Event against the mutated Secret so
+// CRUD operations appear in `kubectl describe secret` and in the audit log
+// served by /api/audit-log. Best-effort — failing to emit must not abort the
+// mutation.
+func (s *Server) emitMutationEvent(ctx context.Context, sec *corev1.Secret, reason, message string) {
+	now := metav1.Now()
+	event := &corev1.Event{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: sec.Name + ".",
+			Namespace:    sec.Namespace,
+		},
+		InvolvedObject: corev1.ObjectReference{
+			Kind:       "Secret",
+			Namespace:  sec.Namespace,
+			Name:       sec.Name,
+			UID:        sec.UID,
+			APIVersion: "v1",
+		},
+		Reason:         reason,
+		Message:        message,
+		Type:           corev1.EventTypeNormal,
+		Source:         corev1.EventSource{Component: "backup-operator-ui"},
+		EventTime:      metav1.NewMicroTime(time.Now()),
+		FirstTimestamp: now,
+		LastTimestamp:  now,
+		Count:          1,
+	}
+	if err := s.cfg.Client.Create(ctx, event); err != nil {
+		s.cfg.Logger.Error(err, "emit mutation event", "reason", reason, "secret", sec.Name)
+	}
+}
+
+// emitConfigMapEvent records a Kubernetes Event against a ConfigMap. Used for
+// settings mutations so they appear in the audit log alongside Secret changes.
+func (s *Server) emitConfigMapEvent(ctx context.Context, cm *corev1.ConfigMap, reason, message string) {
+	now := metav1.Now()
+	event := &corev1.Event{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: cm.Name + ".",
+			Namespace:    cm.Namespace,
+		},
+		InvolvedObject: corev1.ObjectReference{
+			Kind:       "ConfigMap",
+			Namespace:  cm.Namespace,
+			Name:       cm.Name,
+			UID:        cm.UID,
+			APIVersion: "v1",
+		},
+		Reason:         reason,
+		Message:        message,
+		Type:           corev1.EventTypeNormal,
+		Source:         corev1.EventSource{Component: "backup-operator-ui"},
+		EventTime:      metav1.NewMicroTime(time.Now()),
+		FirstTimestamp: now,
+		LastTimestamp:  now,
+		Count:          1,
+	}
+	if err := s.cfg.Client.Create(ctx, event); err != nil {
+		s.cfg.Logger.Error(err, "emit configmap event", "reason", reason, "configmap", cm.Name)
+	}
 }
 
 // periodicRefresh polls Kubernetes for state changes and broadcasts SSE events.

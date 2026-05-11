@@ -19,23 +19,24 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 )
 
-// Required Secret keys: host, username, ssh-private-key.
+// Required Secret keys: host, username, and exactly one of ssh-private-key OR password.
 // Optional: port (default 22), known-hosts, path-prefix.
 const (
-	keyHost       = "host"
-	keyPort       = "port"
-	keyUsername   = "username"
-	keyPrivateKey = "ssh-private-key"
-	keyKnownHosts              = "known-hosts"
-	keyPathPrefix              = "path-prefix"
-	keyInsecureSkipHostVerify  = "insecure-skip-host-verify"
+	keyHost                   = "host"
+	keyPort                   = "port"
+	keyUsername               = "username"
+	keyPrivateKey             = "ssh-private-key"
+	keyPassword               = "password"
+	keyKnownHosts             = "known-hosts"
+	keyPathPrefix             = "path-prefix"
+	keyInsecureSkipHostVerify = "insecure-skip-host-verify"
 )
 
 type sftpStorage struct {
 	name       string
 	addr       string
 	user       string
-	signer     ssh.Signer
+	auths      []ssh.AuthMethod
 	hostKeyCB  ssh.HostKeyCallback
 	pathPrefix string
 	logger     logr.Logger
@@ -50,13 +51,9 @@ func New(name string, data storage.SecretData, logger logr.Logger) (storage.Stor
 	if user == "" {
 		return nil, fmt.Errorf("sftp storage %q: missing %q", name, keyUsername)
 	}
-	pkBytes := data[keyPrivateKey]
-	if len(pkBytes) == 0 {
-		return nil, fmt.Errorf("sftp storage %q: missing %q", name, keyPrivateKey)
-	}
-	signer, err := ssh.ParsePrivateKey(pkBytes)
+	auths, err := buildAuthMethods(name, data)
 	if err != nil {
-		return nil, fmt.Errorf("sftp storage %q: parse private key: %w", name, err)
+		return nil, err
 	}
 
 	port := 22
@@ -78,11 +75,41 @@ func New(name string, data storage.SecretData, logger logr.Logger) (storage.Stor
 		name:       name,
 		addr:       net.JoinHostPort(host, strconv.Itoa(port)),
 		user:       user,
-		signer:     signer,
+		auths:      auths,
 		hostKeyCB:  hostKeyCB,
 		pathPrefix: strings.TrimRight(string(data[keyPathPrefix]), "/"),
 		logger:     logger,
 	}, nil
+}
+
+// buildAuthMethods accepts a destination Secret's data map and returns the
+// ssh.AuthMethod list. Public-key auth is preferred when both are supplied —
+// the password is treated as a fallback, matching how openssh chains methods.
+// Exactly one of the two must be present; neither is a hard error so a typo'd
+// data key can't accidentally produce an unauthenticated config.
+func buildAuthMethods(name string, data storage.SecretData) ([]ssh.AuthMethod, error) {
+	pkBytes := data[keyPrivateKey]
+	password := string(data[keyPassword])
+
+	hasKey := len(pkBytes) > 0
+	hasPwd := password != ""
+	if !hasKey && !hasPwd {
+		return nil, fmt.Errorf("sftp storage %q: missing auth — provide %q or %q",
+			name, keyPrivateKey, keyPassword)
+	}
+
+	var auths []ssh.AuthMethod
+	if hasKey {
+		signer, err := ssh.ParsePrivateKey(pkBytes)
+		if err != nil {
+			return nil, fmt.Errorf("sftp storage %q: parse private key: %w", name, err)
+		}
+		auths = append(auths, ssh.PublicKeys(signer))
+	}
+	if hasPwd {
+		auths = append(auths, ssh.Password(password))
+	}
+	return auths, nil
 }
 
 func (s *sftpStorage) Name() string { return s.name }
@@ -136,7 +163,7 @@ func buildHostKeyCallback(name string, knownHostsData []byte, allowInsecure bool
 func (s *sftpStorage) dial(ctx context.Context) (*ssh.Client, *sftp.Client, error) {
 	cfg := &ssh.ClientConfig{
 		User:            s.user,
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(s.signer)},
+		Auth:            s.auths,
 		HostKeyCallback: s.hostKeyCB,
 		Timeout:         30 * time.Second,
 	}

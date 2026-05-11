@@ -1068,7 +1068,14 @@ window.openDestForm = function(secretName) {
     <div class="form-row"><div class="form-group"><label>${tr('form.destination.label.host')} *</label><input name="data_host" required></div>
       <div class="form-group"><label>${tr('form.destination.label.port')}</label><input name="data_port" placeholder="22"></div></div>
     <div class="form-group"><label>${tr('form.destination.label.username')} *</label><input name="data_username" required></div>
-    <div class="form-group"><label>${tr('form.destination.label.sshKey')}</label><textarea name="data_ssh-private-key" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></div>
+    <div class="form-group"><label>${tr('form.destination.label.authMethod')} *</label>
+      <div style="display:flex;gap:16px;margin-top:4px">
+        <label style="font-weight:normal;cursor:pointer"><input type="radio" name="sftpAuthMethod" value="key" checked onchange="toggleSFTPAuth(this.value)"> ${tr('form.destination.label.authMethodKey')}</label>
+        <label style="font-weight:normal;cursor:pointer"><input type="radio" name="sftpAuthMethod" value="password" onchange="toggleSFTPAuth(this.value)"> ${tr('form.destination.label.authMethodPassword')}</label>
+      </div>
+    </div>
+    <div class="form-group" data-sftp-auth="key"><label>${tr('form.destination.label.sshKey')} *</label><textarea name="data_ssh-private-key" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></div>
+    <div class="form-group" data-sftp-auth="password" style="display:none"><label>${tr('form.destination.label.password')} *</label><input name="data_password" type="password" autocomplete="new-password"></div>
     <div class="form-group"><label>${tr('form.destination.label.knownHosts')}</label><textarea name="data_known-hosts" rows="2" placeholder="ssh-keyscan output"></textarea></div>`;
 
   const s3Fields = `
@@ -1107,6 +1114,18 @@ window.openDestForm = function(secretName) {
       f.pathPrefix.value = d.pathPrefix || '';
       toggleDestFields(d.storageType);
       if (d.data) {
+        // For SFTP destinations, preselect the auth method based on which
+        // sensitive field the API masked. Both fields are masked as '***'
+        // so we treat presence (not value) as the signal. password wins
+        // when both are stored — matches the backend's preference order.
+        if (d.storageType === 'sftp' || d.storageType === 'hetzner-sftp') {
+          const hasPwd = Object.prototype.hasOwnProperty.call(d.data, 'password');
+          const hasKey = Object.prototype.hasOwnProperty.call(d.data, 'ssh-private-key');
+          if (hasPwd && !hasKey) {
+            const r = f.querySelector('input[name="sftpAuthMethod"][value="password"]');
+            if (r) { r.checked = true; toggleSFTPAuth('password'); }
+          }
+        }
         Object.entries(d.data).forEach(([k, v]) => {
           const inp = f.querySelector(`[name="data_${k}"]`);
           if (inp && v !== '***') inp.value = v;
@@ -1127,6 +1146,16 @@ window.toggleDestFields = function(type) {
   }
 };
 
+// Show only the input matching the selected SFTP auth method. The hidden
+// input is left in the DOM so the user can flip back without re-typing
+// during a single form session; submitDestForm drops the unselected
+// method's value before sending so we don't ship both up the wire.
+window.toggleSFTPAuth = function(method) {
+  $$('[data-sftp-auth]').forEach(el => {
+    el.style.display = el.getAttribute('data-sftp-auth') === method ? '' : 'none';
+  });
+};
+
 window.submitDestForm = async function(e, secretName) {
   e.preventDefault();
   const f = e.target;
@@ -1135,11 +1164,29 @@ window.submitDestForm = async function(e, secretName) {
     const key = inp.name.replace('data_', '');
     if (inp.value) data[key] = inp.value;
   });
+  // For SFTP, only ship the auth field the user actually chose. Without
+  // this, switching from key→password during an edit would leave the
+  // previous credential in the Secret because the backend's PUT merges
+  // data rather than replacing it — removeKeys is the explicit drop list.
+  const sType = f.storageType.value;
+  const removeKeys = [];
+  if (sType === 'sftp' || sType === 'hetzner-sftp') {
+    const sel = f.querySelector('input[name="sftpAuthMethod"]:checked');
+    const method = sel ? sel.value : 'key';
+    if (method === 'key') {
+      delete data['password'];
+      removeKeys.push('password');
+    } else {
+      delete data['ssh-private-key'];
+      removeKeys.push('ssh-private-key');
+    }
+  }
   const body = {
     name: f.name.value,
     storageType: f.storageType.value,
     pathPrefix: f.pathPrefix.value,
     data: data,
+    removeKeys: removeKeys,
   };
   try {
     if (secretName) {

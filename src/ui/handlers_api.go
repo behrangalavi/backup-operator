@@ -63,6 +63,12 @@ type destinationRequest struct {
 	StorageType string            `json:"storageType"`
 	PathPrefix  string            `json:"pathPrefix"`
 	Data        map[string]string `json:"data"`
+	// RemoveKeys lists Secret data keys the caller wants explicitly dropped
+	// on update. The merge semantics of PUT mean a missing key in `data`
+	// preserves the existing value; this is the escape hatch when the user
+	// genuinely wants to remove a field (e.g. switching SFTP auth from key
+	// to password — the old ssh-private-key must go).
+	RemoveKeys []string `json:"removeKeys,omitempty"`
 }
 
 type apiResponse struct {
@@ -436,6 +442,9 @@ func (s *Server) handleAPIUpdateDestination(w http.ResponseWriter, r *http.Reque
 			existing.Data = make(map[string][]byte)
 		}
 		existing.Data[k] = []byte(v)
+	}
+	for _, k := range req.RemoveKeys {
+		delete(existing.Data, k)
 	}
 
 	if err := s.cfg.Client.Update(r.Context(), existing); err != nil {

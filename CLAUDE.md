@@ -402,7 +402,8 @@ A typo on a feature-flag annotation falls back to the default rather than reject
 | `host` | **yes** | |
 | `port` | no | Default 22; Hetzner Storage Box uses 23 |
 | `username` | **yes** | |
-| `ssh-private-key` | **yes** | PEM-encoded |
+| `ssh-private-key` | one of | PEM-encoded. Provide this OR `password`. Public-key auth is preferred when both are supplied. |
+| `password` | one of | Plain SFTP password. Provide this OR `ssh-private-key`. Key-based auth is the recommended path; password support is mostly for legacy servers. |
 | `known-hosts` | recommended | Standard `ssh-keyscan` output. Use `[host]:port` for non-22 ports. Without it the connection is **rejected** unless `insecure-skip-host-verify` is set. |
 | `insecure-skip-host-verify` | no | Set to `"true"` to accept any host key when `known-hosts` is absent. Logs an `INSECURE` warning. Use only for initial testing. |
 

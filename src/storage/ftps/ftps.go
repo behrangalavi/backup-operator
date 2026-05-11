@@ -177,20 +177,35 @@ func (s *ftpsStorage) stripPrefix(full string) string {
 }
 
 // mkdirAll creates each segment in turn. jlaffaye/ftp's MakeDir is
-// single-level only — the protocol has no mkdir -p equivalent. Errors are
-// intentionally swallowed: the FTP spec returns the same 550 for both "path
-// already exists" and "permission denied", and we can't tell them apart
-// without a follow-up CWD. If the directory is genuinely uncreatable, the
-// subsequent Stor will fail with a clearer error and the caller surfaces it.
-func mkdirAll(c *ftp.ServerConn, dir string) {
+// single-level only — the protocol has no mkdir -p equivalent. We can't
+// reliably distinguish "already exists" from "permission denied" at the
+// MakeDir level (both come back as 550), so the create error is recorded
+// but a follow-up CWD probes whether the directory is actually usable.
+// CWD success means the path is fine regardless of why MakeDir failed
+// (probably already exists); CWD failure surfaces the real reason —
+// missing parent, no permission, chroot violation, etc. — instead of
+// letting Stor fail later with a misleading "no such file" message.
+func mkdirAll(c *ftp.ServerConn, dir string) error {
 	if dir == "" || dir == "/" || dir == "." {
-		return
+		return nil
 	}
 	parent := path.Dir(dir)
 	if parent != dir && parent != "/" && parent != "." {
-		mkdirAll(c, parent)
+		if err := mkdirAll(c, parent); err != nil {
+			return err
+		}
 	}
-	_ = c.MakeDir(dir)
+	mkErr := c.MakeDir(dir)
+	if mkErr == nil {
+		return nil
+	}
+	// MakeDir failed — could be "already exists" (which is fine) or a
+	// real permission/path problem. CWD distinguishes the two: if we
+	// can change into the directory it exists and is usable.
+	if cdErr := c.ChangeDir(dir); cdErr != nil {
+		return fmt.Errorf("mkdir %s: %w (cwd probe: %v)", dir, mkErr, cdErr)
+	}
+	return nil
 }
 
 func (s *ftpsStorage) Upload(ctx context.Context, p string, r io.Reader) error {
@@ -201,7 +216,9 @@ func (s *ftpsStorage) Upload(ctx context.Context, p string, r io.Reader) error {
 	defer func() { _ = c.Quit() }()
 
 	full := s.full(p)
-	mkdirAll(c, path.Dir(full))
+	if err := mkdirAll(c, path.Dir(full)); err != nil {
+		return err
+	}
 
 	if err := c.Stor(full, r); err != nil {
 		// Best-effort cleanup of any partial file the server may have created.

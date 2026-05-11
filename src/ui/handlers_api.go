@@ -271,9 +271,13 @@ func (s *Server) handleAPISuspendSource(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	evType := "source_resumed"
+	reason := "SourceUpdated"
+	action := "resumed"
 	if body.Suspend {
 		evType = "source_suspended"
+		action = "suspended"
 	}
+	s.emitMutationEvent(r.Context(), existing, reason, fmt.Sprintf("Source %q %s via UI", secretName, action))
 	s.broadcast(sseEvent{Type: evType, Data: secretName})
 	writeJSON(w, http.StatusOK, apiResponse{OK: true, Name: secretName})
 }

@@ -289,6 +289,10 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 			metrics.SetLastRunDuration(src.TargetName, success.DBType,
 				time.Duration(success.DurationSeconds*float64(time.Second)))
 		}
+		if success.DumpDurationSeconds > 0 {
+			metrics.SetLastDumpDuration(src.TargetName, success.DBType,
+				time.Duration(success.DumpDurationSeconds*float64(time.Second)))
+		}
 		// Retention status per destination, captured during the pre-upload
 		// sweep. Every destination's latest meta carries the same Retention
 		// block (the sweep runs once across all destinations), so reading

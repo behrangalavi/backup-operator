@@ -473,7 +473,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	}
 
 	// Phase 2: build meta with destination results, upload to successful destinations.
-	metaBytes, marshalErr := metaJSON(src, metaStats, preStatsError, metaReport, metaVerification, encryptedSize, sha256sum, timestamp, runStart, schemaChangedAt, destResults, restoreVerification, retentionResults)
+	metaBytes, marshalErr := metaJSON(src, metaStats, preStatsError, metaReport, metaVerification, encryptedSize, sha256sum, timestamp, runStart, dumpDuration, schemaChangedAt, destResults, restoreVerification, retentionResults)
 	if marshalErr != nil {
 		// Marshal of basic structs is essentially never expected to fail.
 		// If it does (future schema change adds a non-marshalable field),

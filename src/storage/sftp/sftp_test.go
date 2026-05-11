@@ -87,6 +87,10 @@ func TestBuildAuthMethods_KeyOnly(t *testing.T) {
 	}
 }
 
+// When a password is supplied we register both ssh.Password and
+// ssh.KeyboardInteractive so NAS firmware that only advertises the
+// interactive method (QNAP, Synology) still authenticates with the same
+// password the user typed.
 func TestBuildAuthMethods_PasswordOnly(t *testing.T) {
 	auths, err := buildAuthMethods("test", storage.SecretData{
 		keyPassword: []byte("hunter2"),
@@ -94,8 +98,8 @@ func TestBuildAuthMethods_PasswordOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(auths) != 1 {
-		t.Fatalf("expected exactly 1 auth method (password), got %d", len(auths))
+	if len(auths) != 2 {
+		t.Fatalf("expected 2 auth methods (password + keyboard-interactive), got %d", len(auths))
 	}
 }
 
@@ -111,8 +115,9 @@ func TestBuildAuthMethods_BothPrefersKeyFirst(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(auths) != 2 {
-		t.Fatalf("expected 2 auth methods, got %d", len(auths))
+	// publickey + password + keyboard-interactive
+	if len(auths) != 3 {
+		t.Fatalf("expected 3 auth methods, got %d", len(auths))
 	}
 }
 

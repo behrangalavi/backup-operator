@@ -108,6 +108,19 @@ func buildAuthMethods(name string, data storage.SecretData) ([]ssh.AuthMethod, e
 	}
 	if hasPwd {
 		auths = append(auths, ssh.Password(password))
+		// Some SSH servers (notably QNAP, Synology, and other NAS firmware)
+		// only advertise keyboard-interactive even when the user "set a
+		// password". The challenge handler answers every prompt with the
+		// same password — that's what openssh's password-auth fallback does
+		// internally, and matches what users expect when they typed one
+		// password into the form.
+		auths = append(auths, ssh.KeyboardInteractive(func(_, _ string, questions []string, _ []bool) ([]string, error) {
+			answers := make([]string, len(questions))
+			for i := range answers {
+				answers[i] = password
+			}
+			return answers, nil
+		}))
 	}
 	return auths, nil
 }

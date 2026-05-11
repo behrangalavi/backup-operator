@@ -8,6 +8,7 @@
 package meta
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,6 +21,8 @@ import (
 	"backup-operator/analyzer"
 	"backup-operator/dumper"
 	"backup-operator/storage"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // Run status values used in MetaFile.Status. Empty Status is treated as
@@ -138,6 +141,7 @@ type MetaFile struct {
 	Phase              string           `json:"phase,omitempty"`
 	EncryptedSizeBytes int64            `json:"encryptedSizeBytes,omitempty"`
 	SHA256             string           `json:"sha256,omitempty"`
+	Compression        string           `json:"compression,omitempty"`
 	// SchemaChangedAt is the timestamp of the most recent run where the
 	// schema fingerprint differed from the prior run. Carried forward from
 	// the previous meta when the schema is unchanged, so any single meta
@@ -182,6 +186,25 @@ type MetaFile struct {
 	// SourceDestination is set at read time to indicate which destination
 	// this meta was fetched from. Not persisted in JSON.
 	SourceDestination string `json:"-"`
+}
+
+// IsZstd reports whether this meta's dump was compressed with zstd.
+// Empty Compression field means gzip (backward compatible).
+func (m *MetaFile) IsZstd() bool { return m.Compression == "zstd" }
+
+// NewDecompressor returns a ReadCloser that decompresses data according to
+// the compression field. Empty or "gzip" uses gzip; "zstd" uses zstd.
+// Used by the restore CLI and stream verifier to auto-detect the algorithm
+// from the meta.json sidecar.
+func NewDecompressor(r io.Reader, compression string) (io.ReadCloser, error) {
+	if compression == "zstd" {
+		d, err := zstd.NewReader(r)
+		if err != nil {
+			return nil, err
+		}
+		return d.IOReadCloser(), nil
+	}
+	return gzip.NewReader(r)
 }
 
 // IsFailure reports whether the meta represents a failed run. Empty Status

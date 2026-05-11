@@ -49,13 +49,14 @@ type Verifier interface {
 // struct so adding inputs (e.g. preStats subset for sample mode) does
 // not break implementations.
 type Input struct {
-	Source    *secrets.Source
-	DumpPath  string
-	Identity  *crypto.EphemeralIdentity
-	PreStats  *dumper.Stats
-	DumpRows  map[string]int64 // optional; nil for non-SQL paths
-	StartedAt time.Time
-	Logger    logr.Logger
+	Source      *secrets.Source
+	DumpPath    string
+	Identity    *crypto.EphemeralIdentity
+	PreStats    *dumper.Stats
+	DumpRows    map[string]int64 // optional; nil for non-SQL paths
+	Compression string           // "gzip" (default/empty) or "zstd"
+	StartedAt   time.Time
+	Logger      logr.Logger
 
 	// Phase-2 fields. nil for stream-validate / off — the stream
 	// verifier ignores them, the restore verifier requires them.

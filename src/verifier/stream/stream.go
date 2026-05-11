@@ -14,7 +14,6 @@ package stream
 
 import (
 	"bufio"
-	"compress/gzip"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -70,13 +69,13 @@ func (s *streamVerifier) Verify(ctx context.Context, in verifier.Input) (*meta.R
 	if err != nil {
 		return verifier.FailureResult(s.Mode(), started, fmt.Errorf("age decrypt: %w", err), fingerprint), nil
 	}
-	gz, err := gzip.NewReader(plaintextR)
+	dc, err := meta.NewDecompressor(plaintextR, in.Compression)
 	if err != nil {
-		return verifier.FailureResult(s.Mode(), started, fmt.Errorf("gunzip: %w", err), fingerprint), nil
+		return verifier.FailureResult(s.Mode(), started, fmt.Errorf("decompress: %w", err), fingerprint), nil
 	}
-	defer func() { _ = gz.Close() }()
+	defer func() { _ = dc.Close() }()
 
-	verdict, summary, parseErr := s.parse(ctx, in, gz)
+	verdict, summary, parseErr := s.parse(ctx, in, dc)
 	completed := time.Now().UTC()
 
 	res := &meta.RestoreVerificationResult{

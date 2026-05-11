@@ -36,7 +36,7 @@ func (NoopEventEmitter) Emit(string, string, string) {}
 
 // Pipeline runs one backup of one Source to N Destinations:
 //   1. CollectStats from the live DB (best-effort; missing stats just skip the analyzer step).
-//   2. Dump → gzip → age → temp file (single dump regardless of N destinations).
+//   2. Dump → compress (gzip or zstd) → age → temp file (single dump regardless of N destinations).
 //   3. Fan out the temp file to all destinations in parallel.
 //   4. Write a sidecar meta JSON (unencrypted) with stats + analyzer report.
 //   5. Compare with previous meta to populate analyzer metrics.
@@ -256,7 +256,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 
 	rowCounter := dumper.NewRowCounter(nil, src.DBType) // writer set inside dumpToFile
 	dumpStart := time.Now()
-	encryptedSize, sha256sum, err := p.dumpToFileWithEncryptor(ctx, d, dumpFile, rowCounter, runEncryptor)
+	encryptedSize, sha256sum, err := p.dumpToFileWithEncryptor(ctx, d, dumpFile, rowCounter, runEncryptor, src.Compression)
 	dumpDuration := time.Since(dumpStart)
 	metrics.ObserveDumpDuration(src.TargetName, src.DBType, dumpDuration)
 

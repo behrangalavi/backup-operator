@@ -18,6 +18,7 @@ import (
 	"backup-operator/verifier"
 
 	"github.com/go-logr/logr/testr"
+	"github.com/klauspost/compress/zstd"
 )
 
 // makeEncryptedDump writes a temp file containing
@@ -264,6 +265,75 @@ func TestStream_DecryptFailsWhenIdentityWiped(t *testing.T) {
 	}
 	if res.Error == "" {
 		t.Error("Error must be populated on verifier failure")
+	}
+}
+
+// makeEncryptedDumpZstd is like makeEncryptedDump but uses zstd compression.
+func makeEncryptedDumpZstd(t *testing.T, plaintext []byte) (string, *crypto.EphemeralIdentity) {
+	t.Helper()
+
+	eph, err := crypto.GenerateEphemeralIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := crypto.NewEncryptorWithExtraRecipient(noopEncryptor(t), eph.PublicLine())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	dumpPath := filepath.Join(dir, "dump.sql.gz.age")
+	f, err := os.Create(dumpPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	wc, err := enc.Wrap(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw, err := zstd.NewWriter(wc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := zw.Write(plaintext); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := wc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return dumpPath, eph
+}
+
+func TestStream_PostgresZstdMatch(t *testing.T) {
+	plain := []byte(`-- PostgreSQL database dump
+SET statement_timeout = 0;
+COPY public.users (id, name) FROM stdin;
+1	alice
+2	bob
+\.
+`)
+	dumpPath, eph := makeEncryptedDumpZstd(t, plain)
+	defer eph.Wipe()
+
+	v := New("postgres", testr.New(t))
+	res, err := v.Verify(context.Background(), verifier.Input{
+		Source:      &secrets.Source{TargetName: "x", DBType: "postgres"},
+		DumpPath:    dumpPath,
+		Identity:    eph,
+		Compression: labels.CompressionZstd,
+		PreStats:    &dumper.Stats{Tables: []dumper.TableStats{{Name: "public.users", RowCount: 2}}},
+		StartedAt:   time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if res.Verdict != meta.VerificationMatch {
+		t.Errorf("verdict = %q, want match. summary=%q", res.Verdict, res.Summary)
 	}
 }
 

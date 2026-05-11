@@ -11,24 +11,25 @@ import (
 
 	"backup-operator/crypto"
 	"backup-operator/dumper"
+	"backup-operator/internal/labels"
+
+	"github.com/klauspost/compress/zstd"
 )
 
-func (p *Pipeline) dumpToFile(ctx context.Context, d dumper.Dumper, dumpFile string) (int64, string, error) {
-	return p.dumpToFileWithCounter(ctx, d, dumpFile, nil)
-}
-
-// dumpToFileWithCounter is a thin wrapper that uses the pipeline's default
-// encryptor — kept for backwards compatibility with existing tests and
-// callers that don't need a per-run encryptor.
-func (p *Pipeline) dumpToFileWithCounter(ctx context.Context, d dumper.Dumper, dumpFile string, rc *dumper.RowCounter) (int64, string, error) {
-	return p.dumpToFileWithEncryptor(ctx, d, dumpFile, rc, p.encryptor)
+// newCompressor returns a WriteCloser that compresses data written to it
+// using the specified algorithm ("gzip" or "zstd").
+func newCompressor(w io.Writer, compression string) (io.WriteCloser, error) {
+	if compression == labels.CompressionZstd {
+		return zstd.NewWriter(w)
+	}
+	return gzip.NewWriter(w), nil
 }
 
 // dumpToFileWithEncryptor dumps the database to a temp file while optionally
 // counting rows via the RowCounter, using the supplied Encryptor. Restore-
 // verification supplies a per-run encryptor that includes an extra ephemeral
 // recipient; everything else passes p.encryptor.
-func (p *Pipeline) dumpToFileWithEncryptor(ctx context.Context, d dumper.Dumper, dumpFile string, rc *dumper.RowCounter, encryptor crypto.Encryptor) (int64, string, error) {
+func (p *Pipeline) dumpToFileWithEncryptor(ctx context.Context, d dumper.Dumper, dumpFile string, rc *dumper.RowCounter, encryptor crypto.Encryptor, compression string) (int64, string, error) {
 	f, err := os.Create(dumpFile)
 	if err != nil {
 		return 0, "", fmt.Errorf("create temp dump: %w", err)
@@ -42,12 +43,16 @@ func (p *Pipeline) dumpToFileWithEncryptor(ctx context.Context, d dumper.Dumper,
 	if err != nil {
 		return 0, "", fmt.Errorf("encrypt wrap: %w", err)
 	}
-	gz := gzip.NewWriter(enc)
+	cw, err := newCompressor(enc, compression)
+	if err != nil {
+		_ = enc.Close()
+		return 0, "", fmt.Errorf("compressor init: %w", err)
+	}
 
-	// The row counter sits before gzip so it sees raw dump output.
-	var dumpWriter io.Writer = gz
+	// The row counter sits before compression so it sees raw dump output.
+	var dumpWriter io.Writer = cw
 	if rc != nil {
-		rc.SetWriter(gz)
+		rc.SetWriter(cw)
 		dumpWriter = rc
 	}
 
@@ -55,16 +60,16 @@ func (p *Pipeline) dumpToFileWithEncryptor(ctx context.Context, d dumper.Dumper,
 		if rc != nil {
 			_ = rc.Close()
 		}
-		_ = gz.Close()
+		_ = cw.Close()
 		_ = enc.Close()
 		return 0, "", err
 	}
 	if rc != nil {
 		_ = rc.Close()
 	}
-	if err := gz.Close(); err != nil {
+	if err := cw.Close(); err != nil {
 		_ = enc.Close()
-		return 0, "", fmt.Errorf("gzip close: %w", err)
+		return 0, "", fmt.Errorf("compressor close: %w", err)
 	}
 	if err := enc.Close(); err != nil {
 		return 0, "", fmt.Errorf("age close: %w", err)

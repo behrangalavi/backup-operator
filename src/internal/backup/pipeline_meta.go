@@ -102,9 +102,10 @@ func sortedMetaPaths(objs []storage.Object) []string {
 	return out
 }
 
-func metaJSON(src *secrets.Source, stats *dumper.Stats, statsError string, report *analyzer.Report, verification *meta.DumpVerification, size int64, sha256sum, timestamp string, runStart time.Time, schemaChangedAt time.Time, destResults []meta.DestinationResult, restoreVerification *meta.RestoreVerificationResult, retention []meta.RetentionResult) ([]byte, error) {
+func metaJSON(src *secrets.Source, stats *dumper.Stats, statsError string, report *analyzer.Report, verification *meta.DumpVerification, size int64, sha256sum, timestamp string, runStart time.Time, dumpDuration time.Duration, schemaChangedAt time.Time, destResults []meta.DestinationResult, restoreVerification *meta.RestoreVerificationResult, retention []meta.RetentionResult) ([]byte, error) {
 	completedAt := time.Now().UTC()
 	m := meta.MetaFile{
+		SchemaVersion:       meta.SchemaVersion,
 		Target:              src.TargetName,
 		Timestamp:           timestamp,
 		DBType:              src.DBType,
@@ -114,6 +115,7 @@ func metaJSON(src *secrets.Source, stats *dumper.Stats, statsError string, repor
 		SchemaChangedAt:     schemaChangedAt,
 		CompletedAt:         completedAt,
 		DurationSeconds:     completedAt.Sub(runStart).Seconds(),
+		DumpDurationSeconds: dumpDuration.Seconds(),
 		Stats:               stats,
 		StatsError:          statsError,
 		Report:              report,
@@ -135,6 +137,7 @@ func failureMetaJSON(src *secrets.Source, timestamp, phase string, runStart time
 	}
 	completedAt := time.Now().UTC()
 	m := meta.MetaFile{
+		SchemaVersion:   meta.SchemaVersion,
 		Target:          src.TargetName,
 		Timestamp:       timestamp,
 		DBType:          src.DBType,
@@ -154,12 +157,13 @@ func failureMetaJSON(src *secrets.Source, timestamp, phase string, runStart time
 // to render "this run happened and it broke".
 func fallbackMetaJSON(target, timestamp, dbType, phase string, marshalErr error) []byte {
 	body, err := json.MarshalIndent(meta.MetaFile{
-		Target:    target,
-		Timestamp: timestamp,
-		DBType:    dbType,
-		Status:    meta.StatusFailed,
-		Phase:     phase,
-		Error:     "meta marshal failed: " + marshalErr.Error(),
+		SchemaVersion: meta.SchemaVersion,
+		Target:        target,
+		Timestamp:     timestamp,
+		DBType:        dbType,
+		Status:        meta.StatusFailed,
+		Phase:         phase,
+		Error:         "meta marshal failed: " + marshalErr.Error(),
 	}, "", "  ")
 	if err != nil {
 		// MarshalIndent of strings cannot fail in practice. If it somehow

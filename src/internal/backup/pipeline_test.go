@@ -162,7 +162,7 @@ func TestSortedMetaPaths_NoMetas(t *testing.T) {
 
 func TestMetaJSON_SuccessStatus(t *testing.T) {
 	src := testSource("prod-db", "postgres")
-	m, err := metaJSON(src, nil, "", nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, nil, nil)
+	m, err := metaJSON(src, nil, "", nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, 0, time.Time{}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("metaJSON: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestMetaJSON_SuccessStatus(t *testing.T) {
 func TestMetaJSON_StatsErrorPresent(t *testing.T) {
 	src := testSource("prod-db", "postgres")
 	m, err := metaJSON(src, nil, `connect: failed to connect to "postgres://app:***@db:5432/app": permission denied`,
-		nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, nil, nil)
+		nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, 0, time.Time{}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("metaJSON: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestMetaJSON_WithDestinations(t *testing.T) {
 		{Name: "hetzner", StorageType: "sftp", Status: meta.StatusSuccess},
 		{Name: "aws-s3", StorageType: "s3", Status: meta.StatusFailed, Error: "connection refused"},
 	}
-	m, err := metaJSON(src, nil, "", nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, drs, nil, nil)
+	m, err := metaJSON(src, nil, "", nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, 0, time.Time{}, drs, nil, nil)
 	if err != nil {
 		t.Fatalf("metaJSON: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestMetaJSON_WithRetention(t *testing.T) {
 		{Name: "hetzner", Status: meta.StatusSuccess, DeletedDumps: 2, DeletedMetas: 2},
 		{Name: "aws-s3", Status: meta.StatusFailed, Error: "list: connection refused"},
 	}
-	m, err := metaJSON(src, nil, "", nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, nil, rr)
+	m, err := metaJSON(src, nil, "", nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, 0, time.Time{}, nil, nil, rr)
 	if err != nil {
 		t.Fatalf("metaJSON: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestMetaJSON_WithRestoreVerification(t *testing.T) {
 		EphemeralRecipientFingerprint: "abc1234567890def",
 		DurationSeconds:               1.23,
 	}
-	m, err := metaJSON(src, nil, "", nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, rv, nil)
+	m, err := metaJSON(src, nil, "", nil, nil, 42000, "abc123", "20260501T020000Z", time.Time{}, 0, time.Time{}, nil, rv, nil)
 	if err != nil {
 		t.Fatalf("metaJSON: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestMetaJSON_WithVerification(t *testing.T) {
 			{Name: "users", PreDumpRows: 100, PostDumpRows: 100, DumpRows: 100, Verdict: "match"},
 		},
 	}
-	m, err := metaJSON(src, nil, "", nil, v, 42000, "abc123", "20260501T020000Z", time.Time{}, time.Time{}, nil, nil, nil)
+	m, err := metaJSON(src, nil, "", nil, v, 42000, "abc123", "20260501T020000Z", time.Time{}, 0, time.Time{}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("metaJSON: %v", err)
 	}

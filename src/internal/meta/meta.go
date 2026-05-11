@@ -118,12 +118,18 @@ type RestoreVerificationResult struct {
 	EphemeralRecipientFingerprint string    `json:"ephemeralRecipientFingerprint,omitempty"`
 }
 
+// SchemaVersion identifies the meta.json format version. Increment when
+// fields are added, removed, or renamed so consumers can distinguish old
+// from new metas without guessing.
+const SchemaVersion = 1
+
 // MetaFile is the deserialised representation of a `dump-<ts>.meta.json`.
 //
 // A failure run writes a meta file too, with Status="failed" and no dump
 // alongside it — that's how the UI surfaces failures that never produced
 // a dump (e.g. wrong DB password, unreachable host).
 type MetaFile struct {
+	SchemaVersion      int              `json:"schemaVersion,omitempty"`
 	Target             string           `json:"target"`
 	Timestamp          string           `json:"timestamp"`
 	DBType             string           `json:"dbType"`
@@ -145,9 +151,10 @@ type MetaFile struct {
 	// Timestamp's parsed value, persisted explicitly so callers don't have to
 	// recompute and so legacy metas (where these fields are absent) are
 	// distinguishable from genuinely-zero durations.
-	CompletedAt        time.Time        `json:"completedAt,omitempty"`
-	DurationSeconds    float64          `json:"durationSeconds,omitempty"`
-	Stats              *dumper.Stats    `json:"stats,omitempty"`
+	CompletedAt          time.Time        `json:"completedAt,omitempty"`
+	DurationSeconds      float64          `json:"durationSeconds,omitempty"`
+	DumpDurationSeconds  float64          `json:"dumpDurationSeconds,omitempty"`
+	Stats                *dumper.Stats    `json:"stats,omitempty"`
 	// StatsError records the sanitized message from a failed pre-dump
 	// CollectStats call. Without it, a permission / connect failure on
 	// pg_stat_user_tables (or its MySQL / Mongo equivalents) leaves

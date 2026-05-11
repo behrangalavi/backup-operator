@@ -127,6 +127,17 @@ var (
 		[]string{"target", "db_type"},
 	)
 
+	// Reconstructed from meta.json's DumpDurationSeconds. The
+	// corresponding histogram (dump_duration_seconds) lives in the
+	// short-lived worker process and is never scraped by Prometheus.
+	lastDumpDurationSeconds = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "backup_operator_last_dump_duration_seconds",
+			Help: "Duration of the dump phase in the most recent successful run, reconstructed from meta.json",
+		},
+		[]string{"target", "db_type"},
+	)
+
 	lastSuccessTimestamp = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "backup_operator_last_success_timestamp_seconds",
@@ -270,6 +281,7 @@ func Register(registry prometheus.Registerer) {
 		lastRunAnomalies,
 		lastRunStatus,
 		lastRunDurationSeconds,
+		lastDumpDurationSeconds,
 		lastSuccessTimestamp,
 		analyzerBaselineUnavailable,
 		destinationFailed,
@@ -374,6 +386,13 @@ func SetLastRunDuration(target, dbType string, d time.Duration) {
 	lastRunDurationSeconds.WithLabelValues(target, dbType).Set(d.Seconds())
 }
 
+func SetLastDumpDuration(target, dbType string, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	lastDumpDurationSeconds.WithLabelValues(target, dbType).Set(d.Seconds())
+}
+
 func SetLastSuccess(target, destination string, t time.Time) {
 	lastSuccessTimestamp.WithLabelValues(target, destination).Set(float64(t.Unix()))
 }
@@ -447,6 +466,7 @@ func DeleteTargetMetrics(target string) {
 	lastRunAnomalies.DeleteLabelValues(target)
 	analyzerBaselineUnavailable.DeleteLabelValues(target)
 	lastRunDurationSeconds.DeletePartialMatch(prometheus.Labels{"target": target})
+	lastDumpDurationSeconds.DeletePartialMatch(prometheus.Labels{"target": target})
 	runDurationSeconds.DeletePartialMatch(prometheus.Labels{"target": target})
 	dumpDurationSeconds.DeletePartialMatch(prometheus.Labels{"target": target})
 	uploadDurationSeconds.DeletePartialMatch(prometheus.Labels{"target": target})

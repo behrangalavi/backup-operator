@@ -269,6 +269,8 @@ thead th.sortable:hover { color: var(--text); }
 }
 .form-group select { appearance: none; cursor: pointer; }
 .form-group .hint { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+.form-group .hint.hint-warn { color: var(--warn, #d97706); }
+.form-group .hint code { background: var(--bg-elevated, rgba(255,255,255,0.06)); padding: 1px 4px; border-radius: 3px; font-size: 11px; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .form-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
 .form-section h4 { font-size: 13px; font-weight: 600; color: var(--text-heading); margin-bottom: 12px; }

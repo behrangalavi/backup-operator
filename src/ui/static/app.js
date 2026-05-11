@@ -1076,7 +1076,17 @@ window.openDestForm = function(secretName) {
     </div>
     <div class="form-group" data-sftp-auth="key"><label>${tr('form.destination.label.sshKey')} *</label><textarea name="data_ssh-private-key" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></div>
     <div class="form-group" data-sftp-auth="password" style="display:none"><label>${tr('form.destination.label.password')} *</label><input name="data_password" type="password" autocomplete="new-password"></div>
-    <div class="form-group"><label>${tr('form.destination.label.knownHosts')}</label><textarea name="data_known-hosts" rows="2" placeholder="ssh-keyscan output"></textarea></div>`;
+    <div class="form-group"><label>${tr('form.destination.label.knownHosts')}</label>
+      <textarea name="data_known-hosts" rows="2" placeholder="ssh-keyscan output"></textarea>
+      <div class="hint">${tr('form.destination.hint.knownHosts')}</div>
+    </div>
+    <div class="form-group">
+      <label style="font-weight:normal;cursor:pointer">
+        <input type="checkbox" name="data_insecure-skip-host-verify" value="true">
+        ${tr('form.destination.label.insecureSkipHostVerify')}
+      </label>
+      <div class="hint hint-warn">${tr('form.destination.hint.insecureSkipHostVerify')}</div>
+    </div>`;
 
   const s3Fields = `
     <div class="form-group"><label>${tr('form.destination.label.endpoint')} *</label><input name="data_endpoint" required placeholder="s3.amazonaws.com"></div>
@@ -1128,7 +1138,12 @@ window.openDestForm = function(secretName) {
         }
         Object.entries(d.data).forEach(([k, v]) => {
           const inp = f.querySelector(`[name="data_${k}"]`);
-          if (inp && v !== '***') inp.value = v;
+          if (!inp) return;
+          if (inp.type === 'checkbox') {
+            inp.checked = (v === 'true');
+          } else if (v !== '***') {
+            inp.value = v;
+          }
         });
       }
     }).catch(e => toast(tr('toast.loadFailed', {error: e.message}), 'error'));
@@ -1162,6 +1177,12 @@ window.submitDestForm = async function(e, secretName) {
   const data = {};
   $$('[name^="data_"]', f).forEach(inp => {
     const key = inp.name.replace('data_', '');
+    // Checkboxes carry their value attribute regardless of checked state;
+    // unchecked must mean "drop the key", not "store the literal string".
+    if (inp.type === 'checkbox') {
+      if (inp.checked && inp.value) data[key] = inp.value;
+      return;
+    }
     if (inp.value) data[key] = inp.value;
   });
   // For SFTP, only ship the auth field the user actually chose. Without
@@ -1180,6 +1201,9 @@ window.submitDestForm = async function(e, secretName) {
       delete data['ssh-private-key'];
       removeKeys.push('ssh-private-key');
     }
+    // Checkboxes: if unchecked on edit, explicitly drop the existing key.
+    const skipBox = f.querySelector('input[name="data_insecure-skip-host-verify"]');
+    if (skipBox && !skipBox.checked) removeKeys.push('insecure-skip-host-verify');
   }
   const body = {
     name: f.name.value,

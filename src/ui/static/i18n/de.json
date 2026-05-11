@@ -332,6 +332,7 @@
         "authMethodKey": "SSH-Schlüssel",
         "authMethodPassword": "Passwort",
         "knownHosts": "Known Hosts",
+        "insecureSkipHostVerify": "Host-Key-Verifikation überspringen (nur Testing)",
         "bucket": "Bucket",
         "region": "Region",
         "endpoint": "Endpoint",
@@ -352,6 +353,10 @@
         "sftp": "SFTP",
         "hetznerSftp": "Hetzner Storage Box (SFTP)",
         "s3": "S3 / S3-kompatibel"
+      },
+      "hint": {
+        "knownHosts": "Führe <code>ssh-keyscan -p &lt;Port&gt; -t ed25519,rsa &lt;Host&gt;</code> aus und füge die Ausgabe hier ein. Pflichtfeld, außer 'Host-Key-Verifikation überspringen' ist aktiv.",
+        "insecureSkipHostVerify": "Akzeptiert JEDEN Host-Key — anfällig für MITM. Nur fürs initiale Testen; für Produktion Known Hosts setzen."
       }
     }
   },

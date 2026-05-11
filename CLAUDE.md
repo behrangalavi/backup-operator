@@ -402,7 +402,8 @@ A typo on a feature-flag annotation falls back to the default rather than reject
 | `port` | no | Default 22; Hetzner Storage Box uses 23 |
 | `username` | **yes** | |
 | `ssh-private-key` | **yes** | PEM-encoded |
-| `known-hosts` | recommended | Standard `ssh-keyscan` output. Use `[host]:port` for non-22 ports. Without it the worker logs a loud `INSECURE` warning and uses `InsecureIgnoreHostKey`. |
+| `known-hosts` | recommended | Standard `ssh-keyscan` output. Use `[host]:port` for non-22 ports. Without it the connection is **rejected** unless `insecure-skip-host-verify` is set. |
+| `insecure-skip-host-verify` | no | Set to `"true"` to accept any host key when `known-hosts` is absent. Logs an `INSECURE` warning. Use only for initial testing. |
 
 #### `storage-type: s3`
 
@@ -780,7 +781,7 @@ These same conditions also surface in the operator UI under `/api/alerts` and `#
 | Analyzer baseline unreachable (every destination down at baseline-read time) | Run still succeeds; analyzer just skips the comparison this round | `analyzer_baseline_unavailable{target}=1`, plus per-destination V(1) log lines from the worker. Cleared (back to 0) on the next run that successfully reads any meta. Distinguishes silently from the "first run, no baseline yet" case (which keeps the gauge at 0). |
 | Long-lived operator goroutine panics (refresher, scrubber, UI handler) | `safe.Goroutine` recovers and logs an Error with `phase`, `key`, and the captured stack — the operator pod stays up | Single panic no longer crashes the operator (which would take down all reconcilers + the UI). Used by every long-lived goroutine; trivially auditable via grep `safe.Goroutine`. |
 | `known-hosts` mismatch | `ssh.NewClientConn` fails before any data leaves | Run fails; worker logs the host-key error |
-| `known-hosts` missing | Worker logs `INSECURE` warning, accepts any host key | No automated alert (intentional — the user opted out) |
+| `known-hosts` missing | Connection rejected unless `insecure-skip-host-verify: "true"` is set in destination Secret data | Run fails with descriptive error; set `insecure-skip-host-verify` or populate `known-hosts` via `ssh-keyscan` |
 | Helm upgrade from pre-RecipientReconciler chart | Helm deletes the legacy single `<release>-age` Secret as part of removing it from its manifest set; the new operator pod runs `Bootstrap` on startup which re-materialises the merged Secret from per-recipient Secrets | Brief gap (a few seconds) between Helm-delete and operator-recreate. A CronJob tick that races into the gap fails with `secret not found`; the next tick succeeds. One-time on the first upgrade; subsequent upgrades are gap-free. |
 
 ---

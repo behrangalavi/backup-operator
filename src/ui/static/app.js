@@ -449,18 +449,43 @@ function renderSortControl(list, options) {
 }
 
 // --- Dashboard ---
-async function renderDashboard(loading = true) {
-  if (loading) showLoading();
-  let targets = [], dests = [], jobs = [], healthEntries = [], consistencyIssues = [];
+// Cached slow-probe results so SSE-triggered re-renders don't re-fire the
+// probes on every refresh tick. A separate timer refreshes them in the
+// background, decoupling expensive backend probes from cheap re-renders.
+let _slowProbes = { health: [], consistency: [], lastFetch: 0 };
+async function refreshSlowProbes() {
   try {
-    // Map every result through `|| []` because Go marshals nil slices as
-    // JSON null; without this, .filter / .length crashes on first paint.
-    [targets, dests, jobs, healthEntries, consistencyIssues] = (await Promise.all([
-      api('/api/targets'), api('/api/destinations'), api('/api/jobs'),
+    const [h, c] = await Promise.all([
       api('/api/destination-health').catch(() => []),
       api('/api/consistency-check').catch(() => []),
+    ]);
+    _slowProbes = { health: h || [], consistency: c || [], lastFetch: Date.now() };
+    // Repaint only if the dashboard is the active page when the probes
+    // finish — otherwise the cache is just ready for the next visit.
+    if (currentPage() === 'dashboard') renderDashboard(false);
+  } catch(e) { /* partial data is ok */ }
+}
+
+async function renderDashboard(loading = true) {
+  if (loading) showLoading();
+  let targets = [], dests = [], jobs = [];
+  try {
+    // Render as soon as the fast K8s-API calls return. The slow endpoints
+    // (destination-health, consistency-check) dial every storage backend;
+    // an unreachable destination would otherwise stall the dashboard
+    // behind its 8 s probe timeout × N destinations on every refresh.
+    [targets, dests, jobs] = (await Promise.all([
+      api('/api/targets'), api('/api/destinations'), api('/api/jobs'),
     ])).map(x => x || []);
   } catch(e) { /* partial data is ok */ }
+
+  const healthEntries = _slowProbes.health;
+  const consistencyIssues = _slowProbes.consistency;
+
+  // Kick off a slow-probe refresh in the background when the cache is
+  // stale (>15 s). The dashboard meanwhile renders with whatever the
+  // cache holds; once the refresh lands it re-renders just this page.
+  if (Date.now() - _slowProbes.lastFetch > 15000) refreshSlowProbes();
 
   const ok = targets.filter(t => t.Latest && !t.Latest.status?.includes('fail')).length;
   const failed = targets.filter(t => t.Latest?.status === 'failed').length;
@@ -985,16 +1010,26 @@ window.confirmDeleteSource = async function(secretName) {
   } catch(e) { toast(e.message, 'error'); }
 };
 
+// Cached stats so SSE refreshes don't refire the per-destination probes.
+// Same shape as _slowProbes on the dashboard.
+let _destStatsCache = { stats: [], lastFetch: 0 };
+async function refreshDestStats() {
+  try {
+    const s = await api('/api/destination-stats').catch(() => []);
+    _destStatsCache = { stats: s || [], lastFetch: Date.now() };
+    if (currentPage() === 'destinations') renderDestinations(false);
+  } catch(e) { /* partial data is ok */ }
+}
+
 // --- Destinations ---
 async function renderDestinations(loading = true) {
   if (loading) showLoading();
-  let dests = [], stats = [];
+  let dests = [];
   try {
-    [dests, stats] = (await Promise.all([
-      api('/api/destinations'),
-      api('/api/destination-stats').catch(() => []),
-    ])).map(x => x || []);
+    dests = (await api('/api/destinations')) || [];
   } catch(e) { toast(e.message, 'error'); }
+  const stats = _destStatsCache.stats;
+  if (Date.now() - _destStatsCache.lastFetch > 15000) refreshDestStats();
   const statsByName = {};
   stats.forEach(s => { statsByName[s.name] = s; });
 

@@ -1135,7 +1135,10 @@ func (s *Server) handleAPIDestinationStats(w http.ResponseWriter, r *http.Reques
 				return
 			}
 
-			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+			// Short timeout: this is a live UI probe, not the backup run.
+			// A broken destination must surface fast or the dashboard
+			// blocks behind it on every page-load and SSE refresh.
+			ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 			defer cancel()
 
 			objs, err := st.List(ctx, "")
@@ -1275,7 +1278,8 @@ func (s *Server) handleAPIDestinationHealth(w http.ResponseWriter, r *http.Reque
 				mu.Unlock()
 				return
 			}
-			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+			// Short timeout — see destination-stats handler for rationale.
+			ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 			defer cancel()
 			latest, err := meta.LatestPerTarget(ctx, st)
 			mu.Lock()
@@ -1496,7 +1500,8 @@ func (s *Server) handleAPIConsistencyCheck(w http.ResponseWriter, r *http.Reques
 			if err != nil {
 				return
 			}
-			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+			// Short timeout — see destination-stats handler for rationale.
+			ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 			defer cancel()
 			objs, err := st.List(ctx, "")
 			if err != nil {

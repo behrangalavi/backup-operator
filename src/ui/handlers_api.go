@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -1624,66 +1625,71 @@ func validateCronSchedule(schedule string) string {
 	return ""
 }
 
-// emitMutationEvent records a Kubernetes Event against the mutated Secret so
-// CRUD operations appear in `kubectl describe secret` and in the audit log
-// served by /api/audit-log. Best-effort — failing to emit must not abort the
-// mutation.
-func (s *Server) emitMutationEvent(ctx context.Context, sec *corev1.Secret, reason, message string) {
+// uiReportingInstance returns a stable identifier for this operator pod
+// used as Event.ReportingInstance. K8s validates the field as non-empty
+// whenever EventTime is set, so this falls back gracefully if HOSTNAME
+// (set by the kubelet inside pods) is somehow unavailable.
+func uiReportingInstance() string {
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return "backup-operator-ui"
+}
+
+// emitUIEvent records a Kubernetes Event against any object the UI mutates
+// (Secret, ConfigMap). Best-effort — failing to emit must not abort the
+// mutation. The events.k8s.io/v1 schema requires ReportingController,
+// ReportingInstance, and Action whenever EventTime is set; omitting any of
+// them produces a "Required value" rejection from the API server and the
+// audit trail goes dark.
+func (s *Server) emitUIEvent(ctx context.Context, ref corev1.ObjectReference, reason, message string) {
 	now := metav1.Now()
 	event := &corev1.Event{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: sec.Name + ".",
-			Namespace:    sec.Namespace,
+			GenerateName: ref.Name + ".",
+			Namespace:    ref.Namespace,
 		},
-		InvolvedObject: corev1.ObjectReference{
-			Kind:       "Secret",
-			Namespace:  sec.Namespace,
-			Name:       sec.Name,
-			UID:        sec.UID,
-			APIVersion: "v1",
-		},
-		Reason:         reason,
-		Message:        message,
-		Type:           corev1.EventTypeNormal,
-		Source:         corev1.EventSource{Component: "backup-operator-ui"},
-		EventTime:      metav1.NewMicroTime(time.Now()),
-		FirstTimestamp: now,
-		LastTimestamp:  now,
-		Count:          1,
+		InvolvedObject:      ref,
+		Reason:              reason,
+		Message:             message,
+		Type:                corev1.EventTypeNormal,
+		Source:              corev1.EventSource{Component: "backup-operator-ui"},
+		EventTime:           metav1.NewMicroTime(time.Now()),
+		FirstTimestamp:      now,
+		LastTimestamp:       now,
+		Count:               1,
+		ReportingController: "backup-operator-ui",
+		ReportingInstance:   uiReportingInstance(),
+		Action:              reason, // reasons are already short verb-like ("DestinationUpdated"); double-duty here is fine
 	}
 	if err := s.cfg.Client.Create(ctx, event); err != nil {
-		s.cfg.Logger.Error(err, "emit mutation event", "reason", reason, "secret", sec.Name)
+		s.cfg.Logger.Error(err, "emit ui event", "reason", reason, "kind", ref.Kind, "name", ref.Name)
 	}
+}
+
+// emitMutationEvent records a Kubernetes Event against the mutated Secret so
+// CRUD operations appear in `kubectl describe secret` and in the audit log
+// served by /api/audit-log.
+func (s *Server) emitMutationEvent(ctx context.Context, sec *corev1.Secret, reason, message string) {
+	s.emitUIEvent(ctx, corev1.ObjectReference{
+		Kind:       "Secret",
+		Namespace:  sec.Namespace,
+		Name:       sec.Name,
+		UID:        sec.UID,
+		APIVersion: "v1",
+	}, reason, message)
 }
 
 // emitConfigMapEvent records a Kubernetes Event against a ConfigMap. Used for
 // settings mutations so they appear in the audit log alongside Secret changes.
 func (s *Server) emitConfigMapEvent(ctx context.Context, cm *corev1.ConfigMap, reason, message string) {
-	now := metav1.Now()
-	event := &corev1.Event{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: cm.Name + ".",
-			Namespace:    cm.Namespace,
-		},
-		InvolvedObject: corev1.ObjectReference{
-			Kind:       "ConfigMap",
-			Namespace:  cm.Namespace,
-			Name:       cm.Name,
-			UID:        cm.UID,
-			APIVersion: "v1",
-		},
-		Reason:         reason,
-		Message:        message,
-		Type:           corev1.EventTypeNormal,
-		Source:         corev1.EventSource{Component: "backup-operator-ui"},
-		EventTime:      metav1.NewMicroTime(time.Now()),
-		FirstTimestamp: now,
-		LastTimestamp:  now,
-		Count:          1,
-	}
-	if err := s.cfg.Client.Create(ctx, event); err != nil {
-		s.cfg.Logger.Error(err, "emit configmap event", "reason", reason, "configmap", cm.Name)
-	}
+	s.emitUIEvent(ctx, corev1.ObjectReference{
+		Kind:       "ConfigMap",
+		Namespace:  cm.Namespace,
+		Name:       cm.Name,
+		UID:        cm.UID,
+		APIVersion: "v1",
+	}, reason, message)
 }
 
 // periodicRefresh polls Kubernetes for state changes and broadcasts SSE events.

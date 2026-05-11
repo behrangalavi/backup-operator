@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"backup-operator/internal/labels"
 
@@ -294,29 +293,11 @@ func ageKeyHash(recipient string) string {
 // <recipient>` and the cluster audit log. Best-effort — failing to
 // emit must not abort the operation.
 func (s *Server) emitAgeKeyEvent(ctx context.Context, sec *corev1.Secret, reason, message string) {
-	now := metav1.Now()
-	event := &corev1.Event{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: sec.Name + ".",
-			Namespace:    sec.Namespace,
-		},
-		InvolvedObject: corev1.ObjectReference{
-			Kind:       "Secret",
-			Namespace:  sec.Namespace,
-			Name:       sec.Name,
-			UID:        sec.UID,
-			APIVersion: "v1",
-		},
-		Reason:         reason,
-		Message:        message,
-		Type:           corev1.EventTypeNormal,
-		Source:         corev1.EventSource{Component: "backup-operator-ui"},
-		EventTime:      metav1.NewMicroTime(time.Now()),
-		FirstTimestamp: now,
-		LastTimestamp:  now,
-		Count:          1,
-	}
-	if err := s.cfg.Client.Create(ctx, event); err != nil {
-		s.cfg.Logger.Error(err, "emit age key event", "reason", reason)
-	}
+	s.emitUIEvent(ctx, corev1.ObjectReference{
+		Kind:       "Secret",
+		Namespace:  sec.Namespace,
+		Name:       sec.Name,
+		UID:        sec.UID,
+		APIVersion: "v1",
+	}, reason, message)
 }

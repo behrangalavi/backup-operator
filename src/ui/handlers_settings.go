@@ -121,6 +121,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.emitConfigMapEvent(r.Context(), cm, "SettingsUpdated", "Settings updated via UI")
 	s.broadcast(sseEvent{Type: "settings_updated", Data: "settings"})
 	writeJSON(w, http.StatusOK, settingsResponse{OK: true, Message: "settings saved"})
 }

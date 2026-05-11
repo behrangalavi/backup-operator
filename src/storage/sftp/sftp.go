@@ -26,8 +26,9 @@ const (
 	keyPort       = "port"
 	keyUsername   = "username"
 	keyPrivateKey = "ssh-private-key"
-	keyKnownHosts = "known-hosts"
-	keyPathPrefix = "path-prefix"
+	keyKnownHosts              = "known-hosts"
+	keyPathPrefix              = "path-prefix"
+	keyInsecureSkipHostVerify  = "insecure-skip-host-verify"
 )
 
 type sftpStorage struct {
@@ -67,7 +68,8 @@ func New(name string, data storage.SecretData, logger logr.Logger) (storage.Stor
 		port = parsed
 	}
 
-	hostKeyCB, err := buildHostKeyCallback(name, data[keyKnownHosts], logger)
+	allowInsecure := strings.EqualFold(strings.TrimSpace(string(data[keyInsecureSkipHostVerify])), "true")
+	hostKeyCB, err := buildHostKeyCallback(name, data[keyKnownHosts], allowInsecure, logger)
 	if err != nil {
 		return nil, fmt.Errorf("sftp storage %q: %w", name, err)
 	}
@@ -86,10 +88,11 @@ func New(name string, data storage.SecretData, logger logr.Logger) (storage.Stor
 func (s *sftpStorage) Name() string { return s.name }
 
 // buildHostKeyCallback returns a strict known_hosts-backed callback when the
-// destination Secret supplies a known-hosts blob. When it doesn't, we fall
-// back to InsecureIgnoreHostKey and log loudly — backup payloads are encrypted
-// at rest, but skipping host-key verification still lets a network attacker
-// silently accept (or refuse) uploads.
+// destination Secret supplies a known-hosts blob. When it doesn't, the
+// behaviour depends on allowInsecure: if true, falls back to
+// InsecureIgnoreHostKey and logs a warning; if false, returns an error so
+// misconfigured destinations fail loudly rather than silently accepting any
+// host key.
 //
 // The known-hosts data is a standard ssh-keyscan-style file:
 //
@@ -99,8 +102,12 @@ func (s *sftpStorage) Name() string { return s.name }
 // knownhosts.New only takes file paths, so we materialise the blob into a
 // temp file just long enough to parse it; the resulting callback keeps the
 // hosts table in memory and the file is removed before this function returns.
-func buildHostKeyCallback(name string, knownHostsData []byte, logger logr.Logger) (ssh.HostKeyCallback, error) {
+func buildHostKeyCallback(name string, knownHostsData []byte, allowInsecure bool, logger logr.Logger) (ssh.HostKeyCallback, error) {
 	if len(knownHostsData) == 0 {
+		if !allowInsecure {
+			return nil, fmt.Errorf("no known-hosts supplied and insecure-skip-host-verify is not enabled; " +
+				"provide known-hosts data or set insecure-skip-host-verify: \"true\" in the destination Secret")
+		}
 		logger.Info("INSECURE: no known-hosts supplied; accepting any host key for SFTP destination", "storage", name)
 		return ssh.InsecureIgnoreHostKey(), nil
 	}

@@ -107,13 +107,15 @@ func buildAuthMethods(name string, data storage.SecretData) ([]ssh.AuthMethod, e
 		auths = append(auths, ssh.PublicKeys(signer))
 	}
 	if hasPwd {
-		auths = append(auths, ssh.Password(password))
-		// Some SSH servers (notably QNAP, Synology, and other NAS firmware)
-		// only advertise keyboard-interactive even when the user "set a
-		// password". The challenge handler answers every prompt with the
-		// same password — that's what openssh's password-auth fallback does
-		// internally, and matches what users expect when they typed one
-		// password into the form.
+		// Order matters. QNAP and Synology Dropbear/Mikrotik SSH builds
+		// advertise keyboard-interactive as their primary password method;
+		// when ssh.Password is tried first these servers respond to the
+		// failed password packet with USERAUTH_FAILURE while the client is
+		// still mid-state, manifesting as "unexpected message type 51
+		// (expected 60)" instead of cleanly falling through to the next
+		// method. Putting keyboard-interactive first matches what those
+		// servers actually want and keeps classic ssh.Password as a
+		// fallback for plain openssh servers that don't speak interactive.
 		auths = append(auths, ssh.KeyboardInteractive(func(_, _ string, questions []string, _ []bool) ([]string, error) {
 			answers := make([]string, len(questions))
 			for i := range answers {
@@ -121,6 +123,7 @@ func buildAuthMethods(name string, data storage.SecretData) ([]ssh.AuthMethod, e
 			}
 			return answers, nil
 		}))
+		auths = append(auths, ssh.Password(password))
 	}
 	return auths, nil
 }

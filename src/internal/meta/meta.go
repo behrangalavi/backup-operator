@@ -124,7 +124,7 @@ type RestoreVerificationResult struct {
 // SchemaVersion identifies the meta.json format version. Increment when
 // fields are added, removed, or renamed so consumers can distinguish old
 // from new metas without guessing.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // MetaFile is the deserialised representation of a `dump-<ts>.meta.json`.
 //

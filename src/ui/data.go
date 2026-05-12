@@ -81,12 +81,15 @@ type heatmapCell struct {
 }
 
 // storageDayPoint is one column of the stacked area chart: total
-// encrypted-dump bytes uploaded that day, broken down by db type so
-// the operator sees "Postgres backups dominate" at a glance. Failed
-// runs are excluded — they have no real payload.
+// encrypted-dump bytes uploaded that day, broken down per source
+// (target name). Per-source is more actionable than per-DB-type —
+// operators want to know which specific source is eating storage,
+// not which technology. The frontend hashes target names to stable
+// colours so the same source gets the same colour across reloads.
+// Failed runs are excluded — they have no real payload.
 type storageDayPoint struct {
-	Day     string           `json:"day"`     // YYYY-MM-DD UTC
-	PerType map[string]int64 `json:"perType"` // dbType → bytes
+	Day       string           `json:"day"`       // YYYY-MM-DD UTC
+	PerTarget map[string]int64 `json:"perTarget"` // target → bytes
 }
 
 // anomalyEntry is one event for the stream visualization. Kind and
@@ -497,11 +500,15 @@ func (d *k8sData) fleetHeatmap(ctx context.Context, days int) (*dashboardSummary
 	earliestDay := dayAxis[0]
 
 	rows := make([]heatmapRow, 0, len(sources))
-	// Fleet-wide daily byte totals, keyed by day then dbType so the
-	// frontend can render either a single-series area or a stacked area.
-	bytesByDayType := make(map[string]map[string]int64, days)
+	// Fleet-wide daily byte totals, keyed by day then target name. The
+	// frontend uses these to render a per-source stacked area; with
+	// many sources the stacked area can get visually busy, but
+	// per-source is what operators ask ("which source is growing
+	// fastest?") rather than per-DB-type ("are postgres dumps
+	// dominant?").
+	bytesByDayTarget := make(map[string]map[string]int64, days)
 	for _, d := range dayAxis {
-		bytesByDayType[d] = make(map[string]int64)
+		bytesByDayTarget[d] = make(map[string]int64)
 	}
 	// Anomalies are streamed as a flat list — the frontend buckets per
 	// day at render time. Capped after the loop to keep payload sane.
@@ -569,7 +576,7 @@ func (d *k8sData) fleetHeatmap(ctx context.Context, days int) (*dashboardSummary
 					// (typically 0) wouldn't break the chart but
 					// counting them as 0 in the area chart is the
 					// honest representation.
-					bytesByDayType[day][src.DBType] += m.EncryptedSizeBytes
+					bytesByDayTarget[day][src.TargetName] += m.EncryptedSizeBytes
 					// Duration distribution counts successful runs
 					// only; failures fail-fast (often in seconds)
 					// and would systematically skew the median toward
@@ -635,7 +642,7 @@ func (d *k8sData) fleetHeatmap(ctx context.Context, days int) (*dashboardSummary
 	// them without sorting client-side.
 	storage := make([]storageDayPoint, days)
 	for i, d := range dayAxis {
-		storage[i] = storageDayPoint{Day: d, PerType: bytesByDayType[d]}
+		storage[i] = storageDayPoint{Day: d, PerTarget: bytesByDayTarget[d]}
 	}
 
 	// Anomalies: newest first, cap at 200 so the JSON stays under a

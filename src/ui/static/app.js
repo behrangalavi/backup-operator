@@ -2583,30 +2583,56 @@ function renderVerificationTrend(daily) {
   </svg>`;
 }
 
-// renderStorageGrowth draws a stacked area chart of daily upload bytes
-// per DB type over the heatmap window (30 days). NOT cumulative
+// renderStorageGrowth draws a stacked area chart of daily upload
+// bytes per source over the heatmap window (30 days). NOT cumulative
 // storage — that would require knowing each destination's retention
 // policy and reconciling deletes, which we don't track. "Daily upload
-// volume" is what's actually plotted, and it answers the most common
-// capacity-planning question: "how fast are we ingesting?"
-const STORAGE_GROWTH_COLORS = {
-  postgres: '#5b6eef',
-  mysql:    '#f59e0b',
-  mariadb:  '#ec4899',
-  mongo:    '#10b981',
-  redis:    '#ef4444',
-};
+// volume per source" answers the operationally relevant question:
+// "which source is driving my storage growth?" Per-source is more
+// actionable than per-DB-type for capacity planning — operators know
+// their tech stack, they want to know which workload to investigate.
+//
+// With many sources the stack can get visually busy; that's the
+// trade-off. Hash-based colours stay stable across reloads so the
+// same source always gets the same slice of the rainbow.
+
+// hashHue derives a deterministic 0-359 HSL hue from a string. Same
+// string → same hue across reloads. Avoids the "every reload my
+// chart looks different" problem of random palettes.
+function hashHue(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  }
+  // Bias away from yellow/green range that clashes with the
+  // success/warning UI colours.
+  return ((h % 360) + 360) % 360;
+}
+function colorForTarget(name) {
+  // 65% saturation + 58% lightness sits comfortably on the dark
+  // background without bleaching out, and the HSL spacing means
+  // adjacent stacked layers always look distinct from each other.
+  return `hsl(${hashHue(name)}, 65%, 58%)`;
+}
+
 function renderStorageGrowth(points) {
   const days = (points || []).filter(p => p && p.day);
   if (days.length < 2) {
     return '<div class="chart-empty">' + tr('chart.storageGrowth.empty') + '</div>';
   }
-  // Discover dbTypes that ever appeared in the window so the legend
-  // and stacked layers are deterministic across renders.
-  const typeSet = new Set();
-  days.forEach(d => { if (d.perType) Object.keys(d.perType).forEach(t => { if (d.perType[t] > 0) typeSet.add(t); }); });
-  const types = [...typeSet].sort();
-  if (types.length === 0) {
+  // Discover all targets that contributed any bytes in the window.
+  // Sort by total volume descending so the largest source is at the
+  // bottom of the stack (closest to the x-axis) — that's the
+  // conventional reading order for stacked area, big-stuff-at-bottom.
+  const totalsByTarget = new Map();
+  days.forEach(d => {
+    if (!d.perTarget) return;
+    Object.entries(d.perTarget).forEach(([name, bytes]) => {
+      if (bytes > 0) totalsByTarget.set(name, (totalsByTarget.get(name) || 0) + bytes);
+    });
+  });
+  const targets = [...totalsByTarget.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]);
+  if (targets.length === 0) {
     return '<div class="chart-empty">' + tr('chart.storageGrowth.empty') + '</div>';
   }
 
@@ -2614,9 +2640,11 @@ function renderStorageGrowth(points) {
   const PW = W - ML - MR, PH = H - MT - MB;
   const xs = days.map((_, i) => ML + (i / Math.max(days.length - 1, 1)) * PW);
 
-  // Build cumulative-stack series. y0[i] is the bottom of the stack
-  // for day i, y1 the top. Stacked left-to-right by `types`.
-  const series = types.map(t => days.map(d => (d.perType && d.perType[t]) || 0));
+  // Build cumulative-stack series, biggest-at-bottom (reverse the
+  // targets array for the stack order so the largest layer sits
+  // closest to the axis; legend stays in size-desc order separately).
+  const stackOrder = targets.slice().reverse();
+  const series = stackOrder.map(t => days.map(d => (d.perTarget && d.perTarget[t]) || 0));
   const cumTop = new Array(days.length).fill(0);
   const stacked = series.map(layer => layer.map((v, i) => {
     const top = cumTop[i] + v;
@@ -2628,13 +2656,15 @@ function renderStorageGrowth(points) {
   const y = v => MT + PH - (v / yMax) * PH;
 
   const layers = stacked.map((layer, li) => {
-    const fill = STORAGE_GROWTH_COLORS[types[li]] || '#888';
+    const targetName = stackOrder[li];
+    const fill = colorForTarget(targetName);
+    const total = totalsByTarget.get(targetName) || 0;
     const topPath = layer.map((p, i) => (i === 0 ? 'M' : 'L') + xs[i].toFixed(1) + ',' + y(p.top).toFixed(1)).join(' ');
     const botPath = layer.slice().reverse().map((p, idx) => {
       const i = layer.length - 1 - idx;
       return 'L' + xs[i].toFixed(1) + ',' + y(p.bottom).toFixed(1);
     }).join(' ');
-    return `<path d="${topPath} ${botPath} Z" fill="${fill}" opacity="0.7"><title>${escAttr(types[li])}</title></path>`;
+    return `<path d="${topPath} ${botPath} Z" fill="${fill}" opacity="0.78"><title>${escAttr(targetName + ' — ' + humanBytes(total) + ' in window')}</title></path>`;
   }).join('');
 
   const yTicks = [];
@@ -2649,12 +2679,19 @@ function renderStorageGrowth(points) {
     xTicks.push({ x: xs[idx], label: days[idx].day.slice(5) });
   }
 
-  const legend = types.map(t => `<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;margin-right:10px">
-    <span style="display:inline-block;width:10px;height:10px;background:${STORAGE_GROWTH_COLORS[t] || '#888'};border-radius:2px"></span>${escHTML(t)}
-  </span>`).join('');
+  // Legend in size-desc order so the biggest source is listed first
+  // (matches the chart's bottom-to-top reading order). Click-link to
+  // jump to that target's detail page — the chart becomes a nav
+  // surface too.
+  const legend = targets.map(t => {
+    const color = colorForTarget(t);
+    return `<a href="#/target/${escAttr(t)}" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;margin-right:10px;text-decoration:none;color:var(--text)">
+      <span style="display:inline-block;width:10px;height:10px;background:${color};border-radius:2px"></span>${escHTML(t)}
+    </a>`;
+  }).join('');
 
   return `<div>
-    <svg viewBox="0 0 ${W} ${H}" class="chart-svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Daily upload bytes by DB type">
+    <svg viewBox="0 0 ${W} ${H}" class="chart-svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Daily upload bytes by source">
       ${yTicks.map(t => `<line x1="${ML}" y1="${t.y.toFixed(1)}" x2="${W - MR}" y2="${t.y.toFixed(1)}" class="chart-grid"/><text x="${ML - 6}" y="${(t.y + 4).toFixed(1)}" text-anchor="end" class="chart-axis-text">${escHTML(t.label)}</text>`).join('')}
       ${layers}
       ${xTicks.map(t => `<text x="${t.x.toFixed(1)}" y="${(MT + PH + 18).toFixed(1)}" text-anchor="middle" class="chart-axis-text" style="font-size:10px">${escHTML(t.label)}</text>`).join('')}
@@ -3035,14 +3072,28 @@ function formatNum(n) {
 }
 
 async function renderTargetDetail(name, loading = true) {
-  if (!name) { renderDashboard(); return; }
+  // Empty name shouldn't reach here from a normal click — hash is
+  // `#/target/<name>` and currentParam returns the second segment. If
+  // we got here with no name, the hash was malformed (e.g. someone
+  // typed `#/target/` by hand). Show an explicit error rather than
+  // silently bouncing to Dashboard, so the user can see what went
+  // wrong instead of "I clicked and ended up somewhere else".
+  if (!name) {
+    if (loading) showLoading();
+    content.innerHTML = `<div class="empty-state"><h3>Missing target name in URL</h3>
+      <p>Hash was <code>${escAttr(location.hash)}</code> — expected <code>#/target/&lt;name&gt;</code>.</p>
+      <a href="#/" class="btn btn-secondary">Back to Dashboard</a></div>`;
+    return;
+  }
   if (loading) showLoading();
   let targets = [], runs = [], dests = [], jobs = [];
-  try {
-    [targets, dests, jobs] = (await Promise.all([
-      api('/api/targets'), api('/api/destinations'), api('/api/jobs'),
-    ])).map(x => x || []);
-  } catch(e) { toast(e.message, 'error'); }
+  // fastDataAllSettled keeps a per-URL last-good cache, so a transient
+  // /api/jobs failure doesn't blow away targets and leave us showing
+  // "target not found" for a real target.
+  const got = await fastDataAllSettled(['/api/targets', '/api/destinations', '/api/jobs']);
+  targets = got[0] || [];
+  dests   = got[1] || [];
+  jobs    = got[2] || [];
 
   const target = targets.find(t => t.Name === name);
   if (!target) {

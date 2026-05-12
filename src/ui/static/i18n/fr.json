@@ -474,7 +474,7 @@
     },
     "storageGrowth": {
       "title": "Volume d'envoi quotidien",
-      "sub": "octets de dumps chiffrés par jour, empilés par type de SGBD",
+      "sub": "octets de dumps chiffrés par jour, empilés par source (la plus grosse en bas)",
       "empty": "Pas encore assez d'historique — au moins deux jours nécessaires pour tracer une tendance."
     },
     "anomalyStream": {

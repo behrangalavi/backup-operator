@@ -474,7 +474,7 @@
     },
     "storageGrowth": {
       "title": "Daily Upload Volume",
-      "sub": "encrypted dump bytes per day, stacked by DB type",
+      "sub": "encrypted dump bytes per day, stacked by source (biggest at bottom)",
       "empty": "Not enough run history yet — at least two days needed to plot a trend."
     },
     "anomalyStream": {

@@ -474,7 +474,7 @@
     },
     "storageGrowth": {
       "title": "Tägliches Upload-Volumen",
-      "sub": "verschlüsselte Dump-Bytes pro Tag, gestapelt nach DB-Typ",
+      "sub": "verschlüsselte Dump-Bytes pro Tag, gestapelt nach Source (größte unten)",
       "empty": "Noch nicht genug Run-Historie — mindestens zwei Tage nötig für einen Trend."
     },
     "anomalyStream": {

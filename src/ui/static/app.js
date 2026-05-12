@@ -531,6 +531,16 @@ async function renderDashboard(loading = true) {
       <div class="stat-card"><div class="label">${tr('nav.destinations')}</div><div class="value">${dests.length}</div></div>
       <div class="stat-card"><div class="label">${tr('stat.running')} ${tr('nav.jobs')}</div><div class="value">${running}</div></div>
     </div>
+    <div class="chart-grid-2">
+      <div class="chart-card">
+        <h3>${tr('chart.storageDonut.title')} <span class="chart-card-sub">${tr('chart.storageDonut.sub')}</span></h3>
+        ${renderStorageDonut(_destStatsCache.stats)}
+      </div>
+      <div class="chart-card">
+        <h3>${tr('chart.nextRunGantt.title')} <span class="chart-card-sub">${tr('chart.nextRunGantt.sub')}</span></h3>
+        ${renderNextRunGantt(targets)}
+      </div>
+    </div>
     ${renderStorageByDestination(targets, dests)}
     <div class="table-card">
       <div class="table-card-header">
@@ -2074,6 +2084,127 @@ function isoDate(d) {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return y + '-' + m + '-' + day;
+}
+
+// renderStorageDonut shows actual filesystem usage per destination from
+// /api/destination-stats. Unlike renderStorageByDestination (which
+// extrapolates "current snapshot × destinations"), the donut reflects
+// what's really on disk — counting every retained run, not just the
+// latest. Hovering shows file count and byte total per slice.
+const STORAGE_DONUT_COLORS = [
+  '#5b6eef', '#10b981', '#f59e0b', '#ef4444',
+  '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16',
+];
+function renderStorageDonut(stats) {
+  const entries = (stats || []).filter(s => s && s.totalSizeBytes > 0)
+    .map(s => ({ name: s.name, bytes: s.totalSizeBytes || 0, files: s.totalFiles || 0 }))
+    .sort((a, b) => b.bytes - a.bytes);
+  if (entries.length === 0) {
+    return '<div class="chart-empty">' + tr('chart.storageDonut.empty') + '</div>';
+  }
+  const total = entries.reduce((s, e) => s + e.bytes, 0);
+  const cx = 90, cy = 90, r = 70, rInner = 42;
+  // Start at 12-o'clock; sweep clockwise. SVG arcs are easier if we
+  // accumulate angles as we go.
+  let acc = -Math.PI / 2;
+  const segs = entries.map((e, i) => {
+    const frac = e.bytes / total;
+    const angle = frac * Math.PI * 2;
+    const start = acc;
+    const end = acc + angle;
+    acc = end;
+    const x1 = cx + Math.cos(start) * r,     y1 = cy + Math.sin(start) * r;
+    const x2 = cx + Math.cos(end)   * r,     y2 = cy + Math.sin(end)   * r;
+    const x3 = cx + Math.cos(end)   * rInner, y3 = cy + Math.sin(end)   * rInner;
+    const x4 = cx + Math.cos(start) * rInner, y4 = cy + Math.sin(start) * rInner;
+    const large = angle > Math.PI ? 1 : 0;
+    const color = STORAGE_DONUT_COLORS[i % STORAGE_DONUT_COLORS.length];
+    const pct = (frac * 100).toFixed(1);
+    const path = `M${x1.toFixed(2)},${y1.toFixed(2)} A${r},${r} 0 ${large} 1 ${x2.toFixed(2)},${y2.toFixed(2)} L${x3.toFixed(2)},${y3.toFixed(2)} A${rInner},${rInner} 0 ${large} 0 ${x4.toFixed(2)},${y4.toFixed(2)} Z`;
+    return {
+      path, color, pct, ...e,
+    };
+  });
+  return `<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+    <svg viewBox="0 0 180 180" class="chart-svg" style="max-width:180px;flex:0 0 180px" role="img" aria-label="Storage by destination">
+      ${segs.map(s => `<path d="${s.path}" fill="${s.color}" stroke="var(--bg)" stroke-width="1"><title>${escAttr(s.name)} — ${humanBytes(s.bytes)} (${s.pct}%), ${s.files} files</title></path>`).join('')}
+      <text x="${cx}" y="${cy - 4}" text-anchor="middle" class="chart-axis-text" style="font-size:11px;fill:var(--text-muted)">${tr('chart.storageDonut.total')}</text>
+      <text x="${cx}" y="${cy + 12}" text-anchor="middle" style="font-size:13px;font-weight:600;fill:var(--text)">${humanBytes(total)}</text>
+    </svg>
+    <div style="flex:1;min-width:140px;font-size:12px">
+      ${segs.map(s => `<div style="display:flex;align-items:center;gap:6px;padding:2px 0">
+        <span style="display:inline-block;width:10px;height:10px;background:${s.color};border-radius:2px;flex:0 0 10px"></span>
+        <span style="flex:1;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escAttr(s.name)}">${escHTML(s.name)}</span>
+        <span style="color:var(--text-muted);font-size:11px">${humanBytes(s.bytes)}</span>
+      </div>`).join('')}
+    </div>
+  </div>`;
+}
+
+// renderNextRunGantt plots each target's NextRun on a 24-hour timeline
+// starting at "now". Surfaces thundering-herd peaks (10 targets all
+// scheduled at 02:00) and immediate upcoming work. Bar width is the
+// estimated duration when available (median over last successful runs),
+// minimum 4 px so a 30s backup doesn't disappear. Suspended sources are
+// skipped — they have no nextRun.
+function renderNextRunGantt(targets) {
+  const now = Date.now();
+  const horizonMs = 24 * 3600 * 1000;
+  const rows = (targets || [])
+    .filter(t => !t.Suspended && t.nextRun)
+    .map(t => {
+      const ms = new Date(t.nextRun).getTime();
+      const durSec = (t.Latest && t.Latest.durationSeconds) ||
+                     (t.Latest && t.Latest.encryptedSizeBytes ? 60 : 30);
+      return { name: t.Name, dbType: t.DBType, startMs: ms, durSec };
+    })
+    .filter(r => isFinite(r.startMs) && r.startMs >= now - 60000 && r.startMs < now + horizonMs)
+    .sort((a, b) => a.startMs - b.startMs);
+
+  if (rows.length === 0) {
+    return '<div class="chart-empty">' + tr('chart.nextRunGantt.empty') + '</div>';
+  }
+  const W = 700, rowH = 24, padTop = 24, padBottom = 22, padL = 96, padR = 16;
+  const PW = W - padL - padR;
+  const H = padTop + rows.length * rowH + padBottom;
+  const xPos = ms => padL + ((ms - now) / horizonMs) * PW;
+
+  // Hour-tick lines + labels (every 3h)
+  const ticks = [];
+  for (let h = 0; h <= 24; h += 3) {
+    const t = now + h * 3600 * 1000;
+    ticks.push({ x: xPos(t), label: new Date(t).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) });
+  }
+
+  // Count overlapping bars at any given minute → flag thundering-herd
+  // peaks. Two or more bars whose start time falls within the same
+  // 60-second window get a subtle warning border.
+  const bucketMin = new Map();
+  rows.forEach(r => {
+    const k = Math.floor(r.startMs / 60000);
+    bucketMin.set(k, (bucketMin.get(k) || 0) + 1);
+  });
+
+  const bars = rows.map((r, i) => {
+    const x = xPos(r.startMs);
+    const widthPx = Math.max(4, (r.durSec / 86400) * PW);
+    const y = padTop + i * rowH;
+    const tier = bucketMin.get(Math.floor(r.startMs / 60000)) || 1;
+    const cls = tier > 1 ? 'gantt-bar gantt-bar-peak' : 'gantt-bar';
+    const when = new Date(r.startMs).toLocaleString();
+    const tooltip = `${r.name} (${r.dbType}) — ${when}, est ${fmtDurationShort(r.durSec)}${tier > 1 ? ` — ⚠ ${tier} targets fire in the same minute` : ''}`;
+    return `<g>
+      <text x="${padL - 6}" y="${(y + rowH/2 + 4).toFixed(1)}" text-anchor="end" class="chart-axis-text" style="font-size:11px"><tspan>${escHTML(r.name)}</tspan></text>
+      <rect x="${x.toFixed(1)}" y="${(y + 5).toFixed(1)}" width="${widthPx.toFixed(1)}" height="${(rowH - 10).toFixed(1)}" rx="2" class="${cls}"><title>${escAttr(tooltip)}</title></rect>
+    </g>`;
+  }).join('');
+
+  return `<svg viewBox="0 0 ${W} ${H}" class="chart-svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Upcoming backup runs">
+    ${ticks.map(t => `<line x1="${t.x.toFixed(1)}" y1="${padTop - 4}" x2="${t.x.toFixed(1)}" y2="${(H - padBottom + 4).toFixed(1)}" class="chart-grid"/>
+       <text x="${t.x.toFixed(1)}" y="${(H - padBottom + 16).toFixed(1)}" text-anchor="middle" class="chart-axis-text" style="font-size:10px">${escHTML(t.label)}</text>`).join('')}
+    <line x1="${padL}" y1="${padTop - 4}" x2="${padL}" y2="${(H - padBottom + 4).toFixed(1)}" class="chart-axis"/>
+    ${bars}
+  </svg>`;
 }
 
 // Approximation: each destination receives every target's most recent

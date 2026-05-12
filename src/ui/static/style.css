@@ -347,6 +347,22 @@ thead th.sortable:hover { color: var(--text); }
 .chart-grid-2 .chart-card { margin-bottom: 0; }
 @media (max-width: 1100px) { .chart-grid-2 { grid-template-columns: 1fr; } }
 
+/* Next-Run Gantt bars on the dashboard. The "peak" variant marks two or
+   more backups firing within the same minute — surfaces thundering-herd
+   schedules that the operator can spread via the jitter-minutes
+   annotation. */
+.gantt-bar {
+  fill: var(--accent, #5b6eef);
+  opacity: 0.85;
+  transition: opacity 0.15s;
+}
+.gantt-bar:hover { opacity: 1; }
+.gantt-bar-peak {
+  fill: var(--warning, #f59e0b);
+  stroke: var(--warning, #f59e0b);
+  stroke-width: 1.5;
+}
+
 /* Run-status heatmap (GitHub contributions style). */
 .heatmap-svg { max-height: 180px; }
 rect.hm-cell { transition: filter 0.1s; cursor: pointer; }

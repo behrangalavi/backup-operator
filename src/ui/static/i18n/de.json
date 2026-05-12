@@ -426,6 +426,19 @@
     "removeConfirm": "Empfänger {name} entfernen? Worker-Pods verschlüsseln nicht mehr für diesen Key. Vorhandene Dumps bleiben mit dem zugehörigen Private Key entschlüsselbar.",
     "readOnly": "Nur-Lese-Modus — Änderung von Empfängern deaktiviert."
   },
+  "chart": {
+    "storageDonut": {
+      "title": "Speichernutzung",
+      "sub": "tatsächlich belegte Bytes pro Ziel",
+      "total": "gesamt",
+      "empty": "Noch kein Ziel hat eine Nutzung gemeldet — auf das erste Backup warten."
+    },
+    "nextRunGantt": {
+      "title": "Kommende Runs (24h)",
+      "sub": "Warn-Farbe = mehrere Backups in derselben Minute (jitter-minutes setzen?)",
+      "empty": "Keine geplanten Runs in den nächsten 24 Stunden — alle Quellen pausiert oder außerhalb des Zeitfensters."
+    }
+  },
   "card": {
     "storageByDestination": "Speicher pro Ziel",
     "storageSubtitle": "letzter erfolgreicher Dump pro Target",

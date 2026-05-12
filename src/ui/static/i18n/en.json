@@ -426,6 +426,19 @@
     "removeConfirm": "Remove recipient {name}? Worker pods will no longer encrypt to this key. Existing dumps remain decryptable with the corresponding private key.",
     "readOnly": "Read-only mode — recipient mutation is disabled."
   },
+  "chart": {
+    "storageDonut": {
+      "title": "Storage Usage",
+      "sub": "actual bytes on each destination",
+      "total": "total",
+      "empty": "No destination has reported usage yet — wait for the first backup to land."
+    },
+    "nextRunGantt": {
+      "title": "Upcoming Runs (next 24h)",
+      "sub": "warning colour = multiple backups in the same minute (consider jitter-minutes)",
+      "empty": "No scheduled runs in the next 24 hours — all sources paused or off-window."
+    }
+  },
   "card": {
     "storageByDestination": "Storage by Destination",
     "storageSubtitle": "latest successful dump per target",

@@ -426,6 +426,19 @@
     "removeConfirm": "Supprimer le destinataire {name} ? Les pods worker ne chiffreront plus pour cette clé. Les dumps existants restent déchiffrables avec la clé privée correspondante.",
     "readOnly": "Mode lecture seule — la modification des destinataires est désactivée."
   },
+  "chart": {
+    "storageDonut": {
+      "title": "Utilisation du stockage",
+      "sub": "octets réellement occupés par destination",
+      "total": "total",
+      "empty": "Aucune destination n'a encore rapporté d'utilisation — attendez la première sauvegarde."
+    },
+    "nextRunGantt": {
+      "title": "Prochains lancements (24h)",
+      "sub": "couleur d'alerte = plusieurs sauvegardes dans la même minute (envisager jitter-minutes)",
+      "empty": "Aucun lancement planifié dans les 24 prochaines heures — toutes les sources en pause ou hors fenêtre."
+    }
+  },
   "card": {
     "storageByDestination": "Stockage par destination",
     "storageSubtitle": "dernier dump réussi par cible",

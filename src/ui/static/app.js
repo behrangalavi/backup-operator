@@ -465,11 +465,16 @@ const SLOW_PROBE_TTL_MS = 60000;
 let _slowProbes = { health: [], consistency: [], lastFetch: 0 };
 let _slowFetchInFlight = false;
 
-// Fleet-summary cache (heatmap + storage growth + anomaly stream).
-// All three datasets share a single backend pass and one endpoint —
-// reading meta files once and emitting three projections is much
-// cheaper than three endpoints each iterating the same files.
-let _fleetSummary = { heatmap: [], storage: [], anomalies: [], lastFetch: 0 };
+// Fleet-summary cache (heatmap + storage + anomalies + durations +
+// verification daily pass-rate). All five datasets share a single
+// backend pass and one endpoint — reading meta files once and emitting
+// projections is much cheaper than separate endpoints each iterating
+// the same files.
+let _fleetSummary = {
+  heatmap: [], storage: [], anomalies: [],
+  durations: [], verificationDaily: [],
+  lastFetch: 0,
+};
 let _fleetSummaryInFlight = false;
 async function refreshFleetSummary() {
   if (_fleetSummaryInFlight) return;
@@ -477,10 +482,12 @@ async function refreshFleetSummary() {
   try {
     const r = await api('/api/dashboard/heatmap?days=30').catch(() => ({}));
     _fleetSummary = {
-      heatmap:   (r && r.heatmap)   || [],
-      storage:   (r && r.storage)   || [],
-      anomalies: (r && r.anomalies) || [],
-      lastFetch: Date.now(),
+      heatmap:           (r && r.heatmap)           || [],
+      storage:           (r && r.storage)           || [],
+      anomalies:         (r && r.anomalies)         || [],
+      durations:         (r && r.durations)         || [],
+      verificationDaily: (r && r.verificationDaily) || [],
+      lastFetch:         Date.now(),
     };
     if (currentPage() === 'dashboard') renderDashboard(false);
   } catch(e) { /* partial data is ok */ } finally {
@@ -577,6 +584,16 @@ async function renderDashboard(loading = true) {
       <div class="chart-card">
         <h3>${tr('chart.anomalyStream.title')} <span class="chart-card-sub">${tr('chart.anomalyStream.sub')}</span></h3>
         ${renderAnomalyStream(_fleetSummary.anomalies)}
+      </div>
+    </div>
+    <div class="chart-grid-2">
+      <div class="chart-card">
+        <h3>${tr('chart.durationDist.title')} <span class="chart-card-sub">${tr('chart.durationDist.sub')}</span></h3>
+        ${renderDurationDistribution(_fleetSummary.durations)}
+      </div>
+      <div class="chart-card">
+        <h3>${tr('chart.verifyTrend.title')} <span class="chart-card-sub">${tr('chart.verifyTrend.sub')}</span></h3>
+        ${renderVerificationTrend(_fleetSummary.verificationDaily)}
       </div>
     </div>
     ${renderStorageByDestination(targets, dests)}
@@ -2177,6 +2194,126 @@ function renderStorageDonut(stats) {
       </div>`).join('')}
     </div>
   </div>`;
+}
+
+// renderDurationDistribution draws a horizontal range-bar per target:
+// the bar spans min→max with a vertical tick at the median and a small
+// marker at p95. Sorted by median descending so the slowest targets
+// sit at the top. Spots outliers — "every backup takes <2 min except
+// target X which takes 45 min" — at a glance. Failed runs are
+// excluded server-side (they fail fast and would skew the median to
+// zero); the Count column shows how many successful runs informed the
+// distribution.
+function renderDurationDistribution(stats) {
+  const rows = (stats || []).filter(s => s && s.count > 0).slice(0, 10);
+  if (rows.length === 0) {
+    return '<div class="chart-empty">' + tr('chart.durationDist.empty') + '</div>';
+  }
+  const W = 700, rowH = 22, padTop = 8, padBottom = 22, padL = 140, padR = 60;
+  const PW = W - padL - padR;
+  const H = padTop + rows.length * rowH + padBottom;
+  // Single shared x-axis: 0 → max(max across all targets). Per-target
+  // axes would make outliers invisible (the slow target's bar would
+  // span the same visual length as a fast target's bar).
+  const xMax = rows.reduce((m, r) => Math.max(m, r.max), 1);
+  const xScale = v => padL + (v / xMax) * PW;
+
+  // Hour/min ticks: 5 evenly-spaced labels
+  const xTicks = [];
+  for (let i = 0; i <= 4; i++) {
+    const v = (xMax * i) / 4;
+    xTicks.push({ x: xScale(v), label: fmtDurationShort(v) });
+  }
+
+  const bars = rows.map((r, i) => {
+    const y = padTop + i * rowH;
+    const cy = y + rowH / 2;
+    const x1 = xScale(r.min), x2 = xScale(r.max);
+    const xMed = xScale(r.median), xP95 = xScale(r.p95);
+    return `<g>
+      <a href="#/target/${escAttr(r.target)}" style="cursor:pointer">
+        <text x="${(padL - 8).toFixed(1)}" y="${(cy + 4).toFixed(1)}" text-anchor="end" class="chart-axis-text" style="font-size:11px;fill:var(--accent)">${escHTML(r.target)}</text>
+      </a>
+      <line x1="${x1.toFixed(1)}" y1="${cy.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${cy.toFixed(1)}" stroke="var(--accent, #5b6eef)" stroke-width="3" opacity="0.4" stroke-linecap="round"><title>${escAttr(r.target + ' — min ' + fmtDurationShort(r.min) + ', max ' + fmtDurationShort(r.max) + ', n=' + r.count)}</title></line>
+      <line x1="${xMed.toFixed(1)}" y1="${(cy - 7).toFixed(1)}" x2="${xMed.toFixed(1)}" y2="${(cy + 7).toFixed(1)}" stroke="var(--accent, #5b6eef)" stroke-width="2.5"><title>median ${escAttr(fmtDurationShort(r.median))}</title></line>
+      <circle cx="${xP95.toFixed(1)}" cy="${cy.toFixed(1)}" r="3.5" fill="var(--warning, #f59e0b)" stroke="var(--bg)" stroke-width="1"><title>p95 ${escAttr(fmtDurationShort(r.p95))}</title></circle>
+      <text x="${(W - padR + 6).toFixed(1)}" y="${(cy + 4).toFixed(1)}" class="chart-axis-text" style="font-size:11px">n=${r.count}</text>
+    </g>`;
+  }).join('');
+
+  return `<svg viewBox="0 0 ${W} ${H}" class="chart-svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Run duration distribution per target">
+    ${xTicks.map(t => `<line x1="${t.x.toFixed(1)}" y1="${padTop}" x2="${t.x.toFixed(1)}" y2="${(H - padBottom + 2).toFixed(1)}" class="chart-grid"/><text x="${t.x.toFixed(1)}" y="${(H - padBottom + 14).toFixed(1)}" text-anchor="middle" class="chart-axis-text" style="font-size:10px">${escHTML(t.label)}</text>`).join('')}
+    ${bars}
+  </svg>`;
+}
+
+// renderVerificationTrend plots the daily restore-verification pass
+// rate as a line over the 30-day window. Only runs with a
+// RestoreVerification block contribute to the rate — sources with
+// mode=off (the default) don't count toward the denominator at all,
+// so a day with zero verifier-armed runs renders as a gap. The
+// underlying area shading shows total verifier-armed-run volume so an
+// operator can tell whether a 100% rate is "1 of 1" or "200 of 200".
+function renderVerificationTrend(daily) {
+  const data = (daily || []).filter(d => d && d.day);
+  const armed = data.filter(d => (d.passed + d.failed) > 0);
+  if (armed.length === 0) {
+    return '<div class="chart-empty">' + tr('chart.verifyTrend.empty') + '</div>';
+  }
+  const W = 700, H = 220, ML = 56, MR = 50, MT = 12, MB = 28;
+  const PW = W - ML - MR, PH = H - MT - MB;
+
+  const xs = data.map((_, i) => ML + (i / Math.max(data.length - 1, 1)) * PW);
+  // Two Y axes: left = pass rate 0-100%, right = volume (bar height).
+  const yPct = pct => MT + PH - (pct / 100) * PH;
+  const volMax = Math.max(1, ...data.map(d => d.passed + d.failed));
+  const volH = v => (v / volMax) * (PH * 0.4); // bars take bottom 40% only
+
+  // Volume bars (grey, behind the line)
+  const bars = data.map((d, i) => {
+    const total = d.passed + d.failed;
+    if (total === 0) return '';
+    const h = volH(total);
+    const w = (PW / data.length) * 0.7;
+    const x = xs[i] - w / 2;
+    return `<rect x="${x.toFixed(1)}" y="${(MT + PH - h).toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" fill="var(--text-muted)" opacity="0.15"><title>${escAttr(d.day + ': ' + total + ' verifier-armed run(s)')}</title></rect>`;
+  }).join('');
+
+  // Pass-rate line — gaps where no verifier ran that day. Build path
+  // by walking the array, starting a new sub-path after a gap.
+  let path = '';
+  let inPath = false;
+  data.forEach((d, i) => {
+    const total = d.passed + d.failed;
+    if (total === 0) { inPath = false; return; }
+    const pct = (d.passed / total) * 100;
+    path += (inPath ? ' L' : ' M') + xs[i].toFixed(1) + ',' + yPct(pct).toFixed(1);
+    inPath = true;
+  });
+  const dots = data.map((d, i) => {
+    const total = d.passed + d.failed;
+    if (total === 0) return '';
+    const pct = (d.passed / total) * 100;
+    const color = pct === 100 ? 'var(--success, #10b981)' : (pct >= 80 ? 'var(--warning, #f59e0b)' : 'var(--danger, #ef4444)');
+    return `<circle cx="${xs[i].toFixed(1)}" cy="${yPct(pct).toFixed(1)}" r="3.5" fill="${color}" stroke="var(--bg)" stroke-width="1"><title>${escAttr(d.day + ': ' + pct.toFixed(1) + '% (' + d.passed + '/' + total + ')')}</title></circle>`;
+  }).join('');
+
+  // Y ticks at 0/50/100%
+  const yTicks = [0, 50, 100].map(p => ({ y: yPct(p), label: p + '%' }));
+  // X ticks every 7 days
+  const xTicks = [];
+  for (let i = 0; i < data.length; i += 7) {
+    xTicks.push({ x: xs[i], label: data[i].day.slice(5) });
+  }
+
+  return `<svg viewBox="0 0 ${W} ${H}" class="chart-svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Restore-verification pass rate trend">
+    ${yTicks.map(t => `<line x1="${ML}" y1="${t.y.toFixed(1)}" x2="${(W - MR).toFixed(1)}" y2="${t.y.toFixed(1)}" class="chart-grid"/><text x="${(ML - 6).toFixed(1)}" y="${(t.y + 4).toFixed(1)}" text-anchor="end" class="chart-axis-text" style="font-size:10px">${escHTML(t.label)}</text>`).join('')}
+    ${bars}
+    <path d="${path}" fill="none" stroke="var(--accent, #5b6eef)" stroke-width="2"/>
+    ${dots}
+    ${xTicks.map(t => `<text x="${t.x.toFixed(1)}" y="${(H - MB + 14).toFixed(1)}" text-anchor="middle" class="chart-axis-text" style="font-size:10px">${escHTML(t.label)}</text>`).join('')}
+    <text x="${(W - MR + 6).toFixed(1)}" y="${(MT + PH - volH(volMax) - 4).toFixed(1)}" class="chart-axis-text" style="font-size:9px;opacity:0.6">${escHTML(tr('chart.verifyTrend.volume', {n: volMax}))}</text>
+  </svg>`;
 }
 
 // renderStorageGrowth draws a stacked area chart of daily upload bytes

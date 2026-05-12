@@ -459,6 +459,17 @@
       "sub": "schema changes, table drops, row-count collapses — red = critical, amber = warning, blue = info",
       "empty": "No anomalies detected. Either everything looks normal, or analyzer is disabled on every source.",
       "moreTargets": "…and {count} more targets with anomalies (open the per-target page for the full picture)"
+    },
+    "durationDist": {
+      "title": "Run Duration by Target",
+      "sub": "min ↔ max range, vertical mark = median, dot = p95 — slowest targets at the top",
+      "empty": "No successful runs with duration data yet."
+    },
+    "verifyTrend": {
+      "title": "Restore-Verification Pass Rate (30 days)",
+      "sub": "% of verifier-armed runs whose decrypt+parse succeeded each day — grey bars show daily volume",
+      "empty": "No verifier-armed runs in the window. Set restore-verification-mode on a source to start collecting this.",
+      "volume": "max {n}/day"
     }
   },
   "card": {

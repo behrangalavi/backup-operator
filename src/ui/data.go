@@ -27,14 +27,40 @@ type dataSource interface {
 	fleetHeatmap(ctx context.Context, days int) (*dashboardSummary, error)
 }
 
-// dashboardSummary bundles the three "across the fleet" datasets the
-// dashboard needs in one round-trip. All three are derived from the
-// same per-target run history scan, so paying for it once is much
-// cheaper than three endpoints reading the same meta.json files.
+// dashboardSummary bundles every "across the fleet" dataset the
+// dashboard needs in one round-trip. Each projection is derived from
+// the same per-target run history scan, so paying for the meta-file
+// reads once instead of five separate endpoints.
 type dashboardSummary struct {
-	Heatmap   []heatmapRow      `json:"heatmap"`
-	Storage   []storageDayPoint `json:"storage"`
-	Anomalies []anomalyEntry    `json:"anomalies"`
+	Heatmap           []heatmapRow            `json:"heatmap"`
+	Storage           []storageDayPoint       `json:"storage"`
+	Anomalies         []anomalyEntry          `json:"anomalies"`
+	Durations         []durationStat          `json:"durations"`
+	VerificationDaily []verificationDayPoint  `json:"verificationDaily"`
+}
+
+// durationStat is one bar in the per-target duration distribution
+// chart. Only counts successful runs over the window — failures fail
+// fast and would skew the median toward zero.
+type durationStat struct {
+	Target string  `json:"target"`
+	DBType string  `json:"dbType"`
+	Count  int     `json:"count"`
+	Median float64 `json:"median"`
+	P95    float64 `json:"p95"`
+	Min    float64 `json:"min"`
+	Max    float64 `json:"max"`
+}
+
+// verificationDayPoint feeds the restore-verification pass-rate
+// trend. Passed counts runs whose restoreVerification.verdict =
+// "match"; Failed counts everything else (mismatch, skipped, error).
+// Runs without a verification block (mode=off) aren't counted at
+// all — only verification-armed runs contribute to the pass rate.
+type verificationDayPoint struct {
+	Day    string `json:"day"`
+	Passed int    `json:"passed"`
+	Failed int    `json:"failed"`
 }
 
 // heatmapRow is one lane in the dashboard's fleet heatmap. Days is
@@ -463,6 +489,15 @@ func (d *k8sData) fleetHeatmap(ctx context.Context, days int) (*dashboardSummary
 	// day at render time. Capped after the loop to keep payload sane.
 	var anomalies []anomalyEntry
 
+	// Verification: per-day pass/fail counters fleet-wide. Only runs
+	// with a RestoreVerification block contribute; runs with mode=off
+	// are excluded from both numerator and denominator.
+	verifPassed := make(map[string]int, days)
+	verifFailed := make(map[string]int, days)
+	// Duration distribution: per-target raw duration list, summarised
+	// post-loop into median/p95/min/max.
+	durationsByTarget := make(map[string][]float64, len(sources))
+
 	for _, src := range sources {
 		row := heatmapRow{
 			Target: src.TargetName,
@@ -517,6 +552,25 @@ func (d *k8sData) fleetHeatmap(ctx context.Context, days int) (*dashboardSummary
 					// counting them as 0 in the area chart is the
 					// honest representation.
 					bytesByDayType[day][src.DBType] += m.EncryptedSizeBytes
+					// Duration distribution counts successful runs
+					// only; failures fail-fast (often in seconds)
+					// and would systematically skew the median toward
+					// zero. DurationSeconds == 0 = legacy meta from
+					// before that field existed.
+					if m.DurationSeconds > 0 {
+						durationsByTarget[src.TargetName] = append(durationsByTarget[src.TargetName], m.DurationSeconds)
+					}
+				}
+				// Restore-verification: count whenever the run has a
+				// RestoreVerification block, regardless of success/
+				// failure. A failed dump can still have produced (and
+				// failed) a verification attempt; both are signal.
+				if m.RestoreVerification != nil {
+					if m.RestoreVerification.Verdict == meta.VerificationMatch {
+						verifPassed[day]++
+					} else {
+						verifFailed[day]++
+					}
 				}
 				// Analyzer anomalies are attached to the run's Report.
 				// Capture each one as a stream entry; the frontend
@@ -575,10 +629,47 @@ func (d *k8sData) fleetHeatmap(ctx context.Context, days int) (*dashboardSummary
 		anomalies = anomalies[:200]
 	}
 
+	// Duration stats per target — median + p95 + min + max. Sort the
+	// per-target slice once, compute percentiles inline (Go has no
+	// stdlib percentile so this is just an index lookup on the
+	// sorted slice — bounded by Count which is at most ~days for a
+	// daily backup).
+	durations := make([]durationStat, 0, len(durationsByTarget))
+	for _, src := range sources {
+		vals := durationsByTarget[src.TargetName]
+		if len(vals) == 0 {
+			continue
+		}
+		sort.Float64s(vals)
+		median := vals[len(vals)/2]
+		// p95 index: round up so a single sample reports itself as p95.
+		p95idx := int(float64(len(vals)-1) * 0.95)
+		durations = append(durations, durationStat{
+			Target: src.TargetName,
+			DBType: src.DBType,
+			Count:  len(vals),
+			Median: median,
+			P95:    vals[p95idx],
+			Min:    vals[0],
+			Max:    vals[len(vals)-1],
+		})
+	}
+	sort.Slice(durations, func(i, j int) bool { return durations[i].Median > durations[j].Median })
+
+	// Verification pass-rate: emit one point per day in axis order so
+	// the line chart has stable X-coords. Zero/zero days contribute a
+	// (0,0) sample — the frontend treats them as gaps.
+	verification := make([]verificationDayPoint, days)
+	for i, d := range dayAxis {
+		verification[i] = verificationDayPoint{Day: d, Passed: verifPassed[d], Failed: verifFailed[d]}
+	}
+
 	return &dashboardSummary{
-		Heatmap:   rows,
-		Storage:   storage,
-		Anomalies: anomalies,
+		Heatmap:           rows,
+		Storage:           storage,
+		Anomalies:         anomalies,
+		Durations:         durations,
+		VerificationDaily: verification,
 	}, nil
 }
 

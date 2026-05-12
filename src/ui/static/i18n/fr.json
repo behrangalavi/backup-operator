@@ -459,6 +459,17 @@
       "sub": "changements de schéma, tables disparues, chutes du nombre de lignes — rouge = critique, orange = avertissement, bleu = info",
       "empty": "Aucune anomalie détectée. Soit tout va bien, soit l'analyseur est désactivé sur toutes les sources.",
       "moreTargets": "…et {count} cibles supplémentaires avec des anomalies (voir la page de la cible pour le détail)"
+    },
+    "durationDist": {
+      "title": "Durée des lancements par cible",
+      "sub": "plage min ↔ max, trait vertical = médiane, point = p95 — les plus lentes en haut",
+      "empty": "Pas encore de runs réussis avec des données de durée."
+    },
+    "verifyTrend": {
+      "title": "Taux de réussite de la vérification (30 jours)",
+      "sub": "% de runs avec vérification dont le décrypt+parse a réussi chaque jour — barres grises = volume quotidien",
+      "empty": "Aucun run avec vérification dans la fenêtre. Active restore-verification-mode sur une source.",
+      "volume": "max {n}/jour"
     }
   },
   "card": {

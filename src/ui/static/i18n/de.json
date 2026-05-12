@@ -459,6 +459,17 @@
       "sub": "Schema-Änderungen, fehlende Tabellen, Row-Count-Drops — rot = kritisch, orange = warnung, blau = info",
       "empty": "Keine Anomalien gefunden. Entweder alles normal, oder Analyzer ist auf allen Quellen aus.",
       "moreTargets": "…und {count} weitere Targets mit Anomalien (für Details auf die Target-Seite gehen)"
+    },
+    "durationDist": {
+      "title": "Lauf-Dauer pro Target",
+      "sub": "min ↔ max Spanne, vertikaler Strich = Median, Punkt = p95 — langsamste oben",
+      "empty": "Noch keine erfolgreichen Runs mit Dauer-Daten."
+    },
+    "verifyTrend": {
+      "title": "Restore-Verifikation Pass-Rate (30 Tage)",
+      "sub": "% der verifikations-armierten Runs deren Decrypt+Parse pro Tag geklappt hat — graue Balken = tägliches Volumen",
+      "empty": "Keine verifikations-armierten Runs im Zeitfenster. Setze restore-verification-mode auf einer Source.",
+      "volume": "max {n}/Tag"
     }
   },
   "card": {

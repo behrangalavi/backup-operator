@@ -113,6 +113,14 @@ func New(name string, data storage.SecretData, logger logr.Logger) (storage.Stor
 			ServerName:         host,
 			InsecureSkipVerify: skipVerify, //nolint:gosec // opt-in via Secret data; warned in logs
 			MinVersion:         tls.VersionTLS12,
+			// ClientSessionCache lets the data channel resume the control
+			// channel's TLS session. QNAP, Pure-FTPd, vsftpd's "require_ssl_reuse"
+			// (default on), and most other strict FTPS servers reject a fresh
+			// data-channel handshake as a session-hijacking countermeasure —
+			// without resumption, login succeeds but every STOR/RETR fails as
+			// soon as PASV opens the data socket. The cache is per-instance
+			// so each destination gets its own session pool.
+			ClientSessionCache: tls.NewLRUClientSessionCache(32),
 		},
 		pathPrefix: strings.TrimRight(string(data[keyPathPrefix]), "/"),
 		logger:     logger,

@@ -651,6 +651,16 @@ function buildHourlyActivity(jobs) {
   return buckets;
 }
 
+// _heroLastShown persists the last-displayed value of each hero
+// counter across renders. Without this, every re-render rebuilds the
+// DOM (content.innerHTML = ...), the data-value attribute is wiped,
+// and animateCounter reads 0 → tweens 0→N on every SSE tick. The
+// user sees the panel "load again and again". With this cache we
+// seed the new DOM with the last-known value so the animation runs
+// 0→N exactly once (on first paint), then stays put until the value
+// actually changes.
+const _heroLastShown = { runs24h: 0, failed24h: 0, runningNow: 0, destinations: 0 };
+
 // renderHeroPanel is the full-bleed status-at-a-glance card at the
 // top of the dashboard. Replaces the five flat stat cards with:
 //   - a status header that's green / amber / red based on 24h health
@@ -713,19 +723,19 @@ function renderHeroPanel(targets, dests, jobs) {
     </div>
     <div class="hero-metrics">
       <div class="hero-metric">
-        <div class="hero-metric-value" data-counter="runs24h">${runs24h}</div>
+        <div class="hero-metric-value" data-counter="runs24h" data-value="${_heroLastShown.runs24h}">${_heroLastShown.runs24h}</div>
         <div class="hero-metric-label">${tr('hero.metric.runs24h')}</div>
       </div>
       <div class="hero-metric ${failed24h > 0 ? 'hero-metric-bad' : ''}">
-        <div class="hero-metric-value" data-counter="failed24h">${failed24h}</div>
+        <div class="hero-metric-value" data-counter="failed24h" data-value="${_heroLastShown.failed24h}">${_heroLastShown.failed24h}</div>
         <div class="hero-metric-label">${tr('hero.metric.failed24h')}</div>
       </div>
       <div class="hero-metric ${runningNow > 0 ? 'hero-metric-running' : ''}">
-        <div class="hero-metric-value" data-counter="runningNow">${runningNow}</div>
+        <div class="hero-metric-value" data-counter="runningNow" data-value="${_heroLastShown.runningNow}">${_heroLastShown.runningNow}</div>
         <div class="hero-metric-label">${tr('hero.metric.running')}${runningNow > 0 ? ' <span class="hero-metric-pulse"></span>' : ''}</div>
       </div>
       <div class="hero-metric">
-        <div class="hero-metric-value" data-counter="destinations">${destCount}</div>
+        <div class="hero-metric-value" data-counter="destinations" data-value="${_heroLastShown.destinations}">${_heroLastShown.destinations}</div>
         <div class="hero-metric-label">${tr('hero.metric.destinations')}</div>
       </div>
     </div>
@@ -921,16 +931,22 @@ async function renderDashboard(loading = true) {
       </table>
     </div>` : ''}`;
 
-  // Animate hero counters from their previous value to the new one.
-  // The data-value attribute persists across renders so SSE-triggered
-  // updates tween from "now showing 47" → "now showing 48" smoothly
-  // instead of snapping. Computed values match the renderHeroPanel
-  // logic above.
+  // Animate hero counters from the previously-displayed value to the
+  // new one. _heroLastShown holds what was actually on screen before
+  // the re-render — without that cache, every SSE tick wiped the
+  // data-value attribute and tweened 0→N over and over. Computed
+  // values mirror the renderHeroPanel logic above.
   const buckets24h = buildHourlyActivity(jobs);
-  animateCounter($('[data-counter="runs24h"]'),     buckets24h.reduce((s, b) => s + b.ok + b.failed + b.running, 0));
-  animateCounter($('[data-counter="failed24h"]'),   buckets24h.reduce((s, b) => s + b.failed, 0));
-  animateCounter($('[data-counter="runningNow"]'),  jobs.filter(j => j.status === 'running').length);
-  animateCounter($('[data-counter="destinations"]'), dests.length);
+  const targets24h = {
+    runs24h:      buckets24h.reduce((s, b) => s + b.ok + b.failed + b.running, 0),
+    failed24h:    buckets24h.reduce((s, b) => s + b.failed, 0),
+    runningNow:   jobs.filter(j => j.status === 'running').length,
+    destinations: dests.length,
+  };
+  for (const key of Object.keys(targets24h)) {
+    animateCounter($(`[data-counter="${key}"]`), targets24h[key]);
+    _heroLastShown[key] = targets24h[key];
+  }
 }
 
 // --- Sources ---

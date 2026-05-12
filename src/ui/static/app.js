@@ -465,20 +465,26 @@ const SLOW_PROBE_TTL_MS = 60000;
 let _slowProbes = { health: [], consistency: [], lastFetch: 0 };
 let _slowFetchInFlight = false;
 
-// Fleet heatmap cache. Same shape and rationale as _slowProbes —
-// /api/dashboard/heatmap iterates every target's run history per
-// destination; we don't want to re-fire that on every SSE tick.
-let _heatmap = { rows: [], lastFetch: 0 };
-let _heatmapInFlight = false;
-async function refreshHeatmap() {
-  if (_heatmapInFlight) return;
-  _heatmapInFlight = true;
+// Fleet-summary cache (heatmap + storage growth + anomaly stream).
+// All three datasets share a single backend pass and one endpoint —
+// reading meta files once and emitting three projections is much
+// cheaper than three endpoints each iterating the same files.
+let _fleetSummary = { heatmap: [], storage: [], anomalies: [], lastFetch: 0 };
+let _fleetSummaryInFlight = false;
+async function refreshFleetSummary() {
+  if (_fleetSummaryInFlight) return;
+  _fleetSummaryInFlight = true;
   try {
-    const rows = await api('/api/dashboard/heatmap?days=30').catch(() => []);
-    _heatmap = { rows: rows || [], lastFetch: Date.now() };
+    const r = await api('/api/dashboard/heatmap?days=30').catch(() => ({}));
+    _fleetSummary = {
+      heatmap:   (r && r.heatmap)   || [],
+      storage:   (r && r.storage)   || [],
+      anomalies: (r && r.anomalies) || [],
+      lastFetch: Date.now(),
+    };
     if (currentPage() === 'dashboard') renderDashboard(false);
   } catch(e) { /* partial data is ok */ } finally {
-    _heatmapInFlight = false;
+    _fleetSummaryInFlight = false;
   }
 }
 async function refreshSlowProbes() {
@@ -520,7 +526,7 @@ async function renderDashboard(loading = true) {
   // unreachable destination's 8 s timeout × N dests would fire every
   // 10 s SSE tick.
   if (loading && Date.now() - _slowProbes.lastFetch > SLOW_PROBE_TTL_MS) refreshSlowProbes();
-  if (loading && Date.now() - _heatmap.lastFetch > SLOW_PROBE_TTL_MS) refreshHeatmap();
+  if (loading && Date.now() - _fleetSummary.lastFetch > SLOW_PROBE_TTL_MS) refreshFleetSummary();
 
   const ok = targets.filter(t => t.Latest && !t.Latest.status?.includes('fail')).length;
   const failed = targets.filter(t => t.Latest?.status === 'failed').length;
@@ -561,7 +567,17 @@ async function renderDashboard(loading = true) {
     </div>
     <div class="chart-card" style="margin-bottom:16px">
       <h3>${tr('chart.fleetHeatmap.title')} <span class="chart-card-sub">${tr('chart.fleetHeatmap.sub')}</span></h3>
-      ${renderFleetHeatmap(_heatmap.rows)}
+      ${renderFleetHeatmap(_fleetSummary.heatmap)}
+    </div>
+    <div class="chart-grid-2">
+      <div class="chart-card">
+        <h3>${tr('chart.storageGrowth.title')} <span class="chart-card-sub">${tr('chart.storageGrowth.sub')}</span></h3>
+        ${renderStorageGrowth(_fleetSummary.storage)}
+      </div>
+      <div class="chart-card">
+        <h3>${tr('chart.anomalyStream.title')} <span class="chart-card-sub">${tr('chart.anomalyStream.sub')}</span></h3>
+        ${renderAnomalyStream(_fleetSummary.anomalies)}
+      </div>
     </div>
     ${renderStorageByDestination(targets, dests)}
     <div class="table-card">
@@ -2160,6 +2176,164 @@ function renderStorageDonut(stats) {
         <span style="color:var(--text-muted);font-size:11px">${humanBytes(s.bytes)}</span>
       </div>`).join('')}
     </div>
+  </div>`;
+}
+
+// renderStorageGrowth draws a stacked area chart of daily upload bytes
+// per DB type over the heatmap window (30 days). NOT cumulative
+// storage — that would require knowing each destination's retention
+// policy and reconciling deletes, which we don't track. "Daily upload
+// volume" is what's actually plotted, and it answers the most common
+// capacity-planning question: "how fast are we ingesting?"
+const STORAGE_GROWTH_COLORS = {
+  postgres: '#5b6eef',
+  mysql:    '#f59e0b',
+  mariadb:  '#ec4899',
+  mongo:    '#10b981',
+  redis:    '#ef4444',
+};
+function renderStorageGrowth(points) {
+  const days = (points || []).filter(p => p && p.day);
+  if (days.length < 2) {
+    return '<div class="chart-empty">' + tr('chart.storageGrowth.empty') + '</div>';
+  }
+  // Discover dbTypes that ever appeared in the window so the legend
+  // and stacked layers are deterministic across renders.
+  const typeSet = new Set();
+  days.forEach(d => { if (d.perType) Object.keys(d.perType).forEach(t => { if (d.perType[t] > 0) typeSet.add(t); }); });
+  const types = [...typeSet].sort();
+  if (types.length === 0) {
+    return '<div class="chart-empty">' + tr('chart.storageGrowth.empty') + '</div>';
+  }
+
+  const W = 700, H = 220, ML = 60, MR = 16, MT = 12, MB = 28;
+  const PW = W - ML - MR, PH = H - MT - MB;
+  const xs = days.map((_, i) => ML + (i / Math.max(days.length - 1, 1)) * PW);
+
+  // Build cumulative-stack series. y0[i] is the bottom of the stack
+  // for day i, y1 the top. Stacked left-to-right by `types`.
+  const series = types.map(t => days.map(d => (d.perType && d.perType[t]) || 0));
+  const cumTop = new Array(days.length).fill(0);
+  const stacked = series.map(layer => layer.map((v, i) => {
+    const top = cumTop[i] + v;
+    const out = { bottom: cumTop[i], top };
+    cumTop[i] = top;
+    return out;
+  }));
+  const yMax = niceCeil(Math.max(1, ...cumTop) * 1.1);
+  const y = v => MT + PH - (v / yMax) * PH;
+
+  const layers = stacked.map((layer, li) => {
+    const fill = STORAGE_GROWTH_COLORS[types[li]] || '#888';
+    const topPath = layer.map((p, i) => (i === 0 ? 'M' : 'L') + xs[i].toFixed(1) + ',' + y(p.top).toFixed(1)).join(' ');
+    const botPath = layer.slice().reverse().map((p, idx) => {
+      const i = layer.length - 1 - idx;
+      return 'L' + xs[i].toFixed(1) + ',' + y(p.bottom).toFixed(1);
+    }).join(' ');
+    return `<path d="${topPath} ${botPath} Z" fill="${fill}" opacity="0.7"><title>${escAttr(types[li])}</title></path>`;
+  }).join('');
+
+  const yTicks = [];
+  for (let i = 0; i <= 4; i++) {
+    const v = (yMax * i) / 4;
+    yTicks.push({ y: y(v), label: humanBytes(v) });
+  }
+  const nX = Math.min(6, days.length);
+  const xTicks = [];
+  for (let i = 0; i < nX; i++) {
+    const idx = Math.round((days.length - 1) * (i / (nX - 1)));
+    xTicks.push({ x: xs[idx], label: days[idx].day.slice(5) });
+  }
+
+  const legend = types.map(t => `<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;margin-right:10px">
+    <span style="display:inline-block;width:10px;height:10px;background:${STORAGE_GROWTH_COLORS[t] || '#888'};border-radius:2px"></span>${escHTML(t)}
+  </span>`).join('');
+
+  return `<div>
+    <svg viewBox="0 0 ${W} ${H}" class="chart-svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Daily upload bytes by DB type">
+      ${yTicks.map(t => `<line x1="${ML}" y1="${t.y.toFixed(1)}" x2="${W - MR}" y2="${t.y.toFixed(1)}" class="chart-grid"/><text x="${ML - 6}" y="${(t.y + 4).toFixed(1)}" text-anchor="end" class="chart-axis-text">${escHTML(t.label)}</text>`).join('')}
+      ${layers}
+      ${xTicks.map(t => `<text x="${t.x.toFixed(1)}" y="${(MT + PH + 18).toFixed(1)}" text-anchor="middle" class="chart-axis-text" style="font-size:10px">${escHTML(t.label)}</text>`).join('')}
+    </svg>
+    <div style="padding:4px 8px 0;color:var(--text-muted)">${legend}</div>
+  </div>`;
+}
+
+// renderAnomalyStream shows analyzer anomalies as colored dots on a
+// 30-day horizontal timeline. Each dot is one anomaly; severity drives
+// the colour. Hover for kind/subject/detail; click on the timestamp
+// jumps to the target detail page where the full Report is rendered.
+const ANOMALY_SEVERITY_COLOR = {
+  critical: 'var(--danger, #ef4444)',
+  warning:  'var(--warning, #f59e0b)',
+  info:     'var(--accent, #5b6eef)',
+};
+function renderAnomalyStream(items) {
+  const list = items || [];
+  if (list.length === 0) {
+    return '<div class="chart-empty" style="padding:32px 16px">' + tr('chart.anomalyStream.empty') + '</div>';
+  }
+  // Compute a 30-day axis ending today UTC. Anomalies older than that
+  // are ignored (the cap on the server is also 30 days, but we don't
+  // assume).
+  const dayMs = 24 * 3600 * 1000;
+  const endUTC = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
+  const startUTC = endUTC - 29 * dayMs;
+  const W = 700, H = 200, ML = 60, MR = 16, MT = 16, MB = 28;
+  const PW = W - ML - MR, PH = H - MT - MB;
+
+  // Group anomalies by target row. Limit rows to 8 to keep the chart
+  // legible; "+ N more" footer if truncated.
+  const byTarget = new Map();
+  list.forEach(a => {
+    if (!byTarget.has(a.target)) byTarget.set(a.target, []);
+    byTarget.get(a.target).push(a);
+  });
+  const targets = [...byTarget.keys()].sort();
+  const visible = targets.slice(0, 8);
+  const truncatedCount = targets.length - visible.length;
+
+  const rowH = visible.length > 0 ? PH / visible.length : PH;
+
+  const xs = ts => {
+    const t = new Date(ts).getTime();
+    const clamped = Math.max(startUTC, Math.min(endUTC + dayMs, t));
+    return ML + ((clamped - startUTC) / (30 * dayMs)) * PW;
+  };
+
+  // Week ticks
+  const xTicks = [];
+  for (let i = 0; i < 5; i++) {
+    const t = startUTC + i * 7 * dayMs;
+    xTicks.push({ x: ML + ((t - startUTC) / (30 * dayMs)) * PW, label: new Date(t).toISOString().slice(5, 10) });
+  }
+  // Today marker
+  const todayX = xs(new Date().toISOString());
+
+  const rowsSvg = visible.map((tgt, ri) => {
+    const cy = MT + (ri + 0.5) * rowH;
+    const dots = byTarget.get(tgt).map(a => {
+      const cx = xs(a.time);
+      const color = ANOMALY_SEVERITY_COLOR[a.severity] || ANOMALY_SEVERITY_COLOR.info;
+      const tt = `${a.target} · ${a.kind}${a.subject ? ' · ' + a.subject : ''}\n${new Date(a.time).toLocaleString()}${a.detail ? '\n' + a.detail : ''}`;
+      return `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="4" fill="${color}" stroke="var(--bg)" stroke-width="1"><title>${escAttr(tt)}</title></circle>`;
+    }).join('');
+    return `<g>
+      <a href="#/target/${escAttr(tgt)}" style="cursor:pointer">
+        <text x="${(ML - 6).toFixed(1)}" y="${(cy + 4).toFixed(1)}" text-anchor="end" class="chart-axis-text" style="font-size:11px;fill:var(--accent)">${escHTML(tgt)}</text>
+      </a>
+      <line x1="${ML}" y1="${cy.toFixed(1)}" x2="${(W - MR).toFixed(1)}" y2="${cy.toFixed(1)}" class="chart-grid"/>
+      ${dots}
+    </g>`;
+  }).join('');
+
+  return `<div>
+    <svg viewBox="0 0 ${W} ${H}" class="chart-svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Analyzer anomaly timeline">
+      ${xTicks.map(t => `<text x="${t.x.toFixed(1)}" y="${(MT - 4).toFixed(1)}" text-anchor="middle" class="chart-axis-text" style="font-size:10px">${escHTML(t.label)}</text>`).join('')}
+      <line x1="${todayX.toFixed(1)}" y1="${MT}" x2="${todayX.toFixed(1)}" y2="${(H - MB).toFixed(1)}" stroke="var(--accent, #5b6eef)" stroke-width="1" stroke-dasharray="2,3" opacity="0.5"/>
+      ${rowsSvg}
+    </svg>
+    ${truncatedCount > 0 ? `<div style="padding:4px 8px;color:var(--text-muted);font-size:11px">${tr('chart.anomalyStream.moreTargets', {count: truncatedCount})}</div>` : ''}
   </div>`;
 }
 

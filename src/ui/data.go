@@ -24,7 +24,17 @@ type dataSource interface {
 	listTargets(ctx context.Context) ([]targetSummary, error)
 	target(ctx context.Context, name string) (*targetDetail, error)
 	estimateDuration(ctx context.Context, name string, n int) (time.Duration, int, error)
-	fleetHeatmap(ctx context.Context, days int) ([]heatmapRow, error)
+	fleetHeatmap(ctx context.Context, days int) (*dashboardSummary, error)
+}
+
+// dashboardSummary bundles the three "across the fleet" datasets the
+// dashboard needs in one round-trip. All three are derived from the
+// same per-target run history scan, so paying for it once is much
+// cheaper than three endpoints reading the same meta.json files.
+type dashboardSummary struct {
+	Heatmap   []heatmapRow      `json:"heatmap"`
+	Storage   []storageDayPoint `json:"storage"`
+	Anomalies []anomalyEntry    `json:"anomalies"`
 }
 
 // heatmapRow is one lane in the dashboard's fleet heatmap. Days is
@@ -41,6 +51,44 @@ type heatmapCell struct {
 	Day    string `json:"day"`    // YYYY-MM-DD UTC
 	Status string `json:"status"` // "ok" | "failed" | "mixed" | "none"
 	Runs   int    `json:"runs"`
+}
+
+// storageDayPoint is one column of the stacked area chart: total
+// encrypted-dump bytes uploaded that day, broken down by db type so
+// the operator sees "Postgres backups dominate" at a glance. Failed
+// runs are excluded — they have no real payload.
+type storageDayPoint struct {
+	Day     string           `json:"day"`     // YYYY-MM-DD UTC
+	PerType map[string]int64 `json:"perType"` // dbType → bytes
+}
+
+// anomalyEntry is one event for the stream visualization. Kind and
+// Subject come straight from analyzer.Anomaly; severity is derived
+// from kind so the frontend can colour without keeping its own map.
+type anomalyEntry struct {
+	Target   string `json:"target"`
+	DBType   string `json:"dbType"`
+	Time     string `json:"time"` // RFC3339 UTC of the run that produced this
+	Day      string `json:"day"`  // YYYY-MM-DD (denormalized for trivial bucketing in JS)
+	Kind     string `json:"kind"`
+	Subject  string `json:"subject"`
+	Detail   string `json:"detail"`
+	Severity string `json:"severity"` // "critical" | "warning" | "info"
+}
+
+// anomalySeverity classifies a single Kind into one of three buckets
+// used for colour coding. The mapping is conservative — only the kinds
+// that signal "data is missing or shrunk" are critical; schema/charset
+// changes are usually intentional and rate info.
+func anomalySeverity(kind string) string {
+	switch kind {
+	case "size-collapse", "table-disappeared", "dump-empty-content":
+		return "critical"
+	case "row-count-drop", "row-drop":
+		return "warning"
+	default:
+		return "info"
+	}
 }
 
 // targetSummary is what the index page needs per source.
@@ -361,11 +409,14 @@ func (d *k8sData) target(ctx context.Context, name string) (*targetDetail, error
 	return &targetDetail{Source: src, Destinations: dests, Runs: runs}, nil
 }
 
-// fleetHeatmap aggregates per-target, per-day status for the last `days`
-// days across all targets. Reuses runsCache so a dashboard hit doesn't
-// double-dial destinations the per-target detail page already cached.
-// Background-refresh via the same getOrRefreshAsync pattern as
-// latestCache — a dashboard render never blocks on storage probes.
+// fleetHeatmap aggregates per-target, per-day status, per-day storage
+// bytes, and analyzer anomalies for the last `days` days. All three
+// derive from the same per-target run scan — paying for the meta-file
+// reads once instead of three times. Reuses runsCache so a dashboard
+// hit doesn't double-dial destinations the per-target detail page
+// already cached. Background-refresh via the same getOrRefreshAsync
+// pattern as latestCache — a dashboard render never blocks on
+// storage probes.
 //
 // Status classification per day:
 //   - "ok"     : at least one run, no failures
@@ -374,7 +425,7 @@ func (d *k8sData) target(ctx context.Context, name string) (*targetDetail, error
 //   - "none"   : no run recorded for that day
 //
 // Cap `days` at 90 to bound the per-target work; defaults to 30.
-func (d *k8sData) fleetHeatmap(ctx context.Context, days int) ([]heatmapRow, error) {
+func (d *k8sData) fleetHeatmap(ctx context.Context, days int) (*dashboardSummary, error) {
 	if days <= 0 {
 		days = 30
 	}
@@ -402,6 +453,16 @@ func (d *k8sData) fleetHeatmap(ctx context.Context, days int) ([]heatmapRow, err
 	earliestDay := dayAxis[0]
 
 	rows := make([]heatmapRow, 0, len(sources))
+	// Fleet-wide daily byte totals, keyed by day then dbType so the
+	// frontend can render either a single-series area or a stacked area.
+	bytesByDayType := make(map[string]map[string]int64, days)
+	for _, d := range dayAxis {
+		bytesByDayType[d] = make(map[string]int64)
+	}
+	// Anomalies are streamed as a flat list — the frontend buckets per
+	// day at render time. Capped after the loop to keep payload sane.
+	var anomalies []anomalyEntry
+
 	for _, src := range sources {
 		row := heatmapRow{
 			Target: src.TargetName,
@@ -450,14 +511,35 @@ func (d *k8sData) fleetHeatmap(ctx context.Context, days int) ([]heatmapRow, err
 					failed[day]++
 				} else {
 					ok[day]++
+					// Bytes only count for successful runs. Failures
+					// have no real payload — including their size
+					// (typically 0) wouldn't break the chart but
+					// counting them as 0 in the area chart is the
+					// honest representation.
+					bytesByDayType[day][src.DBType] += m.EncryptedSizeBytes
+				}
+				// Analyzer anomalies are attached to the run's Report.
+				// Capture each one as a stream entry; the frontend
+				// renders them as dots on a timeline.
+				if m.Report != nil {
+					for _, a := range m.Report.Anomalies {
+						anomalies = append(anomalies, anomalyEntry{
+							Target:   src.TargetName,
+							DBType:   src.DBType,
+							Time:     ts.UTC().Format(time.RFC3339),
+							Day:      day,
+							Kind:     a.Kind,
+							Subject:  a.Subject,
+							Detail:   a.Detail,
+							Severity: anomalySeverity(a.Kind),
+						})
+					}
 				}
 			}
-			// One destination's run history is enough for the
-			// heatmap — every destination should hold the same set
-			// of runs minus inconsistencies (which the consistency
-			// panel already surfaces). Picking the first cached/
-			// reachable one keeps the loop O(targets), not
-			// O(targets × destinations).
+			// One destination's run history is enough — every dest
+			// should hold the same set of runs modulo inconsistencies
+			// (already surfaced by the consistency panel). Keeps the
+			// loop O(targets), not O(targets × destinations).
 			break
 		}
 
@@ -476,7 +558,28 @@ func (d *k8sData) fleetHeatmap(ctx context.Context, days int) ([]heatmapRow, err
 		rows = append(rows, row)
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Target < rows[j].Target })
-	return rows, nil
+
+	// Materialise storage points in day order so the frontend can plot
+	// them without sorting client-side.
+	storage := make([]storageDayPoint, days)
+	for i, d := range dayAxis {
+		storage[i] = storageDayPoint{Day: d, PerType: bytesByDayType[d]}
+	}
+
+	// Anomalies: newest first, cap at 200 so the JSON stays under a
+	// few hundred KiB even on busy fleets. A 30-day timeline visualises
+	// fine with that many; older entries are still on the per-target
+	// detail page.
+	sort.Slice(anomalies, func(i, j int) bool { return anomalies[i].Time > anomalies[j].Time })
+	if len(anomalies) > 200 {
+		anomalies = anomalies[:200]
+	}
+
+	return &dashboardSummary{
+		Heatmap:   rows,
+		Storage:   storage,
+		Anomalies: anomalies,
+	}, nil
 }
 
 func (d *k8sData) listSourceSecrets(ctx context.Context) ([]*secrets.Source, error) {

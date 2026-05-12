@@ -448,6 +448,17 @@
         "failed": "alle Runs gefailt",
         "none": "kein Run"
       }
+    },
+    "storageGrowth": {
+      "title": "Tägliches Upload-Volumen",
+      "sub": "verschlüsselte Dump-Bytes pro Tag, gestapelt nach DB-Typ",
+      "empty": "Noch nicht genug Run-Historie — mindestens zwei Tage nötig für einen Trend."
+    },
+    "anomalyStream": {
+      "title": "Analyzer-Anomalien (30 Tage)",
+      "sub": "Schema-Änderungen, fehlende Tabellen, Row-Count-Drops — rot = kritisch, orange = warnung, blau = info",
+      "empty": "Keine Anomalien gefunden. Entweder alles normal, oder Analyzer ist auf allen Quellen aus.",
+      "moreTargets": "…und {count} weitere Targets mit Anomalien (für Details auf die Target-Seite gehen)"
     }
   },
   "card": {

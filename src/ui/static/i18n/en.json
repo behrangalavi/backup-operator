@@ -448,6 +448,17 @@
         "failed": "all runs failed",
         "none": "no run"
       }
+    },
+    "storageGrowth": {
+      "title": "Daily Upload Volume",
+      "sub": "encrypted dump bytes per day, stacked by DB type",
+      "empty": "Not enough run history yet — at least two days needed to plot a trend."
+    },
+    "anomalyStream": {
+      "title": "Analyzer Anomalies (last 30 days)",
+      "sub": "schema changes, table drops, row-count collapses — red = critical, amber = warning, blue = info",
+      "empty": "No anomalies detected. Either everything looks normal, or analyzer is disabled on every source.",
+      "moreTargets": "…and {count} more targets with anomalies (open the per-target page for the full picture)"
     }
   },
   "card": {

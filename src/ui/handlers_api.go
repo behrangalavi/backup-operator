@@ -1492,13 +1492,13 @@ func (s *Server) handleAPIFleetHeatmap(w http.ResponseWriter, r *http.Request) {
 			days = n
 		}
 	}
-	rows, err := s.data.fleetHeatmap(r.Context(), days)
+	summary, err := s.data.fleetHeatmap(r.Context(), days)
 	if err != nil {
 		s.cfg.Logger.Error(err, "fleet heatmap")
 		writeError(w, http.StatusInternalServerError, codeInternal, "internal error")
 		return
 	}
-	writeJSON(w, http.StatusOK, rows)
+	writeJSON(w, http.StatusOK, summary)
 }
 
 // --- Backup consistency check ---

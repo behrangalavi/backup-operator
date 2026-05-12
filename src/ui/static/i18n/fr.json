@@ -448,6 +448,17 @@
         "failed": "tous échoués",
         "none": "aucun run"
       }
+    },
+    "storageGrowth": {
+      "title": "Volume d'envoi quotidien",
+      "sub": "octets de dumps chiffrés par jour, empilés par type de SGBD",
+      "empty": "Pas encore assez d'historique — au moins deux jours nécessaires pour tracer une tendance."
+    },
+    "anomalyStream": {
+      "title": "Anomalies d'analyse (30 jours)",
+      "sub": "changements de schéma, tables disparues, chutes du nombre de lignes — rouge = critique, orange = avertissement, bleu = info",
+      "empty": "Aucune anomalie détectée. Soit tout va bien, soit l'analyseur est désactivé sur toutes les sources.",
+      "moreTargets": "…et {count} cibles supplémentaires avec des anomalies (voir la page de la cible pour le détail)"
     }
   },
   "card": {

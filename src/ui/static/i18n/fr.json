@@ -602,7 +602,7 @@
     "alertsLoadFailed": "Impossible de charger les alertes : {error}. L'évaluateur local n'est peut-être pas encore initialisé — attendre la première sauvegarde."
   },
   "consistency": {
-    "hint": "Sauvegardes présentes dans certaines destinations mais absentes d'autres.",
+    "hint": "Sauvegardes présentes sur certaines destinations mais manquantes sur d'autres, depuis que les deux destinations reçoivent la cible. Cause typique : une destination a silencieusement rejeté l'envoi tandis que l'autre l'a accepté. Les runs antérieurs à l'ajout d'une destination ne sont pas signalés.",
     "andMore": "…et {count} de plus"
   },
   "auditPage": {

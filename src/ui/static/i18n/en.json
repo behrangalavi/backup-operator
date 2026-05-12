@@ -602,7 +602,7 @@
     "alertsLoadFailed": "Could not fetch alerts: {error}. The local evaluator may not be initialized yet — wait for the first backup to complete."
   },
   "consistency": {
-    "hint": "Backups found in some destinations but missing from others.",
+    "hint": "Runs that landed on some destinations but are missing from others, since both destinations started receiving this target. A missing upload is the typical cause — the slow destination silently dropped that backup while the fast one accepted it. Runs older than a destination's onboarding are not flagged.",
     "andMore": "…and {count} more"
   },
   "auditPage": {

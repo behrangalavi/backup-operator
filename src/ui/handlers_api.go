@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1583,13 +1584,24 @@ func (s *Server) handleAPIConsistencyCheck(w http.ResponseWriter, r *http.Reques
 			continue
 		}
 
-		// Collect all timestamps for this target across all destinations
+		// Per-destination earliest timestamp for THIS target. A destination
+		// added later (or repointed to a new target) legitimately won't
+		// hold runs older than its own onboarding — flagging those as
+		// "missing from <new-dest>" would just be noise after every dest
+		// addition. earliest[destName] == "" means the destination has no
+		// run for this target at all; that's a different problem
+		// (configuration / permission) and we surface it separately.
+		earliestPerDest := make(map[string]string, len(relevantDests))
 		allTS := map[string]bool{}
 		for _, dr := range relevantDests {
 			for key := range dr.timestamps {
-				if strings.HasPrefix(key, src.Name+"@") {
-					ts := strings.TrimPrefix(key, src.Name+"@")
-					allTS[ts] = true
+				if !strings.HasPrefix(key, src.Name+"@") {
+					continue
+				}
+				ts := strings.TrimPrefix(key, src.Name+"@")
+				allTS[ts] = true
+				if cur, ok := earliestPerDest[dr.name]; !ok || ts < cur {
+					earliestPerDest[dr.name] = ts
 				}
 			}
 		}
@@ -1599,11 +1611,19 @@ func (s *Server) handleAPIConsistencyCheck(w http.ResponseWriter, r *http.Reques
 			for _, dr := range relevantDests {
 				if dr.timestamps[src.Name+"@"+ts] {
 					present = append(present, dr.name)
-				} else {
-					missing = append(missing, dr.name)
+					continue
 				}
+				// Skip "missing" if this destination has no runs for the
+				// target at all (different problem class), or if its
+				// earliest run is newer than this timestamp (it wasn't
+				// receiving the target back then).
+				earliest, has := earliestPerDest[dr.name]
+				if !has || ts < earliest {
+					continue
+				}
+				missing = append(missing, dr.name)
 			}
-			if len(missing) > 0 {
+			if len(missing) > 0 && len(present) > 0 {
 				issues = append(issues, consistencyIssue{
 					Target:      src.Name,
 					Timestamp:   ts,
@@ -1613,6 +1633,16 @@ func (s *Server) handleAPIConsistencyCheck(w http.ResponseWriter, r *http.Reques
 			}
 		}
 	}
+	// Deterministic newest-first ordering. The map-range above produced
+	// random order; pagination (slice(0,20) in the UI) was unstable
+	// between refreshes, so the user kept seeing different rows for the
+	// same data. Sort once here, never twice.
+	sort.Slice(issues, func(i, j int) bool {
+		if issues[i].Timestamp != issues[j].Timestamp {
+			return issues[i].Timestamp > issues[j].Timestamp
+		}
+		return issues[i].Target < issues[j].Target
+	})
 	writeJSON(w, http.StatusOK, issues)
 }
 

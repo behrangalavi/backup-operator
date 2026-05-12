@@ -602,7 +602,7 @@
     "alertsLoadFailed": "Alarme konnten nicht geladen werden: {error}. Der lokale Evaluator ist evtl. noch nicht initialisiert — auf das erste Backup warten."
   },
   "consistency": {
-    "hint": "Backups in einigen Zielen vorhanden, in anderen fehlen sie.",
+    "hint": "Runs, die auf einigen Zielen gelandet sind aber auf anderen fehlen — seit beide Ziele das Target empfangen. Typische Ursache: das eine Ziel hat einen Backup-Upload stillschweigend abgelehnt, während das andere ihn akzeptiert hat. Runs aus der Zeit vor dem Hinzufügen eines Ziels werden nicht gemeldet.",
     "andMore": "…und {count} weitere"
   },
   "auditPage": {

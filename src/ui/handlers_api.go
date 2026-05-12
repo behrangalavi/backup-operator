@@ -19,7 +19,6 @@ import (
 	"backup-operator/internal/safe"
 	"backup-operator/internal/secrets"
 	"backup-operator/metrics"
-	storageFactory "backup-operator/storage/factory"
 
 	dto "github.com/prometheus/client_model/go"
 	batchv1 "k8s.io/api/batch/v1"
@@ -1063,7 +1062,7 @@ func (s *Server) handleAPITestDestination(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, s.cfg.Logger.WithName("test-connection"))
+	st, err := s.storageFor(dest, "test-connection")
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":    false,
@@ -1164,7 +1163,7 @@ func (s *Server) handleAPIDestinationStats(w http.ResponseWriter, r *http.Reques
 				return
 			}
 
-			st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, s.cfg.Logger.WithName("stats"))
+			st, err := s.storageFor(dest, "stats")
 			if err != nil {
 				results[idx] = destStorageStats{
 					Name:        dest.Name,
@@ -1310,7 +1309,7 @@ func (s *Server) handleAPIDestinationHealth(w http.ResponseWriter, r *http.Reque
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, s.cfg.Logger.WithName("health"))
+			st, err := s.storageFor(d, "health")
 			if err != nil {
 				mu.Lock()
 				destLatest[d.Name] = lookupResult{err: err}
@@ -1557,7 +1556,7 @@ func (s *Server) handleAPIConsistencyCheck(w http.ResponseWriter, r *http.Reques
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, s.cfg.Logger.WithName("consistency"))
+			st, err := s.storageFor(d, "consistency")
 			if err != nil {
 				return
 			}

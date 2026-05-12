@@ -21,10 +21,22 @@ import (
 
 	"backup-operator/dumper"
 	"backup-operator/internal/alerts"
+	"backup-operator/internal/secrets"
+	"backup-operator/storage"
+	storageFactory "backup-operator/storage/factory"
 
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// StoragePool is the surface the UI needs from the process-wide
+// controllers.StoragePool. Defined here as an interface so the UI
+// package doesn't take a hard dependency on controllers — the
+// operator's reconcile loops should stay a leaf, not a UI dep.
+// The concrete *controllers.StoragePool satisfies this structurally.
+type StoragePool interface {
+	Get(d *secrets.Destination) (storage.Storage, error)
+}
 
 //go:embed templates/*.html
 var templatesFS embed.FS
@@ -69,6 +81,16 @@ type Config struct {
 	// modes. Empty disables the capability check (the endpoint then
 	// reports "configuration unknown" rather than guessing).
 	WorkerServiceAccount string
+
+	// Pool is the process-wide storage client cache, shared with the
+	// MetricsRefresher and StorageScrubber controllers. UI live-probe
+	// endpoints (test-connection, destination-stats, destination-health,
+	// consistency-check, fleet heatmap, run download) get cached SFTP/
+	// FTPS/S3 clients instead of building fresh ones on every request
+	// — which was the root cause of QNAP's Network Access Protection
+	// blocking the operator IP after a few minutes of dashboard use.
+	// Optional: when nil, the UI falls back to per-call construction.
+	Pool StoragePool
 }
 
 // Conservative defaults sized for an enterprise deployment with thousands of
@@ -102,6 +124,7 @@ func New(cfg Config) (*Server, error) {
 	broker := newSSEBroker()
 	broker.maxClients = cfg.MaxSSEClients
 	data := newK8sData(cfg.Client, cfg.Namespace, cfg.Logger.WithName("data"))
+	data.pool = cfg.Pool
 	s := &Server{
 		cfg:  cfg,
 		tpl:  tpl,
@@ -221,6 +244,19 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// storageFor returns a storage.Storage for the destination, preferring
+// the shared pool (clients amortised across MetricsRefresher, scrubber,
+// and every UI handler) and falling back to a fresh build when no pool
+// is wired. Use this in every UI handler that touches a destination —
+// direct storageFactory.NewStorage calls open a fresh client per
+// request and were the trigger for QNAP NAP-blocking the operator's IP.
+func (s *Server) storageFor(d *secrets.Destination, logName string) (storage.Storage, error) {
+	if s.cfg.Pool != nil {
+		return s.cfg.Pool.Get(d)
+	}
+	return storageFactory.NewStorage(d.StorageType, d.Name, d.Data, s.cfg.Logger.WithName(logName))
 }
 
 func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {

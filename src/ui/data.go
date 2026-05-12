@@ -10,6 +10,7 @@ import (
 	"backup-operator/internal/meta"
 	"backup-operator/internal/scheduler"
 	"backup-operator/internal/secrets"
+	"backup-operator/storage"
 	storageFactory "backup-operator/storage/factory"
 
 	"github.com/go-logr/logr"
@@ -206,12 +207,29 @@ type k8sData struct {
 	latestCache *cache[map[string]*meta.MetaFile] // per-destination → target→meta
 	runsCache   *cache[[]*meta.MetaFile]          // per (target,destination)
 
+	// pool is the shared storage client cache. When non-nil, every
+	// storage-touching method goes through it; when nil, the data
+	// layer builds fresh clients per call. Server.New wires this
+	// from ui.Config.Pool. See comments on Server.storageFor.
+	pool StoragePool
+
 	// onRefresh is called from background storage probes once fresh data
 	// is in the cache. Server wires this to its SSE broker so the
 	// frontend repaints when slow destinations finish refreshing,
 	// without ever blocking the original request that triggered the
 	// refresh. Optional — nil disables the broadcast.
 	onRefresh func()
+}
+
+// storageFor mirrors Server.storageFor on the data layer side. Logic
+// is intentionally duplicated rather than threaded through Server
+// because the data layer is wired separately (e.g. tests can build
+// k8sData with a fake client and no pool).
+func (d *k8sData) storageFor(dest *secrets.Destination) (storage.Storage, error) {
+	if d.pool != nil {
+		return d.pool.Get(dest)
+	}
+	return storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, d.log.WithName("storage"))
 }
 
 func newK8sData(c client.Client, namespace string, log logr.Logger) *k8sData {
@@ -256,7 +274,7 @@ func (d *k8sData) listTargets(ctx context.Context) ([]targetSummary, error) {
 			// by the time we run).
 			rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, d.log.WithName("storage"))
+			st, err := d.storageFor(dest)
 			if err != nil {
 				return nil, err
 			}
@@ -351,7 +369,7 @@ func (d *k8sData) estimateDuration(ctx context.Context, name string, n int) (tim
 	for _, dest := range dests {
 		key := name + "@" + dest.Name
 		got, err := d.runsCache.getOrLoad(key, func() ([]*meta.MetaFile, error) {
-			st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, d.log.WithName("storage"))
+			st, err := d.storageFor(dest)
 			if err != nil {
 				return nil, err
 			}
@@ -408,7 +426,7 @@ func (d *k8sData) target(ctx context.Context, name string) (*targetDetail, error
 	for _, dest := range dests {
 		key := name + "@" + dest.Name
 		got, err := d.runsCache.getOrLoad(key, func() ([]*meta.MetaFile, error) {
-			st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, d.log.WithName("storage"))
+			st, err := d.storageFor(dest)
 			if err != nil {
 				return nil, err
 			}
@@ -524,7 +542,7 @@ func (d *k8sData) fleetHeatmap(ctx context.Context, days int) (*dashboardSummary
 			got, _ := d.runsCache.getOrRefreshAsync(key, func() ([]*meta.MetaFile, error) {
 				rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
-				st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, d.log.WithName("storage"))
+				st, err := d.storageFor(dest)
 				if err != nil {
 					return nil, err
 				}

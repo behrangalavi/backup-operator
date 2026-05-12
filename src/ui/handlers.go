@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"backup-operator/internal/secrets"
-	storageFactory "backup-operator/storage/factory"
 )
 
 // handleIndex renders the namespace overview at /legacy.
@@ -149,7 +148,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, dest := range destsToTry {
-		st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, s.cfg.Logger.WithName("download"))
+		st, err := s.storageFor(dest, "download")
 		if err != nil {
 			continue
 		}

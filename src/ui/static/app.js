@@ -238,6 +238,7 @@ function renderPage(page, loading = true) {
     case 'target': renderTargetDetail(currentParam(), loading); break;
     case 'alerts': renderAlerts(loading); break;
     case 'audit': renderAudit(loading); break;
+    case 'age-keys': renderAgeKeys(loading); break;
     case 'settings': renderSettings(loading); break;
     default: renderDashboard(loading);
   }
@@ -2783,9 +2784,25 @@ function renderSettingsPage(settings) {
         </div>
       </form>
     </div>
-    <div id="age-keys-section" class="table-card" style="margin-top:24px"></div>`;
-  // Age-keys section is loaded async — keeps the rest of the page
-  // responsive even if the operator is slow to read the Secret.
+    `;
+  // Age-keys management moved to its own page (#/age-keys, see
+  // renderAgeKeys) so the sidebar's active-link highlight and direct
+  // bookmarking work. Keep loadAgeKeysSection() pure so renderAgeKeys
+  // can reuse the existing async-load logic.
+}
+
+// --- Age Keys page ---
+async function renderAgeKeys(loading = true) {
+  if (loading) showLoading();
+  content.innerHTML = `
+    <div class="page-header">
+      <div>
+        <h1>${tr('nav.ageKeys') || 'Age Keys'}</h1>
+        <div class="subtitle">${tr('ageKeys.subtitle') || 'Public keys (age recipients) backups are encrypted to. Rotation: add new, wait one cycle, remove old.'}</div>
+      </div>
+    </div>
+    <div id="age-keys-section" class="table-card"></div>
+  `;
   loadAgeKeysSection();
 }
 

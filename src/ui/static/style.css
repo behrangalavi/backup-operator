@@ -50,7 +50,16 @@ body {
   font-weight: 500; transition: all 0.15s;
 }
 .nav-link:hover { color: var(--text); background: var(--bg-input); }
-.nav-link.active { color: var(--accent); background: rgba(91,110,239,0.1); }
+.nav-link.active {
+  color: var(--accent);
+  background: rgba(91,110,239,0.15);
+  border-left: 3px solid var(--accent);
+  /* Compensate for the new 3px left border so the icon doesn't visibly
+     shift — preserve the original padding-left from .nav-link by
+     subtracting the border width. */
+  padding-left: calc(var(--nav-link-padding-left, 12px) - 3px);
+  font-weight: 600;
+}
 .nav-footer {
   padding: 12px 16px; border-top: 1px solid var(--border); font-size: 12px;
 }

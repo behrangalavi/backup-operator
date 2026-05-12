@@ -171,6 +171,9 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/destination-stats", s.handleAPIDestinationStats)
 	mux.HandleFunc("/api/consistency-check", s.handleAPIConsistencyCheck)
 
+	// Dashboard fleet heatmap — per-target, per-day status grid
+	mux.Handle("/api/dashboard/heatmap", cachedJSON(http.HandlerFunc(s.handleAPIFleetHeatmap)))
+
 	// SSE live updates
 	mux.HandleFunc("/api/events", s.handleSSE)
 

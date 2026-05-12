@@ -437,6 +437,17 @@
       "title": "Kommende Runs (24h)",
       "sub": "Warn-Farbe = mehrere Backups in derselben Minute (jitter-minutes setzen?)",
       "empty": "Keine geplanten Runs in den nächsten 24 Stunden — alle Quellen pausiert oder außerhalb des Zeitfensters."
+    },
+    "fleetHeatmap": {
+      "title": "Backup-Gesundheit der Flotte (30 Tage)",
+      "sub": "eine Zeile pro Target, jede Zelle ein Tag — spottet Targets die nicht mehr laufen oder Tage an denen alles failt",
+      "empty": "Noch keine Targets konfiguriert.",
+      "legend": {
+        "ok": "alle Runs ok",
+        "mixed": "gemischt (ok + failed)",
+        "failed": "alle Runs gefailt",
+        "none": "kein Run"
+      }
     }
   },
   "card": {

@@ -437,6 +437,17 @@
       "title": "Prochains lancements (24h)",
       "sub": "couleur d'alerte = plusieurs sauvegardes dans la même minute (envisager jitter-minutes)",
       "empty": "Aucun lancement planifié dans les 24 prochaines heures — toutes les sources en pause ou hors fenêtre."
+    },
+    "fleetHeatmap": {
+      "title": "Santé des sauvegardes (30 jours)",
+      "sub": "une ligne par cible, chaque cellule un jour — repère les cibles qui ne tournent plus ou les jours où tout a échoué",
+      "empty": "Aucune cible configurée pour l'instant.",
+      "legend": {
+        "ok": "tous OK",
+        "mixed": "mixte (OK + échec)",
+        "failed": "tous échoués",
+        "none": "aucun run"
+      }
     }
   },
   "card": {

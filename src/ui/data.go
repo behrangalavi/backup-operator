@@ -24,6 +24,23 @@ type dataSource interface {
 	listTargets(ctx context.Context) ([]targetSummary, error)
 	target(ctx context.Context, name string) (*targetDetail, error)
 	estimateDuration(ctx context.Context, name string, n int) (time.Duration, int, error)
+	fleetHeatmap(ctx context.Context, days int) ([]heatmapRow, error)
+}
+
+// heatmapRow is one lane in the dashboard's fleet heatmap. Days is
+// always exactly the requested length (today as the rightmost cell);
+// missing entries are zero-valued so the frontend doesn't have to
+// reason about gaps.
+type heatmapRow struct {
+	Target string        `json:"target"`
+	DBType string        `json:"dbType"`
+	Days   []heatmapCell `json:"days"`
+}
+
+type heatmapCell struct {
+	Day    string `json:"day"`    // YYYY-MM-DD UTC
+	Status string `json:"status"` // "ok" | "failed" | "mixed" | "none"
+	Runs   int    `json:"runs"`
 }
 
 // targetSummary is what the index page needs per source.
@@ -342,6 +359,124 @@ func (d *k8sData) target(ctx context.Context, name string) (*targetDetail, error
 	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].Timestamp > runs[j].Timestamp })
 	return &targetDetail{Source: src, Destinations: dests, Runs: runs}, nil
+}
+
+// fleetHeatmap aggregates per-target, per-day status for the last `days`
+// days across all targets. Reuses runsCache so a dashboard hit doesn't
+// double-dial destinations the per-target detail page already cached.
+// Background-refresh via the same getOrRefreshAsync pattern as
+// latestCache — a dashboard render never blocks on storage probes.
+//
+// Status classification per day:
+//   - "ok"     : at least one run, no failures
+//   - "failed" : at least one failure, no successes
+//   - "mixed"  : both success and failure that day (manual re-run after fail)
+//   - "none"   : no run recorded for that day
+//
+// Cap `days` at 90 to bound the per-target work; defaults to 30.
+func (d *k8sData) fleetHeatmap(ctx context.Context, days int) ([]heatmapRow, error) {
+	if days <= 0 {
+		days = 30
+	}
+	if days > 90 {
+		days = 90
+	}
+	sources, _, err := d.listSourceSecretsWithMeta(ctx)
+	if err != nil {
+		return nil, err
+	}
+	allDests, err := d.listDestinationSecrets(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build the day axis once. UTC throughout so day boundaries match
+	// the dump timestamp (also UTC); converting to the operator's local
+	// time would shift cells +/- 1 day in some zones.
+	now := time.Now().UTC()
+	dayAxis := make([]string, days)
+	for i := 0; i < days; i++ {
+		t := now.AddDate(0, 0, -(days - 1 - i))
+		dayAxis[i] = t.Format("2006-01-02")
+	}
+	earliestDay := dayAxis[0]
+
+	rows := make([]heatmapRow, 0, len(sources))
+	for _, src := range sources {
+		row := heatmapRow{
+			Target: src.TargetName,
+			DBType: src.DBType,
+			Days:   make([]heatmapCell, days),
+		}
+		for i, d := range dayAxis {
+			row.Days[i] = heatmapCell{Day: d, Status: "none"}
+		}
+
+		// Per-day counters; written through to row.Days at the end so
+		// the loop body stays branchless.
+		ok := make(map[string]int, days)
+		failed := make(map[string]int, days)
+
+		// Prefer the first allowed destination that already has cached
+		// runs — most dashboard users keep the per-target detail page
+		// open occasionally, populating the cache. New targets fall
+		// back to a dial via getOrRefreshAsync (non-blocking).
+		dests := secrets.FilterDestinations(src, allDests)
+		for _, dest := range dests {
+			key := src.TargetName + "@" + dest.Name
+			dest := dest
+			got, _ := d.runsCache.getOrRefreshAsync(key, func() ([]*meta.MetaFile, error) {
+				rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, d.log.WithName("storage"))
+				if err != nil {
+					return nil, err
+				}
+				return meta.List(rctx, st, src.TargetName)
+			}, d.onRefresh)
+			if got == nil {
+				continue
+			}
+			for _, m := range got {
+				ts := m.ParsedTimestamp()
+				if ts.IsZero() {
+					continue
+				}
+				day := ts.UTC().Format("2006-01-02")
+				if day < earliestDay {
+					continue
+				}
+				if m.IsFailure() {
+					failed[day]++
+				} else {
+					ok[day]++
+				}
+			}
+			// One destination's run history is enough for the
+			// heatmap — every destination should hold the same set
+			// of runs minus inconsistencies (which the consistency
+			// panel already surfaces). Picking the first cached/
+			// reachable one keeps the loop O(targets), not
+			// O(targets × destinations).
+			break
+		}
+
+		for i, d := range dayAxis {
+			o, f := ok[d], failed[d]
+			row.Days[i].Runs = o + f
+			switch {
+			case o > 0 && f > 0:
+				row.Days[i].Status = "mixed"
+			case f > 0:
+				row.Days[i].Status = "failed"
+			case o > 0:
+				row.Days[i].Status = "ok"
+			}
+		}
+		rows = append(rows, row)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Target < rows[j].Target })
+	return rows, nil
 }
 
 func (d *k8sData) listSourceSecrets(ctx context.Context) ([]*secrets.Source, error) {

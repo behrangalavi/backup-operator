@@ -437,6 +437,17 @@
       "title": "Upcoming Runs (next 24h)",
       "sub": "warning colour = multiple backups in the same minute (consider jitter-minutes)",
       "empty": "No scheduled runs in the next 24 hours — all sources paused or off-window."
+    },
+    "fleetHeatmap": {
+      "title": "Fleet Backup Health (last 30 days)",
+      "sub": "one row per target, each cell is a day — spot a target that stopped running or a day the whole fleet failed",
+      "empty": "No targets configured yet.",
+      "legend": {
+        "ok": "all runs ok",
+        "mixed": "mixed (ok + failed)",
+        "failed": "all runs failed",
+        "none": "no run"
+      }
     }
   },
   "card": {

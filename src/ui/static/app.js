@@ -464,6 +464,23 @@ function renderSortControl(list, options) {
 const SLOW_PROBE_TTL_MS = 60000;
 let _slowProbes = { health: [], consistency: [], lastFetch: 0 };
 let _slowFetchInFlight = false;
+
+// Fleet heatmap cache. Same shape and rationale as _slowProbes —
+// /api/dashboard/heatmap iterates every target's run history per
+// destination; we don't want to re-fire that on every SSE tick.
+let _heatmap = { rows: [], lastFetch: 0 };
+let _heatmapInFlight = false;
+async function refreshHeatmap() {
+  if (_heatmapInFlight) return;
+  _heatmapInFlight = true;
+  try {
+    const rows = await api('/api/dashboard/heatmap?days=30').catch(() => []);
+    _heatmap = { rows: rows || [], lastFetch: Date.now() };
+    if (currentPage() === 'dashboard') renderDashboard(false);
+  } catch(e) { /* partial data is ok */ } finally {
+    _heatmapInFlight = false;
+  }
+}
 async function refreshSlowProbes() {
   if (_slowFetchInFlight) return;
   _slowFetchInFlight = true;
@@ -503,6 +520,7 @@ async function renderDashboard(loading = true) {
   // unreachable destination's 8 s timeout × N dests would fire every
   // 10 s SSE tick.
   if (loading && Date.now() - _slowProbes.lastFetch > SLOW_PROBE_TTL_MS) refreshSlowProbes();
+  if (loading && Date.now() - _heatmap.lastFetch > SLOW_PROBE_TTL_MS) refreshHeatmap();
 
   const ok = targets.filter(t => t.Latest && !t.Latest.status?.includes('fail')).length;
   const failed = targets.filter(t => t.Latest?.status === 'failed').length;
@@ -540,6 +558,10 @@ async function renderDashboard(loading = true) {
         <h3>${tr('chart.nextRunGantt.title')} <span class="chart-card-sub">${tr('chart.nextRunGantt.sub')}</span></h3>
         ${renderNextRunGantt(targets)}
       </div>
+    </div>
+    <div class="chart-card" style="margin-bottom:16px">
+      <h3>${tr('chart.fleetHeatmap.title')} <span class="chart-card-sub">${tr('chart.fleetHeatmap.sub')}</span></h3>
+      ${renderFleetHeatmap(_heatmap.rows)}
     </div>
     ${renderStorageByDestination(targets, dests)}
     <div class="table-card">
@@ -2139,6 +2161,84 @@ function renderStorageDonut(stats) {
       </div>`).join('')}
     </div>
   </div>`;
+}
+
+// renderFleetHeatmap shows per-target, per-day backup status as a grid.
+// Reads /api/dashboard/heatmap; each row is one target, columns are
+// days (oldest left, today right). Cell colours mirror the GitHub-
+// contributions style the per-target heatmap already uses, so an
+// operator scanning the dashboard finds the same visual language.
+//
+// Status palette:
+//   ok     → green
+//   failed → red
+//   mixed  → amber
+//   none   → muted grey
+//
+// Click on any row's label routes to that target's detail page.
+function renderFleetHeatmap(rows) {
+  if (!rows || rows.length === 0) {
+    return '<div class="chart-empty">' + tr('chart.fleetHeatmap.empty') + '</div>';
+  }
+  const days = rows[0].days ? rows[0].days.length : 30;
+  const cellSize = 12, cellGap = 2;
+  const padL = 120, padTop = 22, padR = 16, padBottom = 22;
+  const gridW = days * (cellSize + cellGap) - cellGap;
+  const W = padL + gridW + padR;
+  const H = padTop + rows.length * (cellSize + cellGap) - cellGap + padBottom;
+
+  const statusFill = {
+    ok:     'var(--success, #10b981)',
+    failed: 'var(--danger, #ef4444)',
+    mixed:  'var(--warning, #f59e0b)',
+    none:   'var(--bg-input, #2a2a2a)',
+  };
+
+  // Weekly tick on the day axis — too many labels make the row
+  // unreadable. Pick every 7th day starting from the right (today).
+  const xTicks = [];
+  for (let i = days - 1; i >= 0; i -= 7) {
+    const day = rows[0].days[i].day;
+    const x = padL + i * (cellSize + cellGap) + cellSize / 2;
+    const label = day.slice(5); // MM-DD
+    xTicks.push({ x, label });
+  }
+
+  const rowSvg = rows.map((r, ri) => {
+    const y = padTop + ri * (cellSize + cellGap);
+    const labelY = y + cellSize / 2 + 4;
+    const cells = r.days.map((c, ci) => {
+      const x = padL + ci * (cellSize + cellGap);
+      const fill = statusFill[c.status] || statusFill.none;
+      const tt = `${r.target} · ${c.day}: ${c.runs > 0 ? c.runs + ' run(s), ' + c.status : 'no run'}`;
+      return `<rect x="${x}" y="${y}" width="${cellSize}" height="${cellSize}" rx="2" fill="${fill}"><title>${escAttr(tt)}</title></rect>`;
+    }).join('');
+    return `<g>
+      <a href="#/target/${escAttr(r.target)}" style="cursor:pointer">
+        <text x="${(padL - 6)}" y="${labelY}" text-anchor="end" class="chart-axis-text" style="font-size:11px;fill:var(--accent)">${escHTML(r.target)}</text>
+      </a>
+      ${cells}
+    </g>`;
+  }).join('');
+
+  // Legend swatches at the bottom.
+  const legend = [
+    ['ok', tr('chart.fleetHeatmap.legend.ok')],
+    ['mixed', tr('chart.fleetHeatmap.legend.mixed')],
+    ['failed', tr('chart.fleetHeatmap.legend.failed')],
+    ['none', tr('chart.fleetHeatmap.legend.none')],
+  ];
+  const legendSvg = legend.map(([k, label], i) => {
+    const x = padL + i * 100;
+    const y = H - 12;
+    return `<rect x="${x}" y="${y - 9}" width="10" height="10" rx="2" fill="${statusFill[k]}"/><text x="${x + 14}" y="${y}" class="chart-axis-text" style="font-size:10px">${escHTML(label)}</text>`;
+  }).join('');
+
+  return `<svg viewBox="0 0 ${W} ${H}" class="chart-svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Fleet backup heatmap">
+    ${xTicks.map(t => `<text x="${t.x.toFixed(1)}" y="${(padTop - 6).toFixed(1)}" text-anchor="middle" class="chart-axis-text" style="font-size:10px">${escHTML(t.label)}</text>`).join('')}
+    ${rowSvg}
+    ${legendSvg}
+  </svg>`;
 }
 
 // renderNextRunGantt plots each target's NextRun on a 24-hour timeline

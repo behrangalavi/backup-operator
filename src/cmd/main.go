@@ -214,14 +214,40 @@ func main() {
 	// in CLAUDE.md §18.
 	storagePool := controllers.NewStoragePool(ctrl.Log.WithName("storage-pool"))
 
+	// broadcastFn is the SSE-publish bridge from controllers to the UI's
+	// event broker. It's a function variable (not a direct method) so we
+	// can wire it AFTER the controllers are constructed — the UI server
+	// gets built further down inside the `if UI_ENABLED` block, but the
+	// controllers' Reconcile loops only fire after mgr.Start(ctx) is
+	// called, by which point broadcastFn has either been set (UI on) or
+	// stayed nil (UI off, broadcasts become no-ops).
+	var broadcastFn func(eventType, data string)
+	broadcast := func(t, d string) {
+		if broadcastFn != nil {
+			broadcastFn(t, d)
+		}
+	}
+
 	refresher := &controllers.MetricsRefresher{
 		Client:    mgr.GetClient(),
 		Logger:    ctrl.Log.WithName("metrics-refresher"),
 		Namespace: watchNs,
 		Interval:  config.GetDurationSeconds("METRICS_REFRESH_INTERVAL_SECONDS"),
 		Pool:      storagePool,
+		Broadcast: broadcast,
 	}
 	assert.NoError(mgr.Add(refresher), "failed to register metrics refresher")
+
+	// Job watcher: emits SSE on every backup-Job state transition so the
+	// live UI reflects job start/completion within ~1 s, instead of
+	// waiting for the periodic 10 s SSE refresh tick.
+	jobWatcher := &controllers.JobWatcher{
+		Client:    mgr.GetClient(),
+		Logger:    ctrl.Log.WithName("job-watcher"),
+		Namespace: watchNs,
+		Broadcast: broadcast,
+	}
+	assert.NoError(jobWatcher.SetupWithManager(mgr), "failed to setup job watcher")
 
 	// Recipient reconciler: watches Secrets labeled role=age-recipient and
 	// materialises them into the operator-managed merged Secret named by
@@ -302,6 +328,11 @@ func main() {
 			Pool:                 storagePool,
 		})
 		assert.NoError(err, "failed to construct UI server")
+		// Wire the controllers' SSE bridge (declared earlier) to the
+		// freshly-built broker. Set before mgr.Start so reconciles that
+		// start firing can publish events. When UI is disabled,
+		// broadcastFn stays nil and controller broadcasts no-op.
+		broadcastFn = uiServer.Broadcast
 		// Register before manager start so the cache and HTTP listener share
 		// the manager's context (and shut down with it).
 		assert.NoError(mgr.Add(uiServer), "failed to register UI server")

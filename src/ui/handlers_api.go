@@ -679,6 +679,15 @@ func (s *Server) broadcast(ev sseEvent) {
 	}
 }
 
+// Broadcast is the public entry point for controllers and other
+// non-UI packages to push an SSE event. Wraps the internal sseEvent
+// type so callers don't need to import it. Safe to call from any
+// goroutine and before the SSE broker has any subscribers — the
+// broker's publish handles both cases.
+func (s *Server) Broadcast(eventType, data string) {
+	s.broadcast(sseEvent{Type: eventType, Data: data})
+}
+
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {

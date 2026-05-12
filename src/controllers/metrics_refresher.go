@@ -55,6 +55,21 @@ type MetricsRefresher struct {
 	// a single client lifecycle per backend on the leader pod.
 	Pool *StoragePool
 
+	// Broadcast is called when a per-target latest-meta timestamp
+	// changes between two refresh ticks — i.e. a new backup run has
+	// landed on a destination. Wired from main.go to ui.Server.Broadcast
+	// so the UI dashboard repaints in near-real-time without polling.
+	// Optional: nil disables the SSE side effect (the refresher still
+	// updates Prometheus gauges).
+	Broadcast func(eventType, data string)
+
+	// lastSeenTimestamp caches the newest meta.json timestamp seen per
+	// target on the previous tick. The refresher fires a broadcast when
+	// the new tick finds a strictly newer timestamp, so we never
+	// re-emit for unchanged data (which would flood the SSE channel).
+	tsMu            sync.Mutex
+	lastSeenTimestamp map[string]string
+
 	// trackedTargets remembers which targets we exposed last refresh, so we
 	// can drop their series when a Source Secret disappears. Without this,
 	// a deleted source would leave stale metrics around indefinitely.
@@ -254,6 +269,22 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 		// No data anywhere yet — leave gauges absent. lastRunStatus only
 		// becomes meaningful once at least one run has uploaded a meta.
 		return
+	}
+
+	// Detect "new data" — newest.Timestamp differs from what we recorded
+	// last tick — and push an SSE event so the live UI repaints. This is
+	// what turns the dashboard into a live stream: a backup that lands
+	// on a destination shows up within one refresh tick (default 30 s)
+	// instead of waiting for the user to click refresh.
+	r.tsMu.Lock()
+	if r.lastSeenTimestamp == nil {
+		r.lastSeenTimestamp = make(map[string]string)
+	}
+	prevTS, hadPrev := r.lastSeenTimestamp[src.TargetName]
+	r.lastSeenTimestamp[src.TargetName] = newest.Timestamp
+	r.tsMu.Unlock()
+	if r.Broadcast != nil && hadPrev && prevTS != newest.Timestamp {
+		r.Broadcast("meta_changed", src.TargetName)
 	}
 
 	metrics.SetLastRunStatus(src.TargetName, !newest.IsFailure())

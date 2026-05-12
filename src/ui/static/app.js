@@ -183,6 +183,15 @@ const sseEventPages = {
   // refreshing the per-destination meta cache. The render path served
   // stale data instantly; this event closes the loop with fresh data.
   refresh:             ['dashboard', 'destinations', 'target'],
+  // Emitted by the JobWatcher controller on every K8s Job state
+  // transition in the backup namespace (create, pod-start, complete,
+  // fail, delete). Dashboard + Jobs page + Target detail all care.
+  job_state_change:    ['dashboard', 'jobs', 'target'],
+  // Emitted by MetricsRefresher when a per-target latest meta.json
+  // timestamp differs from the previous tick — i.e. a new backup has
+  // landed on a destination. Repaints the same surfaces that consume
+  // run history.
+  meta_changed:        ['dashboard', 'jobs', 'target'],
 };
 
 // scheduleSSERender coalesces a burst of events into a single render. The
@@ -200,7 +209,16 @@ function scheduleSSERender() {
 }
 
 // handleSSEEvent is the single entry point for routed SSE events.
+// For "the server knows something new" events (meta_changed) we
+// invalidate the slow-probe cache so the next render re-fetches
+// instead of serving stale data with a refreshing-dot. job_state_change
+// is handled by the natural per-render /api/jobs fetch — no cache to
+// invalidate, the fast Promise.all picks up fresh state automatically.
 function handleSSEEvent(eventType) {
+  if (eventType === 'meta_changed') {
+    _fleetSummary.lastFetch = 0;
+    refreshFleetSummary();
+  }
   const pages = sseEventPages[eventType] || [];
   if (pages.indexOf(currentPage()) !== -1) {
     scheduleSSERender();

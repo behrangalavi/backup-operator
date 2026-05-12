@@ -6,6 +6,34 @@ const $ = (sel, ctx) => (ctx || document).querySelector(sel);
 const $$ = (sel, ctx) => [...(ctx || document).querySelectorAll(sel)];
 const content = $('#content');
 
+// animateCounter tweens an element's text from its currently displayed
+// number to `target` over ~600 ms using easeOutQuad. Reads the prior
+// value from data-value on the element so consecutive renders animate
+// from the last shown number (not a hard snap back to 0). Skips the
+// animation entirely if prefers-reduced-motion is set — accessibility
+// trumps the aesthetic. `format(n)` lets the caller render bytes,
+// percentages, plain integers, etc.
+function animateCounter(el, target, format) {
+  format = format || (n => String(Math.round(n)));
+  if (!el) return;
+  const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const from = parseFloat(el.getAttribute('data-value') || '0');
+  const to = Number.isFinite(target) ? target : 0;
+  el.setAttribute('data-value', String(to));
+  if (reduce || from === to) { el.textContent = format(to); return; }
+  const start = performance.now();
+  const dur = 600;
+  function tick(now) {
+    const t = Math.min(1, (now - start) / dur);
+    const eased = 1 - (1 - t) * (1 - t); // easeOutQuad
+    const cur = from + (to - from) * eased;
+    el.textContent = format(cur);
+    if (t < 1) requestAnimationFrame(tick);
+    else el.textContent = format(to);
+  }
+  requestAnimationFrame(tick);
+}
+
 // --- i18n ---
 // Adding a language: drop a JSON file in /static/i18n/<code>.json with the
 // same key shape as en.json, and register the code in `availableLangs`.
@@ -575,6 +603,141 @@ async function refreshSlowProbes() {
   }
 }
 
+// renderTargetSparkline shows the target's last 7 daily statuses as
+// a compact strip of 7 coloured cells. Sourced from the fleet
+// heatmap (last 7 entries of the 30-day row). Returns '' if the
+// target has no row in the heatmap yet — that's the "brand-new
+// source, no runs" case. Inline SVG so it sits next to the target
+// name without disturbing the table layout.
+function renderTargetSparkline(targetName) {
+  const row = (_fleetSummary.heatmap || []).find(r => r.target === targetName);
+  if (!row || !row.days || row.days.length === 0) return '';
+  const days = row.days.slice(-7);
+  const cellW = 8, cellH = 12, gap = 2;
+  const W = days.length * (cellW + gap) - gap;
+  const colorByStatus = {
+    ok:     'var(--success, #10b981)',
+    failed: 'var(--danger, #ef4444)',
+    mixed:  'var(--warning, #f59e0b)',
+    none:   'var(--bg-input, #2a2a2a)',
+  };
+  const cells = days.map((c, i) => {
+    const x = i * (cellW + gap);
+    const fill = colorByStatus[c.status] || colorByStatus.none;
+    const tt = `${c.day}: ${c.runs > 0 ? c.runs + ' run(s), ' + c.status : 'no run'}`;
+    return `<rect x="${x}" y="0" width="${cellW}" height="${cellH}" rx="2" fill="${fill}"><title>${escAttr(tt)}</title></rect>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${W} ${cellH}" width="${W}" height="${cellH}" class="target-sparkline" aria-label="7-day status">${cells}</svg>`;
+}
+
+// buildHourlyActivity buckets jobs into 24 hour-of-day slots ending
+// now. Each bucket holds counts by status so the hero strip can pick
+// a colour. Bars are oldest-left, newest-right — matches how everyone
+// reads a timeline. Pre-computed once per render so the SVG output is
+// pure and the counter animations stay deterministic.
+function buildHourlyActivity(jobs) {
+  const now = Date.now();
+  const buckets = Array.from({length: 24}, () => ({ ok: 0, failed: 0, running: 0 }));
+  for (const j of jobs || []) {
+    const t = parseTsRFC(j.startTime);
+    if (!t) continue;
+    const hoursAgo = Math.floor((now - t) / 3600000);
+    if (hoursAgo < 0 || hoursAgo >= 24) continue;
+    const idx = 23 - hoursAgo;
+    if (j.status === 'running') buckets[idx].running++;
+    else if (j.status === 'failed') buckets[idx].failed++;
+    else buckets[idx].ok++;
+  }
+  return buckets;
+}
+
+// renderHeroPanel is the full-bleed status-at-a-glance card at the
+// top of the dashboard. Replaces the five flat stat cards with:
+//   - a status header that's green / amber / red based on 24h health
+//   - four big metrics (runs, failures, running, destinations)
+//   - a 24-bar hourly activity strip so the visitor sees the
+//     fleet's rhythm without scrolling
+// Numbers are wrapped in data-counter spans so animateCounter can
+// tween them when SSE updates land.
+function renderHeroPanel(targets, dests, jobs) {
+  const buckets = buildHourlyActivity(jobs);
+  const runs24h = buckets.reduce((s, b) => s + b.ok + b.failed + b.running, 0);
+  const failed24h = buckets.reduce((s, b) => s + b.failed, 0);
+  const runningNow = jobs.filter(j => j.status === 'running').length;
+  const destCount = dests.length;
+  const srcCount = targets.length;
+
+  // Status tier: red if any 24h failure, amber if no recent run for
+  // an active target (fleet quiet), green otherwise. The "quiet"
+  // signal is "0 runs in 24h while there's >0 active targets" — that
+  // shouts misconfig louder than a clean green.
+  let statusKey = 'healthy';
+  let statusMsg = tr('hero.status.healthy');
+  let statusSub = tr('hero.status.healthySub', {sources: srcCount, dests: destCount});
+  if (failed24h > 0) {
+    statusKey = 'danger';
+    statusMsg = tr('hero.status.failures', {count: failed24h});
+    statusSub = tr('hero.status.failuresSub');
+  } else if (srcCount > 0 && runs24h === 0) {
+    statusKey = 'warn';
+    statusMsg = tr('hero.status.quiet');
+    statusSub = tr('hero.status.quietSub');
+  }
+
+  // 24h activity strip: each bar's height proportional to that hour's
+  // total runs; colour = dominant status. Empty hours render a thin
+  // baseline so the strip's shape stays readable.
+  const maxRuns = Math.max(1, ...buckets.map(b => b.ok + b.failed + b.running));
+  const stripW = 280, stripH = 36, barW = (stripW / 24) - 2;
+  const stripBars = buckets.map((b, i) => {
+    const total = b.ok + b.failed + b.running;
+    const h = total === 0 ? 2 : 4 + (total / maxRuns) * (stripH - 4);
+    const x = i * (stripW / 24) + 1;
+    const y = stripH - h;
+    let cls = 'hero-strip-bar';
+    if (total === 0) cls += ' hero-strip-bar-empty';
+    else if (b.failed > 0) cls += ' hero-strip-bar-failed';
+    else if (b.running > 0) cls += ' hero-strip-bar-running';
+    else cls += ' hero-strip-bar-ok';
+    const tt = `${23-i}h ago: ${total} run(s)${b.failed > 0 ? `, ${b.failed} failed` : ''}${b.running > 0 ? `, ${b.running} running` : ''}`;
+    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="1" class="${cls}"><title>${escAttr(tt)}</title></rect>`;
+  }).join('');
+
+  return `<div class="hero hero-status-${statusKey}">
+    <div class="hero-header">
+      <span class="hero-pulse"></span>
+      <div>
+        <div class="hero-status-msg">${escHTML(statusMsg)}</div>
+        <div class="hero-status-sub">${escHTML(statusSub)}</div>
+      </div>
+    </div>
+    <div class="hero-metrics">
+      <div class="hero-metric">
+        <div class="hero-metric-value" data-counter="runs24h">${runs24h}</div>
+        <div class="hero-metric-label">${tr('hero.metric.runs24h')}</div>
+      </div>
+      <div class="hero-metric ${failed24h > 0 ? 'hero-metric-bad' : ''}">
+        <div class="hero-metric-value" data-counter="failed24h">${failed24h}</div>
+        <div class="hero-metric-label">${tr('hero.metric.failed24h')}</div>
+      </div>
+      <div class="hero-metric ${runningNow > 0 ? 'hero-metric-running' : ''}">
+        <div class="hero-metric-value" data-counter="runningNow">${runningNow}</div>
+        <div class="hero-metric-label">${tr('hero.metric.running')}${runningNow > 0 ? ' <span class="hero-metric-pulse"></span>' : ''}</div>
+      </div>
+      <div class="hero-metric">
+        <div class="hero-metric-value" data-counter="destinations">${destCount}</div>
+        <div class="hero-metric-label">${tr('hero.metric.destinations')}</div>
+      </div>
+    </div>
+    <div class="hero-activity">
+      <svg viewBox="0 0 ${stripW} ${stripH}" class="hero-strip" preserveAspectRatio="none" aria-label="24-hour activity">
+        ${stripBars}
+      </svg>
+      <div class="hero-activity-label">${tr('hero.activity.label')}</div>
+    </div>
+  </div>`;
+}
+
 async function renderDashboard(loading = true) {
   if (loading) showLoading();
   let targets = [], dests = [], jobs = [];
@@ -626,13 +789,7 @@ async function renderDashboard(loading = true) {
     <div class="page-header">
       <div><h1>${tr('page.dashboard.title')}</h1><div class="subtitle">${tr('page.dashboard.subtitle')}</div></div>
     </div>
-    <div class="stats-row">
-      <div class="stat-card"><div class="label">${tr('nav.sources')}</div><div class="value">${targets.length}</div></div>
-      <div class="stat-card"><div class="label">${tr('stat.healthy')}</div><div class="value ok">${ok}</div></div>
-      <div class="stat-card"><div class="label">${tr('stat.failed')}</div><div class="value${failed > 0 ? ' bad' : ''}">${failed}</div></div>
-      <div class="stat-card"><div class="label">${tr('nav.destinations')}</div><div class="value">${dests.length}</div></div>
-      <div class="stat-card"><div class="label">${tr('stat.running')} ${tr('nav.jobs')}</div><div class="value">${running}</div></div>
-    </div>
+    ${renderHeroPanel(targets, dests, jobs)}
     <div class="chart-grid-2">
       <div class="chart-card">
         <h3>${tr('chart.storageDonut.title')}${refreshingDot(_destStatsInFlight, _destStatsCache.stats.length > 0)} <span class="chart-card-sub">${tr('chart.storageDonut.sub')}</span></h3>
@@ -688,7 +845,10 @@ async function renderDashboard(loading = true) {
         </tr></thead>
         <tbody>${sortedTargets.map((t, i) => `<tr>
           <td class="num row-num">${i + 1}</td>
-          <td><a href="#/target/${escAttr(t.Name)}" style="color:var(--accent);font-weight:600">${escHTML(t.Name)}</a></td>
+          <td>
+            <a href="#/target/${escAttr(t.Name)}" style="color:var(--accent);font-weight:600">${escHTML(t.Name)}</a>
+            <div class="target-sparkline-wrap" title="${escAttr(tr('hero.sparkline.title') || 'last 7 days')}">${renderTargetSparkline(t.Name)}</div>
+          </td>
           <td><span class="badge badge-${t.DBType}">${t.DBType}</span></td>
           <td>
             <code style="font-size:12px;background:var(--bg-input);padding:2px 6px;border-radius:4px">${escHTML(t.Schedule)}</code>${t.Suspended ? ` <span class="badge badge-warn" style="margin-left:4px" title="Scheduled runs are paused; manual triggers still work">${tr('badge.paused')}</span>` : ''}
@@ -760,6 +920,17 @@ async function renderDashboard(loading = true) {
         })()}</tbody>
       </table>
     </div>` : ''}`;
+
+  // Animate hero counters from their previous value to the new one.
+  // The data-value attribute persists across renders so SSE-triggered
+  // updates tween from "now showing 47" → "now showing 48" smoothly
+  // instead of snapping. Computed values match the renderHeroPanel
+  // logic above.
+  const buckets24h = buildHourlyActivity(jobs);
+  animateCounter($('[data-counter="runs24h"]'),     buckets24h.reduce((s, b) => s + b.ok + b.failed + b.running, 0));
+  animateCounter($('[data-counter="failed24h"]'),   buckets24h.reduce((s, b) => s + b.failed, 0));
+  animateCounter($('[data-counter="runningNow"]'),  jobs.filter(j => j.status === 'running').length);
+  animateCounter($('[data-counter="destinations"]'), dests.length);
 }
 
 // --- Sources ---

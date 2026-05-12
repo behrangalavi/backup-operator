@@ -426,6 +426,28 @@
     "removeConfirm": "Empfänger {name} entfernen? Worker-Pods verschlüsseln nicht mehr für diesen Key. Vorhandene Dumps bleiben mit dem zugehörigen Private Key entschlüsselbar.",
     "readOnly": "Nur-Lese-Modus — Änderung von Empfängern deaktiviert."
   },
+  "hero": {
+    "status": {
+      "healthy":     "Alle Systeme gesund",
+      "healthySub":  "{sources} Quellen werden zu {dests} Zielen gesichert",
+      "failures":    "{count} Fehler in den letzten 24h",
+      "failuresSub": "In der Targets-Tabelle unten nachschauen",
+      "quiet":       "Flotte ist still — keine Runs in 24h",
+      "quietSub":    "Schedule, pausiert oder größerer Ausfall?"
+    },
+    "metric": {
+      "runs24h":      "Runs / 24h",
+      "failed24h":    "Fehler / 24h",
+      "running":      "Laufend",
+      "destinations": "Ziele"
+    },
+    "activity": {
+      "label": "Letzte 24 Stunden · älteste links"
+    },
+    "sparkline": {
+      "title": "Letzte 7 Tage"
+    }
+  },
   "chart": {
     "loading": "lädt…",
     "storageDonut": {

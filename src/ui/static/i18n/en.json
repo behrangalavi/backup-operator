@@ -426,6 +426,28 @@
     "removeConfirm": "Remove recipient {name}? Worker pods will no longer encrypt to this key. Existing dumps remain decryptable with the corresponding private key.",
     "readOnly": "Read-only mode — recipient mutation is disabled."
   },
+  "hero": {
+    "status": {
+      "healthy":     "All systems healthy",
+      "healthySub":  "{sources} sources backing up to {dests} destinations",
+      "failures":    "{count} failures in the last 24h",
+      "failuresSub": "Drill into the Targets table below to investigate",
+      "quiet":       "Fleet has been quiet — no runs in 24h",
+      "quietSub":    "Schedule, suspension or a deeper outage?"
+    },
+    "metric": {
+      "runs24h":      "Runs / 24h",
+      "failed24h":    "Failed / 24h",
+      "running":      "Running",
+      "destinations": "Destinations"
+    },
+    "activity": {
+      "label": "Last 24 hours · oldest left"
+    },
+    "sparkline": {
+      "title": "Last 7 days"
+    }
+  },
   "chart": {
     "loading": "loading…",
     "storageDonut": {

@@ -426,6 +426,28 @@
     "removeConfirm": "Supprimer le destinataire {name} ? Les pods worker ne chiffreront plus pour cette clé. Les dumps existants restent déchiffrables avec la clé privée correspondante.",
     "readOnly": "Mode lecture seule — la modification des destinataires est désactivée."
   },
+  "hero": {
+    "status": {
+      "healthy":     "Tous les systèmes en bonne santé",
+      "healthySub":  "{sources} sources sauvegardées vers {dests} destinations",
+      "failures":    "{count} échecs dans les dernières 24h",
+      "failuresSub": "Voir la table des cibles ci-dessous pour analyse",
+      "quiet":       "Flotte silencieuse — aucun run en 24h",
+      "quietSub":    "Planification, mise en pause ou panne plus large ?"
+    },
+    "metric": {
+      "runs24h":      "Runs / 24h",
+      "failed24h":    "Échecs / 24h",
+      "running":      "En cours",
+      "destinations": "Destinations"
+    },
+    "activity": {
+      "label": "Dernières 24 heures · ancien à gauche"
+    },
+    "sparkline": {
+      "title": "7 derniers jours"
+    }
+  },
   "chart": {
     "loading": "chargement…",
     "storageDonut": {

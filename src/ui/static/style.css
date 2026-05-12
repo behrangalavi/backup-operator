@@ -113,6 +113,138 @@ body {
 .stat-card .value.ok { color: var(--success); }
 .stat-card .value.bad { color: var(--danger); }
 
+/* Hero panel — the full-width health-at-a-glance card at the top of
+   the dashboard. Replaces the five flat stat cards with a single
+   composed component: status pill + 4 big metrics + 24-hour activity
+   strip. Status colour drives the accent strip on the left edge and
+   the pulse dot's colour. The metric numbers use animateCounter so
+   SSE-driven updates tween smoothly rather than snapping. */
+.hero {
+  position: relative;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 24px;
+  margin-bottom: 24px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas: "header activity" "metrics activity";
+  gap: 16px 32px;
+  align-items: center;
+  /* Left-edge accent strip; colour set by .hero-status-* below. */
+  border-left: 4px solid var(--accent);
+  overflow: hidden;
+}
+.hero-status-healthy { border-left-color: var(--success, #10b981); }
+.hero-status-warn    { border-left-color: var(--warning, #f59e0b); }
+.hero-status-danger  { border-left-color: var(--danger, #ef4444); }
+
+.hero-header {
+  grid-area: header;
+  display: flex; align-items: center; gap: 12px;
+}
+.hero-pulse {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--success, #10b981);
+  box-shadow: 0 0 0 0 currentColor;
+  animation: hero-pulse 2s ease-in-out infinite;
+  flex: 0 0 10px;
+}
+.hero-status-healthy .hero-pulse { background: var(--success, #10b981); color: rgba(16, 185, 129, 0.4); }
+.hero-status-warn .hero-pulse    { background: var(--warning, #f59e0b); color: rgba(245, 158, 11, 0.4); }
+.hero-status-danger .hero-pulse  { background: var(--danger, #ef4444);  color: rgba(239, 68, 68, 0.4); }
+@keyframes hero-pulse {
+  0%   { box-shadow: 0 0 0 0 currentColor; }
+  70%  { box-shadow: 0 0 0 10px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.hero-status-msg {
+  font-size: 16px; font-weight: 600; color: var(--text-heading);
+  line-height: 1.2;
+}
+.hero-status-sub {
+  font-size: 12px; color: var(--text-muted); margin-top: 2px;
+}
+
+.hero-metrics {
+  grid-area: metrics;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 24px;
+}
+.hero-metric {
+  display: flex; flex-direction: column; gap: 4px;
+}
+.hero-metric-value {
+  font-size: 32px; font-weight: 700; font-variant-numeric: tabular-nums;
+  color: var(--text-heading); line-height: 1;
+  letter-spacing: -0.02em;
+}
+.hero-metric-label {
+  font-size: 11px; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.06em;
+  display: flex; align-items: center; gap: 6px;
+}
+.hero-metric-bad .hero-metric-value { color: var(--danger, #ef4444); }
+.hero-metric-running .hero-metric-value { color: var(--accent, #5b6eef); }
+.hero-metric-pulse {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent, #5b6eef);
+  animation: hero-metric-pulse 1.2s ease-in-out infinite;
+}
+@keyframes hero-metric-pulse {
+  0%, 100% { opacity: 0.3; transform: scale(0.85); }
+  50%      { opacity: 1;   transform: scale(1.1); }
+}
+
+.hero-activity {
+  grid-area: activity;
+  display: flex; flex-direction: column; gap: 4px;
+  min-width: 280px;
+}
+.hero-strip {
+  width: 280px; height: 36px;
+  display: block;
+}
+.hero-strip-bar-ok       { fill: var(--success, #10b981); opacity: 0.85; }
+.hero-strip-bar-failed   { fill: var(--danger, #ef4444); opacity: 0.95; }
+.hero-strip-bar-running  { fill: var(--accent, #5b6eef); opacity: 0.9; }
+.hero-strip-bar-empty    { fill: var(--border); }
+.hero-activity-label {
+  font-size: 10px; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.06em;
+  text-align: right;
+}
+
+/* Per-target 7-day sparkline next to the target name in the
+   dashboard table. Inline-block so it sits below the link without a
+   wrapping div needed; spacing tuned to feel like part of the cell. */
+.target-sparkline-wrap {
+  display: inline-block;
+  margin-top: 4px;
+  opacity: 0.9;
+  transition: opacity 0.15s;
+}
+.target-sparkline-wrap:hover { opacity: 1; }
+.target-sparkline { display: block; }
+
+@media (max-width: 900px) {
+  /* Stack hero into a column on narrower screens. Activity strip
+     becomes full-width below the metrics grid. */
+  .hero {
+    grid-template-columns: 1fr;
+    grid-template-areas: "header" "metrics" "activity";
+    padding: 16px;
+  }
+  .hero-metrics { grid-template-columns: repeat(2, 1fr); gap: 16px; }
+  .hero-activity { min-width: 0; }
+  .hero-strip { width: 100%; }
+}
+@media (max-width: 480px) {
+  .hero-metric-value { font-size: 26px; }
+  .hero-metrics { gap: 12px; }
+}
+
 /* Tables */
 .table-card {
   background: var(--bg-card); border: 1px solid var(--border);

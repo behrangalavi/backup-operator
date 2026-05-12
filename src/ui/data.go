@@ -13,6 +13,7 @@ import (
 	storageFactory "backup-operator/storage/factory"
 
 	"github.com/go-logr/logr"
+	"github.com/robfig/cron/v3"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -31,6 +32,12 @@ type targetSummary struct {
 	SecretName   string
 	DBType       string
 	Schedule     string
+	// NextRun is the next time the CronJob will fire after now, computed
+	// from the materialised (post-jitter) Schedule. nil if the schedule
+	// could not be parsed (invalid cron expression) or the source is
+	// suspended. Format: RFC3339 UTC. The UI converts to local time and
+	// shows both absolute and relative ("in 4h 32m").
+	NextRun      *time.Time `json:"nextRun,omitempty"`
 	Suspended    bool
 	Destinations []string
 	CreatedAt    time.Time      // Secret CreationTimestamp; read off raw corev1 at access time
@@ -77,6 +84,29 @@ type targetDetail struct {
 // k8sData implements dataSource using a controller-runtime client to enumerate
 // labelled Secrets in the watched namespace and the storage abstraction to
 // fetch meta.json files from destinations.
+// cronParser parses standard 5-field cron expressions ("M H DoM Mo DoW"),
+// matching what Kubernetes CronJobs accept. The default robfig parser
+// adds an extra leading-seconds field which would reject every valid
+// CronJob schedule — we use the explicit Standard parser to match.
+var cronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+
+// nextRunAfter returns the next time the schedule will fire after `now`,
+// or nil if the schedule is invalid or the source is suspended. UTC.
+func nextRunAfter(schedule string, suspended bool, now time.Time) *time.Time {
+	if suspended || schedule == "" {
+		return nil
+	}
+	sched, err := cronParser.Parse(schedule)
+	if err != nil {
+		return nil
+	}
+	next := sched.Next(now)
+	if next.IsZero() {
+		return nil
+	}
+	return &next
+}
+
 type k8sData struct {
 	client    client.Client
 	namespace string
@@ -157,7 +187,9 @@ func (d *k8sData) listTargets(ctx context.Context) ([]targetSummary, error) {
 	}
 
 	out := make([]targetSummary, 0, len(sources))
+	now := time.Now().UTC()
 	for _, src := range sources {
+		materialisedSchedule := scheduler.ApplyJitter(src.Schedule, src.JitterMinutes, src.SecretName)
 		summary := targetSummary{
 			Name:         src.TargetName,
 			SecretName:   src.SecretName,
@@ -168,7 +200,8 @@ func (d *k8sData) listTargets(ctx context.Context) ([]targetSummary, error) {
 			// pre-jitter annotation — otherwise "0 2 * * *" on the
 			// card and "37 2 * * *" in the cluster would silently
 			// disagree.
-			Schedule:     scheduler.ApplyJitter(src.Schedule, src.JitterMinutes, src.SecretName),
+			Schedule:     materialisedSchedule,
+			NextRun:      nextRunAfter(materialisedSchedule, src.Suspended, now),
 			Suspended:    src.Suspended,
 			Destinations: destinationsAllowedFor(src, dests),
 			CreatedAt:    createdAt[src.SecretName],

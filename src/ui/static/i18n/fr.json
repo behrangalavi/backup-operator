@@ -232,7 +232,11 @@
     "sha256": "SHA256",
     "verificationLabel": "Vérification",
     "restoreLabel": "Vérif. restauration",
-    "back": "Retour au tableau de bord"
+    "back": "Retour au tableau de bord",
+    "nextRun": "Prochain lancement",
+    "nextRunImminent": "imminent",
+    "in": "dans",
+    "runningTitle": "Sauvegarde en cours"
   },
   "form": {
     "source": {

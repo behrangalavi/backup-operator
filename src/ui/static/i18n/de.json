@@ -232,7 +232,11 @@
     "sha256": "SHA256",
     "verificationLabel": "Verifikation",
     "restoreLabel": "Restore-Verifikation",
-    "back": "Zurück zur Übersicht"
+    "back": "Zurück zur Übersicht",
+    "nextRun": "Nächster Lauf",
+    "nextRunImminent": "gleich",
+    "in": "in",
+    "runningTitle": "Backup läuft gerade"
   },
   "form": {
     "source": {

@@ -553,7 +553,10 @@ async function renderDashboard(loading = true) {
           <td class="num row-num">${i + 1}</td>
           <td><a href="#/target/${escAttr(t.Name)}" style="color:var(--accent);font-weight:600">${escHTML(t.Name)}</a></td>
           <td><span class="badge badge-${t.DBType}">${t.DBType}</span></td>
-          <td><code style="font-size:12px;background:var(--bg-input);padding:2px 6px;border-radius:4px">${escHTML(t.Schedule)}</code>${t.Suspended ? ` <span class="badge badge-warn" style="margin-left:4px" title="Scheduled runs are paused; manual triggers still work">${tr('badge.paused')}</span>` : ''}</td>
+          <td>
+            <code style="font-size:12px;background:var(--bg-input);padding:2px 6px;border-radius:4px">${escHTML(t.Schedule)}</code>${t.Suspended ? ` <span class="badge badge-warn" style="margin-left:4px" title="Scheduled runs are paused; manual triggers still work">${tr('badge.paused')}</span>` : ''}
+            ${!t.Suspended && t.nextRun ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">${escHTML(fmtNextRun(t.nextRun))}</div>` : ''}
+          </td>
           <td>${t.Latest ? (t.Latest.status === 'failed'
             ? failedBadge(t.Latest)
             : `<span class="badge badge-ok">${tr('badge.ok')}</span>`)
@@ -669,6 +672,7 @@ async function renderSources(loading = true) {
             : `<span class="badge badge-pending">${tr('badge.noRuns')}</span>`}
         </div>
         <div class="detail-row"><span class="key">${tr('table.schedule')}</span><code class="val">${escHTML(t.Schedule)}${t.Suspended ? ' <span style="color:var(--warning);font-weight:600">(' + tr('buttons.pause').toLowerCase() + ')</span>' : ''}</code></div>
+        ${!t.Suspended && t.nextRun ? `<div class="detail-row"><span class="key">${tr('target.nextRun') || 'Nächster Lauf'}</span><span class="val" style="color:var(--text-muted)">${escHTML(fmtNextRun(t.nextRun))}</span></div>` : ''}
         <div class="detail-row"><span class="key">${tr('table.lastRun')}</span><span class="val">${t.Latest ? timeAgo(t.Latest.timestamp) : tr('common.none')}</span></div>
         ${t.Latest && t.Latest.status === 'failed' && t.Latest.error ? `
         <div class="detail-row" style="align-items:flex-start"><span class="key">${tr('table.error')}</span><span class="val" style="color:var(--danger);font-size:12px;word-break:break-word" title="${escAttr(t.Latest.error)}">${escHTML(truncate(t.Latest.error, 140))}</span></div>` : ''}
@@ -1668,6 +1672,28 @@ function fmtDurationShort(sec) {
   return mm ? `${h}h ${mm}m` : `${h}h`;
 }
 
+// fmtNextRun renders a CronJob's next fire time as "in 4h 32m (02:00)"
+// or "in 12d (Mon 02:00)" depending on horizon. Pass an ISO timestamp
+// string from the target's NextRun field. Returns '' if input is falsy
+// or already in the past (next tick is imminent / SSE catch-up race).
+function fmtNextRun(iso) {
+  if (!iso) return '';
+  const t = new Date(iso).getTime();
+  if (!isFinite(t)) return '';
+  const sec = (t - Date.now()) / 1000;
+  if (sec <= 0) return tr('target.nextRunImminent') || 'imminent';
+  const d = new Date(t);
+  // Inside 24h: relative + "at HH:MM" today/tomorrow
+  if (sec < 86400) {
+    const hhmm = d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+    return `${tr('target.in') || 'in'} ${fmtDurationShort(sec)} (${hhmm})`;
+  }
+  // >24h: show day-of-week + time + relative duration
+  const dayShort = d.toLocaleDateString([], {weekday: 'short'});
+  const hhmm = d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+  return `${tr('target.in') || 'in'} ${fmtDurationShort(sec)} (${dayShort} ${hhmm})`;
+}
+
 // renderProgressCell builds the Duration cell content. For non-running jobs
 // it returns the static formatted duration. For running jobs it renders a
 // progress bar driven by elapsed time and an estimate from past runs (when
@@ -2182,9 +2208,11 @@ function formatNum(n) {
 async function renderTargetDetail(name, loading = true) {
   if (!name) { renderDashboard(); return; }
   if (loading) showLoading();
-  let targets = [], runs = [], dests = [];
+  let targets = [], runs = [], dests = [], jobs = [];
   try {
-    [targets, dests] = (await Promise.all([api('/api/targets'), api('/api/destinations')])).map(x => x || []);
+    [targets, dests, jobs] = (await Promise.all([
+      api('/api/targets'), api('/api/destinations'), api('/api/jobs'),
+    ])).map(x => x || []);
   } catch(e) { toast(e.message, 'error'); }
 
   const target = targets.find(t => t.Name === name);
@@ -2195,6 +2223,13 @@ async function renderTargetDetail(name, loading = true) {
   }
 
   try { runs = (await api('/api/targets/' + name + '/runs')) || []; } catch(e) { /* ok */ }
+
+  // Find any in-flight Job for this target so we can render the same
+  // progress bar the Jobs page uses. Multiple running jobs is rare but
+  // possible (manual trigger overlap); pick the newest.
+  const runningJob = jobs
+    .filter(j => j.target === name && j.status === 'running')
+    .sort((a, b) => parseTsRFC(b.startTime) - parseTsRFC(a.startTime))[0] || null;
 
   content.innerHTML = `
     <div class="page-header">
@@ -2208,10 +2243,22 @@ async function renderTargetDetail(name, loading = true) {
         <button class="btn btn-danger btn-sm" onclick="deleteSource('${escJS(target.SecretName)}','${escJS(name)}')" title="Permanently delete this source. The CronJob is cascaded; existing dumps remain in storage.">${tr('common.delete')}</button>
       </div>
     </div>
+    ${runningJob ? `
+    <div class="detail-card running-banner" data-job-name="${escAttr(runningJob.name)}" style="margin-bottom:16px;border-left:3px solid var(--accent,#3b82f6)">
+      <h3 style="display:flex;align-items:center;gap:8px">
+        <span class="badge badge-running">${tr('badge.running') || 'running'}</span>
+        ${tr('target.runningTitle') || 'Backup läuft gerade'}
+      </h3>
+      <div class="job-progress-host">${renderProgressCell(runningJob)}</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:6px">
+        ${tr('table.startTime') || 'Started'}: ${new Date(runningJob.startTime).toLocaleString()} · Job: <code>${escHTML(runningJob.name)}</code>
+      </div>
+    </div>` : ''}
     <div class="detail-grid">
       <div class="detail-card">
         <h3>${tr('target.configuration')}</h3>
         <div class="detail-row"><span class="key">${tr('table.schedule')}</span><code class="val">${escHTML(target.Schedule)}</code></div>
+        <div class="detail-row"><span class="key">${tr('target.nextRun') || 'Nächster Lauf'}</span><span class="val">${target.Suspended ? `<span style="color:var(--text-muted)">${tr('badge.suspended') || 'pausiert'}</span>` : escHTML(fmtNextRun(target.nextRun)) || '—'}</span></div>
         <div class="detail-row"><span class="key">${tr('table.destinations')}</span><span class="val">${(target.Destinations||[]).join(', ') || tr('common.all').toLowerCase()}</span></div>
         <div class="detail-row"><span class="key">${tr('table.status')}</span>
           ${target.Latest ? (target.Latest.status === 'failed'
@@ -2291,6 +2338,17 @@ async function renderTargetDetail(name, loading = true) {
         </tr>`).join('')}</tbody>
       </table>`}
     </div>`;
+
+  // Per-second tick of the running-banner progress bar — same pattern as
+  // the Jobs page so the user sees the time bar advance without waiting
+  // for the next SSE refresh.
+  if (jobProgressTimer) { clearInterval(jobProgressTimer); jobProgressTimer = null; }
+  if (runningJob) {
+    jobProgressTimer = setInterval(() => {
+      const host = document.querySelector(`.running-banner[data-job-name="${CSS.escape(runningJob.name)}"] .job-progress-host`);
+      if (host) host.innerHTML = renderProgressCell(runningJob);
+    }, 1000);
+  }
 }
 
 function renderDownloadLinks(targetName, run, destNames) {

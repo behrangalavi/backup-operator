@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"regexp"
@@ -1066,11 +1067,40 @@ func (s *Server) handleAPITestDestination(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	_, err = st.List(ctx, "__connectivity_test__/")
+	// Real write probe: upload a tiny object, read it back, delete it. List
+	// alone only verifies dial+login, which masks the common failure of
+	// "credentials valid but user has no write permission" — exactly the
+	// case where backups will run forever without ever landing a byte.
+	probePath := fmt.Sprintf(".backup-operator-probe-%d", time.Now().UnixNano())
+	payload := []byte("backup-operator connectivity probe")
+	if err := st.Upload(ctx, probePath, strings.NewReader(string(payload))); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":    false,
+			"error": "upload failed: " + err.Error(),
+		})
+		return
+	}
+	// Best-effort cleanup — even if Delete fails the destination is
+	// still proven writable, but we want to leave no trace if possible.
+	defer func() {
+		delCtx, delCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer delCancel()
+		_ = st.Delete(delCtx, probePath)
+	}()
+	rc, err := st.Get(ctx, probePath)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":    false,
-			"error": err.Error(),
+			"error": "readback failed: " + err.Error(),
+		})
+		return
+	}
+	defer func() { _ = rc.Close() }()
+	got, _ := io.ReadAll(rc)
+	if string(got) != string(payload) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":    false,
+			"error": fmt.Sprintf("readback mismatch: wrote %d bytes, got %d", len(payload), len(got)),
 		})
 		return
 	}

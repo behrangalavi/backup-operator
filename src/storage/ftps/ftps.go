@@ -250,18 +250,32 @@ func (s *ftpsStorage) List(ctx context.Context, prefix string) ([]storage.Object
 // walkList recursively lists files under root using FTP's LIST. Servers vary
 // in what they return (Unix-style, DOS-style, MLSD when available); jlaffaye
 // abstracts that and gives us *ftp.Entry values with Type set to File/Folder.
+//
+// Error policy: "directory does not exist" (550 No such file) is the
+// expected first-run condition for a fresh target and is swallowed
+// silently — retention would otherwise fail on a brand-new backup target.
+// Every other error is propagated so the operator/worker can surface it
+// (permission denied, connection drop, TLS data-channel failure, …)
+// instead of falsely reporting an empty directory.
 func walkList(ctx context.Context, c *ftp.ServerConn, root string, strip func(string) string) ([]storage.Object, error) {
 	var out []storage.Object
-	var walk func(dir string) error
-	walk = func(dir string) error {
+	var walk func(dir string, isRoot bool) error
+	walk = func(dir string, isRoot bool) error {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("list cancelled: %w", err)
 		}
 		entries, err := c.List(dir)
 		if err != nil {
-			// Treat "directory does not exist" as empty rather than fatal —
-			// retention runs against a fresh target produce this on first run.
-			return nil
+			msg := err.Error()
+			// 550 covers both "no such file" and "permission denied" in
+			// the FTP spec — at the root we treat 550 as "target dir not
+			// created yet" (legitimate fresh state for a brand-new backup
+			// target). Below the root any 550 means a real problem worth
+			// surfacing instead of silently returning an empty listing.
+			if isRoot && (strings.Contains(msg, "550") || strings.Contains(msg, "No such") || strings.Contains(msg, "not found")) {
+				return nil
+			}
+			return fmt.Errorf("list %s: %w", dir, err)
 		}
 		for _, e := range entries {
 			if e.Name == "." || e.Name == ".." {
@@ -270,7 +284,7 @@ func walkList(ctx context.Context, c *ftp.ServerConn, root string, strip func(st
 			p := path.Join(dir, e.Name)
 			switch e.Type {
 			case ftp.EntryTypeFolder:
-				if err := walk(p); err != nil {
+				if err := walk(p, false); err != nil {
 					return err
 				}
 			case ftp.EntryTypeFile:
@@ -283,7 +297,7 @@ func walkList(ctx context.Context, c *ftp.ServerConn, root string, strip func(st
 		}
 		return nil
 	}
-	if err := walk(root); err != nil {
+	if err := walk(root, true); err != nil {
 		return nil, err
 	}
 	return out, nil

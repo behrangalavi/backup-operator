@@ -465,6 +465,26 @@ const SLOW_PROBE_TTL_MS = 60000;
 let _slowProbes = { health: [], consistency: [], lastFetch: 0 };
 let _slowFetchInFlight = false;
 
+// chartOrLoading is the standard pattern for chart cards on the
+// dashboard: while the underlying data is being fetched AND nothing
+// is cached yet, render a spinner in place of the empty-state. Once
+// any data exists (even stale), render that data — a background
+// refresh can update it later via SSE without yanking the chart away.
+// A separate chart-refreshing dot in the header signals "fresher data
+// on the way" when refresh is in-flight but stale data is shown.
+function chartOrLoading(data, inFlight, renderFn) {
+  const empty = !data ||
+                (Array.isArray(data) && data.length === 0) ||
+                (typeof data === 'object' && !Array.isArray(data) && Object.keys(data).length === 0);
+  if (empty && inFlight) {
+    return `<div class="chart-loading"><div class="spinner"></div><div class="hint">${tr('chart.loading') || 'loading…'}</div></div>`;
+  }
+  return renderFn();
+}
+function refreshingDot(inFlight, hasData) {
+  return (inFlight && hasData) ? '<span class="chart-refreshing" title="refreshing in background"></span>' : '';
+}
+
 // Fleet-summary cache (heatmap + storage + anomalies + durations +
 // verification daily pass-rate). All five datasets share a single
 // backend pass and one endpoint — reading meta files once and emitting
@@ -564,8 +584,8 @@ async function renderDashboard(loading = true) {
     </div>
     <div class="chart-grid-2">
       <div class="chart-card">
-        <h3>${tr('chart.storageDonut.title')} <span class="chart-card-sub">${tr('chart.storageDonut.sub')}</span></h3>
-        ${renderStorageDonut(_destStatsCache.stats)}
+        <h3>${tr('chart.storageDonut.title')}${refreshingDot(_destStatsInFlight, _destStatsCache.stats.length > 0)} <span class="chart-card-sub">${tr('chart.storageDonut.sub')}</span></h3>
+        ${chartOrLoading(_destStatsCache.stats, _destStatsInFlight, () => renderStorageDonut(_destStatsCache.stats))}
       </div>
       <div class="chart-card">
         <h3>${tr('chart.nextRunGantt.title')} <span class="chart-card-sub">${tr('chart.nextRunGantt.sub')}</span></h3>
@@ -573,27 +593,27 @@ async function renderDashboard(loading = true) {
       </div>
     </div>
     <div class="chart-card" style="margin-bottom:16px">
-      <h3>${tr('chart.fleetHeatmap.title')} <span class="chart-card-sub">${tr('chart.fleetHeatmap.sub')}</span></h3>
-      ${renderFleetHeatmap(_fleetSummary.heatmap)}
+      <h3>${tr('chart.fleetHeatmap.title')}${refreshingDot(_fleetSummaryInFlight, _fleetSummary.heatmap.length > 0)} <span class="chart-card-sub">${tr('chart.fleetHeatmap.sub')}</span></h3>
+      ${chartOrLoading(_fleetSummary.heatmap, _fleetSummaryInFlight, () => renderFleetHeatmap(_fleetSummary.heatmap))}
     </div>
     <div class="chart-grid-2">
       <div class="chart-card">
-        <h3>${tr('chart.storageGrowth.title')} <span class="chart-card-sub">${tr('chart.storageGrowth.sub')}</span></h3>
-        ${renderStorageGrowth(_fleetSummary.storage)}
+        <h3>${tr('chart.storageGrowth.title')}${refreshingDot(_fleetSummaryInFlight, _fleetSummary.storage.length > 0)} <span class="chart-card-sub">${tr('chart.storageGrowth.sub')}</span></h3>
+        ${chartOrLoading(_fleetSummary.storage, _fleetSummaryInFlight, () => renderStorageGrowth(_fleetSummary.storage))}
       </div>
       <div class="chart-card">
-        <h3>${tr('chart.anomalyStream.title')} <span class="chart-card-sub">${tr('chart.anomalyStream.sub')}</span></h3>
-        ${renderAnomalyStream(_fleetSummary.anomalies)}
+        <h3>${tr('chart.anomalyStream.title')}${refreshingDot(_fleetSummaryInFlight, _fleetSummary.anomalies.length > 0)} <span class="chart-card-sub">${tr('chart.anomalyStream.sub')}</span></h3>
+        ${chartOrLoading(_fleetSummary.anomalies, _fleetSummaryInFlight, () => renderAnomalyStream(_fleetSummary.anomalies))}
       </div>
     </div>
     <div class="chart-grid-2">
       <div class="chart-card">
-        <h3>${tr('chart.durationDist.title')} <span class="chart-card-sub">${tr('chart.durationDist.sub')}</span></h3>
-        ${renderDurationDistribution(_fleetSummary.durations)}
+        <h3>${tr('chart.durationDist.title')}${refreshingDot(_fleetSummaryInFlight, _fleetSummary.durations.length > 0)} <span class="chart-card-sub">${tr('chart.durationDist.sub')}</span></h3>
+        ${chartOrLoading(_fleetSummary.durations, _fleetSummaryInFlight, () => renderDurationDistribution(_fleetSummary.durations))}
       </div>
       <div class="chart-card">
-        <h3>${tr('chart.verifyTrend.title')} <span class="chart-card-sub">${tr('chart.verifyTrend.sub')}</span></h3>
-        ${renderVerificationTrend(_fleetSummary.verificationDaily)}
+        <h3>${tr('chart.verifyTrend.title')}${refreshingDot(_fleetSummaryInFlight, _fleetSummary.verificationDaily.length > 0)} <span class="chart-card-sub">${tr('chart.verifyTrend.sub')}</span></h3>
+        ${chartOrLoading(_fleetSummary.verificationDaily, _fleetSummaryInFlight, () => renderVerificationTrend(_fleetSummary.verificationDaily))}
       </div>
     </div>
     ${renderStorageByDestination(targets, dests)}

@@ -427,6 +427,7 @@
     "readOnly": "Nur-Lese-Modus — Änderung von Empfängern deaktiviert."
   },
   "chart": {
+    "loading": "lädt…",
     "storageDonut": {
       "title": "Speichernutzung",
       "sub": "tatsächlich belegte Bytes pro Ziel",

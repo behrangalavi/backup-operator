@@ -427,6 +427,7 @@
     "readOnly": "Read-only mode — recipient mutation is disabled."
   },
   "chart": {
+    "loading": "loading…",
     "storageDonut": {
       "title": "Storage Usage",
       "sub": "actual bytes on each destination",

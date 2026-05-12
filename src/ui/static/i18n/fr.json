@@ -427,6 +427,7 @@
     "readOnly": "Mode lecture seule — la modification des destinataires est désactivée."
   },
   "chart": {
+    "loading": "chargement…",
     "storageDonut": {
       "title": "Utilisation du stockage",
       "sub": "octets réellement occupés par destination",

@@ -341,6 +341,31 @@ thead th.sortable:hover { color: var(--text); }
   padding: 28px 20px; text-align: center;
   color: var(--text-muted); font-size: 13px;
 }
+/* Spinner shown inside a chart card while the underlying data is
+   still being fetched. Distinct from the page-level showLoading()
+   spinner — this one sizes for an in-card display and leaves the
+   chart's title/subtitle visible so the user knows what's loading. */
+.chart-loading {
+  min-height: 120px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px;
+}
+.chart-loading .hint {
+  color: var(--text-muted); font-size: 11px;
+}
+/* A small pulsing dot in the chart card header, shown while a
+   background refresh runs even though stale data is visible. Tells
+   the user "fresh data is coming" without yanking the chart away. */
+.chart-refreshing {
+  display: inline-block; width: 6px; height: 6px;
+  background: var(--accent, #5b6eef); border-radius: 50%;
+  margin-left: 6px; vertical-align: middle;
+  animation: chart-pulse 1.2s ease-in-out infinite;
+}
+@keyframes chart-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
 .chart-grid-2 {
   display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;
 }

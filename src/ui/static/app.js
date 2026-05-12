@@ -1230,43 +1230,55 @@ window.toggleSFTPAuth = function(method) {
   });
 };
 
+// Sensitive fields are masked as *** on edit, so an empty form value
+// means "user did not retype it, keep the stored secret" rather than
+// "user cleared it". Non-sensitive fields (host, port, known-hosts, …)
+// follow the opposite rule: empty after edit means "user actually
+// emptied it, remove the field from the Secret" — otherwise the form
+// silently ignores clears and the user wonders why the old value is
+// stuck. Mirror of the backend's sensitiveKeys set in handlers_api.go.
+const DEST_SENSITIVE_KEYS = new Set([
+  'password', 'ssh-private-key', 'secret-key', 'access-key', 'secret-access-key',
+]);
+
 window.submitDestForm = async function(e, secretName) {
   e.preventDefault();
   const f = e.target;
   const data = {};
+  const removeKeys = [];
   $$('[name^="data_"]', f).forEach(inp => {
     const key = inp.name.replace('data_', '');
     // Checkboxes carry their value attribute regardless of checked state;
     // unchecked must mean "drop the key", not "store the literal string".
     if (inp.type === 'checkbox') {
       if (inp.checked && inp.value) data[key] = inp.value;
+      else removeKeys.push(key);
       return;
     }
-    if (inp.value) data[key] = inp.value;
+    if (inp.value) {
+      data[key] = inp.value;
+    } else if (secretName && !DEST_SENSITIVE_KEYS.has(key)) {
+      // Edit-mode only: explicit clear of a non-sensitive field.
+      // On create we just omit the empty field.
+      removeKeys.push(key);
+    }
   });
-  // For SFTP, only ship the auth field the user actually chose. Without
-  // this, switching from key→password during an edit would leave the
-  // previous credential in the Secret because the backend's PUT merges
-  // data rather than replacing it — removeKeys is the explicit drop list.
+  // For SFTP, only ship the auth field the user actually chose. Switching
+  // from key→password during an edit would otherwise leave the previous
+  // credential in the Secret because PUT merges rather than replaces —
+  // removeKeys is the explicit drop list. (The unchecked-checkbox case is
+  // already handled by the main loop above.)
   const sType = f.storageType.value;
-  const removeKeys = [];
   if (sType === 'sftp' || sType === 'hetzner-sftp') {
     const sel = f.querySelector('input[name="sftpAuthMethod"]:checked');
     const method = sel ? sel.value : 'key';
     if (method === 'key') {
       delete data['password'];
-      removeKeys.push('password');
+      if (!removeKeys.includes('password')) removeKeys.push('password');
     } else {
       delete data['ssh-private-key'];
-      removeKeys.push('ssh-private-key');
+      if (!removeKeys.includes('ssh-private-key')) removeKeys.push('ssh-private-key');
     }
-    // Checkboxes: if unchecked on edit, explicitly drop the existing key.
-    const skipBox = f.querySelector('input[name="data_insecure-skip-host-verify"]');
-    if (skipBox && !skipBox.checked) removeKeys.push('insecure-skip-host-verify');
-  }
-  if (sType === 'ftps') {
-    const skipBox = f.querySelector('input[name="data_insecure-skip-cert-verify"]');
-    if (skipBox && !skipBox.checked) removeKeys.push('insecure-skip-cert-verify');
   }
   const body = {
     name: f.name.value,

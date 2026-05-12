@@ -433,11 +433,18 @@ func (s *Server) handleAPIUpdateDestination(w http.ResponseWriter, r *http.Reque
 		}
 		existing.Annotations[labels.AnnotationName] = req.Name
 	}
+	// PathPrefix follows three-valued logic on update: a non-empty value
+	// replaces, an empty string explicitly clears the annotation, and a
+	// missing field (would require the JSON to omit it) preserves. The
+	// UI always sends pathPrefix so the empty-string→clear branch covers
+	// the "user cleared the input box" case.
 	if req.PathPrefix != "" {
 		if existing.Annotations == nil {
 			existing.Annotations = make(map[string]string)
 		}
 		existing.Annotations[labels.AnnotationPathPrefix] = req.PathPrefix
+	} else if existing.Annotations != nil {
+		delete(existing.Annotations, labels.AnnotationPathPrefix)
 	}
 	for k, v := range req.Data {
 		if existing.Data == nil {

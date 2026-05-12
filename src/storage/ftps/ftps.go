@@ -70,7 +70,10 @@ func New(name string, data storage.SecretData, logger logr.Logger) (storage.Stor
 	if user == "" {
 		return nil, fmt.Errorf("ftps storage %q: missing %q", name, keyUsername)
 	}
-	password := string(data[keyPassword])
+	// Trim trailing CR/LF only — paste-from-password-manager artifact. Real
+	// passwords can have leading/trailing spaces, so we deliberately keep
+	// TrimSpace away from this. See the SFTP driver for the same reasoning.
+	password := strings.TrimRight(string(data[keyPassword]), "\r\n")
 	if password == "" {
 		return nil, fmt.Errorf("ftps storage %q: missing %q", name, keyPassword)
 	}

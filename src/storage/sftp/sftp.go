@@ -89,7 +89,14 @@ func New(name string, data storage.SecretData, logger logr.Logger) (storage.Stor
 // data key can't accidentally produce an unauthenticated config.
 func buildAuthMethods(name string, data storage.SecretData) ([]ssh.AuthMethod, error) {
 	pkBytes := data[keyPrivateKey]
-	password := string(data[keyPassword])
+	// Trim trailing newlines only, not surrounding whitespace. Real passwords
+	// may legitimately have leading/trailing spaces, but a trailing CR/LF is
+	// almost always an artifact of pasting from a password manager — the
+	// resulting "secret\n" is silently rejected by the server with no usable
+	// diagnostic ("attempted methods [...], no supported methods remain")
+	// while the user swears the password "works manually" (because they typed
+	// it without the newline).
+	password := strings.TrimRight(string(data[keyPassword]), "\r\n")
 
 	hasKey := len(pkBytes) > 0
 	hasPwd := password != ""

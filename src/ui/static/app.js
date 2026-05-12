@@ -2512,8 +2512,12 @@ function renderFleetHeatmap(rows) {
     return '<div class="chart-empty">' + tr('chart.fleetHeatmap.empty') + '</div>';
   }
   const days = rows[0].days ? rows[0].days.length : 30;
-  const cellSize = 12, cellGap = 2;
-  const padL = 120, padTop = 22, padR = 16, padBottom = 22;
+  // Cell + row geometry. Row height (cellSize + cellGap) MUST stay
+  // ≥ the label font-size in px or labels overlap when many targets
+  // are listed. 14 px cell + 4 px gap = 18 px row, comfortable for
+  // an 11 px label.
+  const cellSize = 14, cellGap = 4;
+  const padL = 150, padTop = 24, padR = 16, padBottom = 32;
   const gridW = days * (cellSize + cellGap) - cellGap;
   const W = padL + gridW + padR;
   const H = padTop + rows.length * (cellSize + cellGap) - cellGap + padBottom;
@@ -2524,6 +2528,11 @@ function renderFleetHeatmap(rows) {
     mixed:  'var(--warning, #f59e0b)',
     none:   'var(--bg-input, #2a2a2a)',
   };
+
+  // Truncate over-long target names so they fit padL without
+  // bleeding into the grid. The full name is still visible on hover
+  // via <title> on the link.
+  const truncate = (s, n) => s.length > n ? s.slice(0, n - 1) + '…' : s;
 
   // Weekly tick on the day axis — too many labels make the row
   // unreadable. Pick every 7th day starting from the right (today).
@@ -2538,6 +2547,7 @@ function renderFleetHeatmap(rows) {
   const rowSvg = rows.map((r, ri) => {
     const y = padTop + ri * (cellSize + cellGap);
     const labelY = y + cellSize / 2 + 4;
+    const labelText = truncate(r.target, 20);
     const cells = r.days.map((c, ci) => {
       const x = padL + ci * (cellSize + cellGap);
       const fill = statusFill[c.status] || statusFill.none;
@@ -2546,27 +2556,33 @@ function renderFleetHeatmap(rows) {
     }).join('');
     return `<g>
       <a href="#/target/${escAttr(r.target)}" style="cursor:pointer">
-        <text x="${(padL - 6)}" y="${labelY}" text-anchor="end" class="chart-axis-text" style="font-size:11px;fill:var(--accent)">${escHTML(r.target)}</text>
+        <title>${escAttr(r.target)}</title>
+        <text x="${(padL - 8).toFixed(1)}" y="${labelY.toFixed(1)}" text-anchor="end" class="chart-axis-text" style="font-size:11px;fill:var(--accent)">${escHTML(labelText)}</text>
       </a>
       ${cells}
     </g>`;
   }).join('');
 
-  // Legend swatches at the bottom.
+  // Legend at the bottom — flexbox-style horizontal stack with
+  // explicit min-spacing so labels never overlap regardless of width.
   const legend = [
     ['ok', tr('chart.fleetHeatmap.legend.ok')],
     ['mixed', tr('chart.fleetHeatmap.legend.mixed')],
     ['failed', tr('chart.fleetHeatmap.legend.failed')],
     ['none', tr('chart.fleetHeatmap.legend.none')],
   ];
+  const legendSpacing = Math.max(110, (W - padL) / legend.length);
   const legendSvg = legend.map(([k, label], i) => {
-    const x = padL + i * 100;
-    const y = H - 12;
-    return `<rect x="${x}" y="${y - 9}" width="10" height="10" rx="2" fill="${statusFill[k]}"/><text x="${x + 14}" y="${y}" class="chart-axis-text" style="font-size:10px">${escHTML(label)}</text>`;
+    const x = padL + i * legendSpacing;
+    const y = H - 14;
+    return `<rect x="${x}" y="${(y - 9).toFixed(1)}" width="10" height="10" rx="2" fill="${statusFill[k]}"/><text x="${(x + 14).toFixed(1)}" y="${y.toFixed(1)}" class="chart-axis-text" style="font-size:10px">${escHTML(label)}</text>`;
   }).join('');
 
-  return `<svg viewBox="0 0 ${W} ${H}" class="chart-svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Fleet backup heatmap">
-    ${xTicks.map(t => `<text x="${t.x.toFixed(1)}" y="${(padTop - 6).toFixed(1)}" text-anchor="middle" class="chart-axis-text" style="font-size:10px">${escHTML(t.label)}</text>`).join('')}
+  // Explicit height on the SVG (matching the natural H) overrides
+  // the chart-svg max-height clamp; width still flexes to the card.
+  // chart-svg-tall opts out of the 260 px cap so labels stay readable.
+  return `<svg viewBox="0 0 ${W} ${H}" class="chart-svg chart-svg-tall" preserveAspectRatio="xMidYMin meet" role="img" aria-label="Fleet backup heatmap" style="height:${H}px;max-height:${H}px">
+    ${xTicks.map(t => `<text x="${t.x.toFixed(1)}" y="${(padTop - 8).toFixed(1)}" text-anchor="middle" class="chart-axis-text" style="font-size:10px">${escHTML(t.label)}</text>`).join('')}
     ${rowSvg}
     ${legendSvg}
   </svg>`;

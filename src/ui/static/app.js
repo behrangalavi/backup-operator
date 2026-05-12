@@ -465,6 +465,25 @@ const SLOW_PROBE_TTL_MS = 60000;
 let _slowProbes = { health: [], consistency: [], lastFetch: 0 };
 let _slowFetchInFlight = false;
 
+// Last-good cache for the dashboard's fast Promise.all so a transient
+// API failure during an SSE-triggered refresh doesn't reset the stats
+// cards to 0/0/0/0/0 and yank the targets table away. Each entry is
+// keyed by URL because all three fast endpoints share the same
+// rejection behaviour. Updated only on a successful response.
+const _fastDataCache = { '/api/targets': null, '/api/destinations': null, '/api/jobs': null };
+async function fastDataAllSettled(urls) {
+  const results = await Promise.allSettled(urls.map(u => api(u)));
+  return urls.map((u, i) => {
+    if (results[i].status === 'fulfilled' && results[i].value != null) {
+      _fastDataCache[u] = results[i].value;
+      return results[i].value;
+    }
+    // Failed or null — fall back to last good (may itself be null on
+    // a cold start, which renderers handle via `|| []`).
+    return _fastDataCache[u];
+  });
+}
+
 // chartOrLoading is the standard pattern for chart cards on the
 // dashboard: while the underlying data is being fetched AND nothing
 // is cached yet, render a spinner in place of the empty-state. Once
@@ -500,17 +519,30 @@ async function refreshFleetSummary() {
   if (_fleetSummaryInFlight) return;
   _fleetSummaryInFlight = true;
   try {
-    const r = await api('/api/dashboard/heatmap?days=30').catch(() => ({}));
+    // Don't poison the cache on transient API failure. The previous
+    // `.catch(() => ({}))` pattern wrote empty arrays AND updated
+    // lastFetch, so the next 60 s of renders showed empty charts
+    // even though the actual data was unchanged. Preserve the last
+    // good values; leaving lastFetch alone means the next user-
+    // initiated render retries immediately instead of waiting out
+    // the full TTL.
+    let r;
+    try {
+      r = await api('/api/dashboard/heatmap?days=30');
+    } catch(e) {
+      return;
+    }
+    if (!r || typeof r !== 'object') return;
     _fleetSummary = {
-      heatmap:           (r && r.heatmap)           || [],
-      storage:           (r && r.storage)           || [],
-      anomalies:         (r && r.anomalies)         || [],
-      durations:         (r && r.durations)         || [],
-      verificationDaily: (r && r.verificationDaily) || [],
+      heatmap:           r.heatmap           || [],
+      storage:           r.storage           || [],
+      anomalies:         r.anomalies         || [],
+      durations:         r.durations         || [],
+      verificationDaily: r.verificationDaily || [],
       lastFetch:         Date.now(),
     };
     if (currentPage() === 'dashboard') renderDashboard(false);
-  } catch(e) { /* partial data is ok */ } finally {
+  } finally {
     _fleetSummaryInFlight = false;
   }
 }
@@ -518,15 +550,27 @@ async function refreshSlowProbes() {
   if (_slowFetchInFlight) return;
   _slowFetchInFlight = true;
   try {
-    const [h, c] = await Promise.all([
-      api('/api/destination-health').catch(() => []),
-      api('/api/consistency-check').catch(() => []),
+    // Promise.allSettled so a transient failure on ONE endpoint
+    // doesn't blow away the other's good response. If both failed,
+    // preserve the previous cache entirely — same rationale as
+    // refreshFleetSummary; an empty cache + recent lastFetch would
+    // hide real data behind 60 s of empty-state.
+    const [hRes, cRes] = await Promise.allSettled([
+      api('/api/destination-health'),
+      api('/api/consistency-check'),
     ]);
-    _slowProbes = { health: h || [], consistency: c || [], lastFetch: Date.now() };
+    const hOk = hRes.status === 'fulfilled';
+    const cOk = cRes.status === 'fulfilled';
+    if (!hOk && !cOk) return;
+    _slowProbes = {
+      health:      hOk ? (hRes.value || []) : _slowProbes.health,
+      consistency: cOk ? (cRes.value || []) : _slowProbes.consistency,
+      lastFetch:   Date.now(),
+    };
     // Repaint only if the dashboard is the active page when the probes
     // finish — otherwise the cache is just ready for the next visit.
     if (currentPage() === 'dashboard') renderDashboard(false);
-  } catch(e) { /* partial data is ok */ } finally {
+  } finally {
     _slowFetchInFlight = false;
   }
 }
@@ -534,15 +578,16 @@ async function refreshSlowProbes() {
 async function renderDashboard(loading = true) {
   if (loading) showLoading();
   let targets = [], dests = [], jobs = [];
-  try {
-    // Render as soon as the fast K8s-API calls return. The slow endpoints
-    // (destination-health, consistency-check) dial every storage backend;
-    // an unreachable destination would otherwise stall the dashboard
-    // behind its 8 s probe timeout × N destinations on every refresh.
-    [targets, dests, jobs] = (await Promise.all([
-      api('/api/targets'), api('/api/destinations'), api('/api/jobs'),
-    ])).map(x => x || []);
-  } catch(e) { /* partial data is ok */ }
+  // Render as soon as the fast K8s-API calls return. The slow endpoints
+  // (destination-health, consistency-check) dial every storage backend;
+  // an unreachable destination would otherwise stall the dashboard
+  // behind its 8 s probe timeout × N destinations on every refresh.
+  // fastDataAllSettled falls back to the last good value per URL so a
+  // transient failure on /api/jobs doesn't reset stats to 0/0/0/0/0.
+  const got = await fastDataAllSettled(['/api/targets', '/api/destinations', '/api/jobs']);
+  targets = got[0] || [];
+  dests   = got[1] || [];
+  jobs    = got[2] || [];
 
   const healthEntries = _slowProbes.health;
   const consistencyIssues = _slowProbes.consistency;
@@ -554,6 +599,12 @@ async function renderDashboard(loading = true) {
   // 10 s SSE tick.
   if (loading && Date.now() - _slowProbes.lastFetch > SLOW_PROBE_TTL_MS) refreshSlowProbes();
   if (loading && Date.now() - _fleetSummary.lastFetch > SLOW_PROBE_TTL_MS) refreshFleetSummary();
+  // Storage Donut on the dashboard reads _destStatsCache, which was
+  // only refreshed by the destinations page — a user landing directly
+  // on /dashboard saw a permanently empty donut. Trigger the refresh
+  // from here too; the in-flight guard prevents duplicate fetches if
+  // both pages were ever rendered in quick succession.
+  if (loading && Date.now() - _destStatsCache.lastFetch > SLOW_PROBE_TTL_MS) refreshDestStats();
 
   const ok = targets.filter(t => t.Latest && !t.Latest.status?.includes('fail')).length;
   const failed = targets.filter(t => t.Latest?.status === 'failed').length;
@@ -1125,10 +1176,19 @@ async function refreshDestStats() {
   if (_destStatsInFlight) return;
   _destStatsInFlight = true;
   try {
-    const s = await api('/api/destination-stats').catch(() => []);
+    // Preserve last good cache on failure — same rationale as
+    // refreshFleetSummary/refreshSlowProbes.
+    let s;
+    try {
+      s = await api('/api/destination-stats');
+    } catch(e) {
+      return;
+    }
     _destStatsCache = { stats: s || [], lastFetch: Date.now() };
-    if (currentPage() === 'destinations') renderDestinations(false);
-  } catch(e) { /* partial data is ok */ } finally {
+    if (currentPage() === 'destinations' || currentPage() === 'dashboard') {
+      renderPage(currentPage(), false);
+    }
+  } finally {
     _destStatsInFlight = false;
   }
 }

@@ -2639,9 +2639,12 @@ function renderFleetHeatmap(rows) {
   }).join('');
 
   // Explicit height on the SVG (matching the natural H) overrides
-  // the chart-svg max-height clamp; width still flexes to the card.
-  // chart-svg-tall opts out of the 260 px cap so labels stay readable.
-  return `<svg viewBox="0 0 ${W} ${H}" class="chart-svg chart-svg-tall" preserveAspectRatio="xMidYMin meet" role="img" aria-label="Fleet backup heatmap" style="height:${H}px;max-height:${H}px">
+  // the chart-svg max-height clamp; the min-width keeps the cell
+  // grid at native px size on narrow viewports — the parent
+  // .chart-card scrolls horizontally rather than scaling the SVG
+  // down to where cells become microscopic. chart-svg-tall opts
+  // out of the 260 px cap so labels stay readable.
+  return `<svg viewBox="0 0 ${W} ${H}" class="chart-svg chart-svg-tall" preserveAspectRatio="xMidYMin meet" role="img" aria-label="Fleet backup heatmap" style="height:${H}px;max-height:${H}px;min-width:${W}px">
     ${xTicks.map(t => `<text x="${t.x.toFixed(1)}" y="${(padTop - 8).toFixed(1)}" text-anchor="middle" class="chart-axis-text" style="font-size:10px">${escHTML(t.label)}</text>`).join('')}
     ${rowSvg}
     ${legendSvg}

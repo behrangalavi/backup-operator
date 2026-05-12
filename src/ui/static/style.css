@@ -86,6 +86,10 @@ body {
 /* Page header */
 .page-header {
   display: flex; align-items: center; justify-content: space-between;
+  /* Wrap so a long title + 3-button action row don't fight for space
+     and clip each other on narrow viewports. gap so the wrapped
+     buttons keep breathing room from the title above. */
+  flex-wrap: wrap; gap: 12px;
   margin-bottom: 24px;
 }
 .page-header h1 {
@@ -112,7 +116,13 @@ body {
 /* Tables */
 .table-card {
   background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: var(--radius); overflow: hidden;
+  border-radius: var(--radius);
+  /* overflow-x: auto so wide tables (10+ columns) horizontal-scroll on
+     narrow viewports instead of getting clipped at the card edge. The
+     rounded-corner clipping that overflow: hidden used to provide is
+     preserved by the inner table not having its own border-radius —
+     visually identical at desktop widths, swipeable at mobile widths. */
+  overflow-x: auto;
   margin-bottom: 16px;
 }
 .table-card-header {
@@ -656,6 +666,10 @@ rect.hm-out    { fill: transparent; pointer-events: none; }
   #sidebar { width: 60px; }
   .logo span, .nav-link span:not(.status-dot), .nav-footer .status-text { display: none; }
   .nav-link { justify-content: center; padding: 12px; }
+  /* Active border-left compensates with its 3 px on desktop; on mobile
+     the nav-link is centred so the compensation is wrong — turn the
+     accent into a left-strip without padding tricks. */
+  .nav-link.active { padding-left: 12px; border-left-width: 3px; }
   #content { margin-left: 60px; padding: 16px; }
   .form-row { grid-template-columns: 1fr; }
   .stats-row { grid-template-columns: 1fr 1fr; }
@@ -664,4 +678,24 @@ rect.hm-out    { fill: transparent; pointer-events: none; }
   .wizard-body { padding: 20px 16px; }
   .wizard-footer { padding: 12px 16px; }
   .review-grid { grid-template-columns: 1fr; }
+  /* Chart cards: tighter padding, hide the subtitle (it's mostly
+     explanatory, not load-bearing) so the title gets full width.
+     The refreshing-dot stays since it's a status signal. */
+  .chart-card { padding: 12px; }
+  .chart-card h3 { font-size: 13px; }
+  .chart-card-sub { display: none; }
+  /* Page header buttons can wrap below the title on narrow widths. */
+  .page-header h1 { font-size: 19px; }
+  /* Fleet heatmap's natural pixel-height shouldn't squish on narrow
+     widths — let it overflow horizontally instead. Wraps in a scroll
+     container at the parent (.chart-card) level. */
+  .chart-card { overflow-x: auto; }
+}
+
+@media (max-width: 480px) {
+  /* True phone width: drop stats to a single column so the 28 px value
+     doesn't crowd the label. */
+  .stats-row { grid-template-columns: 1fr; }
+  /* Modal headers + body get tighter padding so the form has room. */
+  .modal .modal-body { padding: 16px; }
 }

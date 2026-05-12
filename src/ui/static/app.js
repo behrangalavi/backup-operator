@@ -564,14 +564,18 @@ let _fleetSummaryInFlight = false;
 async function refreshFleetSummary() {
   if (_fleetSummaryInFlight) return;
   _fleetSummaryInFlight = true;
+  // Don't poison the cache on transient API failure. The previous
+  // `.catch(() => ({}))` pattern wrote empty arrays AND updated
+  // lastFetch, so the next 60 s of renders showed empty charts even
+  // though the actual data was unchanged. Preserve the last good
+  // values; leaving lastFetch alone means the next user-initiated
+  // render retries immediately instead of waiting out the full TTL.
+  //
+  // CRITICAL: the post-fetch renderDashboard call MUST happen after
+  // _fleetSummaryInFlight is reset, or chartOrLoading sees
+  // (empty data + inFlight=true) and renders a permanent spinner.
+  let success = false;
   try {
-    // Don't poison the cache on transient API failure. The previous
-    // `.catch(() => ({}))` pattern wrote empty arrays AND updated
-    // lastFetch, so the next 60 s of renders showed empty charts
-    // even though the actual data was unchanged. Preserve the last
-    // good values; leaving lastFetch alone means the next user-
-    // initiated render retries immediately instead of waiting out
-    // the full TTL.
     let r;
     try {
       r = await api('/api/dashboard/heatmap?days=30');
@@ -587,20 +591,23 @@ async function refreshFleetSummary() {
       verificationDaily: r.verificationDaily || [],
       lastFetch:         Date.now(),
     };
-    if (currentPage() === 'dashboard') renderDashboard(false);
+    success = true;
   } finally {
     _fleetSummaryInFlight = false;
   }
+  if (success && currentPage() === 'dashboard') renderDashboard(false);
 }
 async function refreshSlowProbes() {
   if (_slowFetchInFlight) return;
   _slowFetchInFlight = true;
+  // Same render-after-inFlight-reset rule as refreshFleetSummary —
+  // otherwise the post-fetch repaint sees inFlight=true and shows
+  // a stuck loading state.
+  let success = false;
   try {
     // Promise.allSettled so a transient failure on ONE endpoint
     // doesn't blow away the other's good response. If both failed,
-    // preserve the previous cache entirely — same rationale as
-    // refreshFleetSummary; an empty cache + recent lastFetch would
-    // hide real data behind 60 s of empty-state.
+    // preserve the previous cache entirely.
     const [hRes, cRes] = await Promise.allSettled([
       api('/api/destination-health'),
       api('/api/consistency-check'),
@@ -613,12 +620,11 @@ async function refreshSlowProbes() {
       consistency: cOk ? (cRes.value || []) : _slowProbes.consistency,
       lastFetch:   Date.now(),
     };
-    // Repaint only if the dashboard is the active page when the probes
-    // finish — otherwise the cache is just ready for the next visit.
-    if (currentPage() === 'dashboard') renderDashboard(false);
+    success = true;
   } finally {
     _slowFetchInFlight = false;
   }
+  if (success && currentPage() === 'dashboard') renderDashboard(false);
 }
 
 // renderTargetSparkline shows the target's last 7 daily statuses as
@@ -1380,9 +1386,9 @@ let _destStatsInFlight = false;
 async function refreshDestStats() {
   if (_destStatsInFlight) return;
   _destStatsInFlight = true;
+  // Same render-after-inFlight-reset rule — see refreshFleetSummary.
+  let success = false;
   try {
-    // Preserve last good cache on failure — same rationale as
-    // refreshFleetSummary/refreshSlowProbes.
     let s;
     try {
       s = await api('/api/destination-stats');
@@ -1390,11 +1396,12 @@ async function refreshDestStats() {
       return;
     }
     _destStatsCache = { stats: s || [], lastFetch: Date.now() };
-    if (currentPage() === 'destinations' || currentPage() === 'dashboard') {
-      renderPage(currentPage(), false);
-    }
+    success = true;
   } finally {
     _destStatsInFlight = false;
+  }
+  if (success && (currentPage() === 'destinations' || currentPage() === 'dashboard')) {
+    renderPage(currentPage(), false);
   }
 }
 

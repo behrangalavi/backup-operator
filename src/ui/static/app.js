@@ -450,10 +450,18 @@ function renderSortControl(list, options) {
 
 // --- Dashboard ---
 // Cached slow-probe results so SSE-triggered re-renders don't re-fire the
-// probes on every refresh tick. A separate timer refreshes them in the
-// background, decoupling expensive backend probes from cheap re-renders.
+// probes on every refresh tick. TTL of 60 s comfortably outlives the SSE
+// broadcast cadence (10 s) and Bridge's typical page-navigation pattern;
+// stale-by-up-to-a-minute destination-health is fine for a dashboard.
+// A separate _slowFetchInFlight guard prevents the "kick off probe → not
+// done yet → next refresh kicks off another probe in parallel" storm
+// that pinned an unreachable destination's 8 s timeout on every render.
+const SLOW_PROBE_TTL_MS = 60000;
 let _slowProbes = { health: [], consistency: [], lastFetch: 0 };
+let _slowFetchInFlight = false;
 async function refreshSlowProbes() {
+  if (_slowFetchInFlight) return;
+  _slowFetchInFlight = true;
   try {
     const [h, c] = await Promise.all([
       api('/api/destination-health').catch(() => []),
@@ -463,7 +471,9 @@ async function refreshSlowProbes() {
     // Repaint only if the dashboard is the active page when the probes
     // finish — otherwise the cache is just ready for the next visit.
     if (currentPage() === 'dashboard') renderDashboard(false);
-  } catch(e) { /* partial data is ok */ }
+  } catch(e) { /* partial data is ok */ } finally {
+    _slowFetchInFlight = false;
+  }
 }
 
 async function renderDashboard(loading = true) {
@@ -482,10 +492,12 @@ async function renderDashboard(loading = true) {
   const healthEntries = _slowProbes.health;
   const consistencyIssues = _slowProbes.consistency;
 
-  // Kick off a slow-probe refresh in the background when the cache is
-  // stale (>15 s). The dashboard meanwhile renders with whatever the
-  // cache holds; once the refresh lands it re-renders just this page.
-  if (Date.now() - _slowProbes.lastFetch > 15000) refreshSlowProbes();
+  // Kick off a slow-probe refresh only on user-initiated renders (page
+  // navigation, manual reload) when the cache is stale. SSE-driven
+  // re-renders (loading=false) reuse whatever's cached — otherwise an
+  // unreachable destination's 8 s timeout × N dests would fire every
+  // 10 s SSE tick.
+  if (loading && Date.now() - _slowProbes.lastFetch > SLOW_PROBE_TTL_MS) refreshSlowProbes();
 
   const ok = targets.filter(t => t.Latest && !t.Latest.status?.includes('fail')).length;
   const failed = targets.filter(t => t.Latest?.status === 'failed').length;
@@ -1011,14 +1023,20 @@ window.confirmDeleteSource = async function(secretName) {
 };
 
 // Cached stats so SSE refreshes don't refire the per-destination probes.
-// Same shape as _slowProbes on the dashboard.
+// Same shape as _slowProbes on the dashboard. 60 s TTL + in-flight guard
+// for the same reason — see the SLOW_PROBE_TTL_MS comment above.
 let _destStatsCache = { stats: [], lastFetch: 0 };
+let _destStatsInFlight = false;
 async function refreshDestStats() {
+  if (_destStatsInFlight) return;
+  _destStatsInFlight = true;
   try {
     const s = await api('/api/destination-stats').catch(() => []);
     _destStatsCache = { stats: s || [], lastFetch: Date.now() };
     if (currentPage() === 'destinations') renderDestinations(false);
-  } catch(e) { /* partial data is ok */ }
+  } catch(e) { /* partial data is ok */ } finally {
+    _destStatsInFlight = false;
+  }
 }
 
 // --- Destinations ---
@@ -1029,7 +1047,7 @@ async function renderDestinations(loading = true) {
     dests = (await api('/api/destinations')) || [];
   } catch(e) { toast(e.message, 'error'); }
   const stats = _destStatsCache.stats;
-  if (Date.now() - _destStatsCache.lastFetch > 15000) refreshDestStats();
+  if (loading && Date.now() - _destStatsCache.lastFetch > SLOW_PROBE_TTL_MS) refreshDestStats();
   const statsByName = {};
   stats.forEach(s => { statsByName[s.name] = s; });
 

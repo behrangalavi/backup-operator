@@ -151,6 +151,10 @@ const sseEventPages = {
   backup_triggered:    ['dashboard', 'jobs', 'target', 'audit'],
   settings_updated:    ['settings', 'audit'],
   age_keys_updated:    ['age-keys', 'audit'],
+  // Emitted by the server when a background storage probe finishes
+  // refreshing the per-destination meta cache. The render path served
+  // stale data instantly; this event closes the loop with fresh data.
+  refresh:             ['dashboard', 'destinations', 'target'],
 };
 
 // scheduleSSERender coalesces a burst of events into a single render. The

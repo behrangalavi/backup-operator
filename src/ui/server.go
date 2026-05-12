@@ -101,12 +101,23 @@ func New(cfg Config) (*Server, error) {
 	}
 	broker := newSSEBroker()
 	broker.maxClients = cfg.MaxSSEClients
-	return &Server{
+	data := newK8sData(cfg.Client, cfg.Namespace, cfg.Logger.WithName("data"))
+	s := &Server{
 		cfg:  cfg,
 		tpl:  tpl,
-		data: newK8sData(cfg.Client, cfg.Namespace, cfg.Logger.WithName("data")),
+		data: data,
 		sse:  broker,
-	}, nil
+	}
+	// When a background storage probe finishes and refreshes the cache,
+	// emit a "refresh" SSE so the frontend can repaint with fresh data.
+	// The dashboard render path returns immediately with stale cache; this
+	// event closes the loop. Wired on the concrete *k8sData rather than
+	// the dataSource interface — onRefresh is an internal coupling
+	// between cache and broker, not part of the data API.
+	data.onRefresh = func() {
+		s.broadcast(sseEvent{Type: "refresh", Data: "targets"})
+	}
+	return s, nil
 }
 
 // Start blocks until ctx is cancelled, after which the HTTP listener is

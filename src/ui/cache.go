@@ -5,16 +5,18 @@ import (
 	"time"
 )
 
-// cache is a tiny TTL key→value store.
+// cache is a tiny TTL key→value store with stale-while-revalidate semantics.
 //
 // The UI may serve many hits per second while a `mc ls` over SFTP costs
-// hundreds of ms. We don't need invalidation — backup runs are minute-grained,
-// stale-by-30s is fine. A single sync.Mutex is plenty for the request rates
-// we expect from a cluster-internal dashboard.
+// hundreds of ms — and an unreachable destination can pin every dashboard
+// click on its 8 s probe timeout. We don't need invalidation — backup runs
+// are minute-grained, stale-by-30s is fine. A single sync.Mutex is plenty
+// for the request rates we expect from a cluster-internal dashboard.
 type cache[V any] struct {
-	mu  sync.Mutex
-	ttl time.Duration
-	m   map[string]cacheEntry[V]
+	mu      sync.Mutex
+	ttl     time.Duration
+	m       map[string]cacheEntry[V]
+	loading map[string]bool // dedup concurrent background refreshes per key
 }
 
 type cacheEntry[V any] struct {
@@ -23,11 +25,17 @@ type cacheEntry[V any] struct {
 }
 
 func newCache[V any](ttl time.Duration) *cache[V] {
-	return &cache[V]{ttl: ttl, m: make(map[string]cacheEntry[V])}
+	return &cache[V]{
+		ttl:     ttl,
+		m:       make(map[string]cacheEntry[V]),
+		loading: make(map[string]bool),
+	}
 }
 
 // getOrLoad returns a cached value or, on miss/expiry, calls load and stores
-// the result. load is invoked outside the lock.
+// the result. load is invoked outside the lock. Blocks the caller for the
+// full load duration — use getOrRefreshAsync where blocking the request is
+// not acceptable (UI render paths).
 func (c *cache[V]) getOrLoad(key string, load func() (V, error)) (V, error) {
 	c.mu.Lock()
 	if e, ok := c.m[key]; ok && time.Now().Before(e.exp) {
@@ -46,6 +54,42 @@ func (c *cache[V]) getOrLoad(key string, load func() (V, error)) (V, error) {
 	c.m[key] = cacheEntry[V]{v: v, exp: time.Now().Add(c.ttl)}
 	c.mu.Unlock()
 	return v, nil
+}
+
+// getOrRefreshAsync returns the cached value immediately (zero-value if
+// nothing is cached yet) and spawns a background refresh when the entry
+// is missing or expired. Returns (value, hasFresh):
+//
+//   - hasFresh=true  → value is non-stale (within TTL), no refresh kicked
+//   - hasFresh=false → value is stale or zero, refresh running in background
+//
+// Concurrent calls for the same key share a single refresh goroutine.
+// onRefresh is invoked after a successful refresh completes — typically
+// used to broadcast an SSE event so clients know fresh data is ready.
+func (c *cache[V]) getOrRefreshAsync(key string, load func() (V, error), onRefresh func()) (V, bool) {
+	c.mu.Lock()
+	e, ok := c.m[key]
+	fresh := ok && time.Now().Before(e.exp)
+	if fresh || c.loading[key] {
+		c.mu.Unlock()
+		return e.v, fresh
+	}
+	c.loading[key] = true
+	c.mu.Unlock()
+
+	go func() {
+		v, err := load()
+		c.mu.Lock()
+		delete(c.loading, key)
+		if err == nil {
+			c.m[key] = cacheEntry[V]{v: v, exp: time.Now().Add(c.ttl)}
+		}
+		c.mu.Unlock()
+		if err == nil && onRefresh != nil {
+			onRefresh()
+		}
+	}()
+	return e.v, false
 }
 
 // invalidate drops a key. Currently unused — kept for explicit refresh wiring later.

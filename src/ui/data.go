@@ -84,6 +84,13 @@ type k8sData struct {
 
 	latestCache *cache[map[string]*meta.MetaFile] // per-destination → target→meta
 	runsCache   *cache[[]*meta.MetaFile]          // per (target,destination)
+
+	// onRefresh is called from background storage probes once fresh data
+	// is in the cache. Server wires this to its SSE broker so the
+	// frontend repaints when slow destinations finish refreshing,
+	// without ever blocking the original request that triggered the
+	// refresh. Optional — nil disables the broadcast.
+	onRefresh func()
 }
 
 func newK8sData(c client.Client, namespace string, log logr.Logger) *k8sData {
@@ -109,17 +116,32 @@ func (d *k8sData) listTargets(ctx context.Context) ([]targetSummary, error) {
 	// Pull "latest meta per target" once per destination, then merge by
 	// target. The first destination that has a recorded run for a target
 	// wins; that's good enough for an overview row.
+	//
+	// IMPORTANT: this is the hot path for /api/targets, which the dashboard
+	// hits on every navigation. We MUST NOT block on the storage probe —
+	// an unreachable destination would otherwise pin every dashboard click
+	// on its 8 s timeout. getOrRefreshAsync returns whatever's cached
+	// (zero-value on first ever miss) and spawns the refresh in the
+	// background; onRefresh fires an SSE event so the frontend repaints
+	// when fresh data lands.
 	latestByTarget := map[string]*meta.MetaFile{}
 	for _, dest := range dests {
-		perDest, err := d.latestCache.getOrLoad(dest.Name, func() (map[string]*meta.MetaFile, error) {
+		dest := dest // capture for the goroutine closure
+		perDest, _ := d.latestCache.getOrRefreshAsync(dest.Name, func() (map[string]*meta.MetaFile, error) {
+			// Background refresh runs in its own goroutine — use a fresh
+			// context with a sane upper bound so a hung destination can't
+			// hold a goroutine forever. The original request's ctx is
+			// the wrong one here (it has likely returned to the client
+			// by the time we run).
+			rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 			st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, d.log.WithName("storage"))
 			if err != nil {
 				return nil, err
 			}
-			return meta.LatestPerTarget(ctx, st)
-		})
-		if err != nil {
-			d.log.V(1).Info("destination unreadable for latest-summary", "destination", dest.Name, "err", err.Error())
+			return meta.LatestPerTarget(rctx, st)
+		}, d.onRefresh)
+		if perDest == nil {
 			continue
 		}
 		for tgt, m := range perDest {

@@ -264,9 +264,22 @@ function currentParam() {
   return parts.length > 1 ? parts.slice(1).join('/') : null;
 }
 
+// _renderGen is a monotonic counter bumped on every renderPage() call
+// and every external render trigger (SSE, refresh callbacks). Each
+// async render function captures the current gen at entry; before
+// writing content.innerHTML it checks isStaleRender(gen). When the
+// user clicks View 1 → starts loading → clicks View 2, View 1's stale
+// fetch resolves later and used to overwrite View 2's content,
+// producing the "page flickers back and forth" symptom. Now View 1's
+// late write is dropped because its gen no longer matches.
+let _renderGen = 0;
+function newRenderGen() { return ++_renderGen; }
+function isStaleRender(gen) { return gen !== _renderGen; }
+
 window.addEventListener('hashchange', () => renderPage(currentPage()));
 
 function renderPage(page, loading = true) {
+  newRenderGen(); // bump first so any in-flight render sees its gen as stale
   $$('.nav-link').forEach(a => {
     a.classList.toggle('active', a.dataset.page === page);
   });
@@ -773,6 +786,7 @@ function renderHeroPanel(targets, dests, jobs) {
 }
 
 async function renderDashboard(loading = true) {
+  const _gen = _renderGen;
   if (loading) showLoading();
   let targets = [], dests = [], jobs = [];
   // Render as soon as the fast K8s-API calls return. The slow endpoints
@@ -818,6 +832,10 @@ async function renderDashboard(loading = true) {
   };
   const ds = sortState.dashboard;
   const sortedTargets = sortBy(targets, dashGetters[ds.col] || dashGetters.lastRun, ds.dir);
+
+  // User navigated away while we were awaiting — drop the write so
+  // we don't clobber the page they're actually looking at now.
+  if (isStaleRender(_gen)) return;
 
   content.innerHTML = `
     <div class="page-header">
@@ -975,9 +993,11 @@ async function renderDashboard(loading = true) {
 
 // --- Sources ---
 async function renderSources(loading = true) {
+  const _gen = _renderGen;
   if (loading) showLoading();
   let targets = [];
   try { targets = (await api('/api/targets')) || []; } catch(e) { toast(e.message, 'error'); }
+  if (isStaleRender(_gen)) return;
 
   const srcGetters = {
     createdAt: t => parseTsRFC(t.CreatedAt),
@@ -1407,11 +1427,13 @@ async function refreshDestStats() {
 
 // --- Destinations ---
 async function renderDestinations(loading = true) {
+  const _gen = _renderGen;
   if (loading) showLoading();
   let dests = [];
   try {
     dests = (await api('/api/destinations')) || [];
   } catch(e) { toast(e.message, 'error'); }
+  if (isStaleRender(_gen)) return;
   const stats = _destStatsCache.stats;
   if (loading && Date.now() - _destStatsCache.lastFetch > SLOW_PROBE_TTL_MS) refreshDestStats();
   const statsByName = {};
@@ -1751,6 +1773,7 @@ function getAlertDescription(alertname) {
 
 // --- Alerts ---
 async function renderAlerts(loading = true) {
+  const _gen = _renderGen;
   if (loading) showLoading();
 
   // Fetch alerts + status in parallel
@@ -1909,6 +1932,8 @@ receivers:
   const testBtn = statusResp && statusResp.alertmanager && statusResp.alertmanager.reachable
     ? '<button class="btn btn-secondary btn-sm" onclick="sendTestAlert()" id="btnTestAlert">🧪 ' + tr('buttons.sendTest') + '</button>'
     : '';
+
+  if (isStaleRender(_gen)) return;
 
   content.innerHTML = `
     <div class="page-header">
@@ -2081,6 +2106,7 @@ function renderProgressCell(j) {
 }
 
 async function renderJobs(loading = true) {
+  const _gen = _renderGen;
   if (loading) showLoading();
   let jobs = [];
   try { jobs = (await api('/api/jobs')) || []; } catch(e) { toast(e.message, 'error'); }
@@ -2094,6 +2120,8 @@ async function renderJobs(loading = true) {
   };
   const js = sortState.jobs;
   const sortedJobs = sortBy(jobs, jobGetters[js.col] || jobGetters.startTime, js.dir);
+
+  if (isStaleRender(_gen)) return;
 
   content.innerHTML = `
     <div class="page-header">
@@ -2139,12 +2167,14 @@ async function renderJobs(loading = true) {
 // --- Audit log ---
 let auditFilter = 'all';
 async function renderAudit(loading = true) {
+  const _gen = _renderGen;
   if (loading) showLoading();
   let data = { entries: [], total: 0, limit: 200 };
   try {
     const url = '/api/audit-log' + (auditFilter !== 'all' ? '?category=' + encodeURIComponent(auditFilter) : '');
     data = (await api(url)) || data;
   } catch(e) { toast(e.message, 'error'); }
+  if (isStaleRender(_gen)) return;
 
   const entries = data.entries || [];
   const truncated = data.total > entries.length;
@@ -3097,6 +3127,7 @@ function formatNum(n) {
 }
 
 async function renderTargetDetail(name, loading = true) {
+  const _gen = _renderGen;
   // Empty name shouldn't reach here from a normal click — hash is
   // `#/target/<name>` and currentParam returns the second segment. If
   // we got here with no name, the hash was malformed (e.g. someone
@@ -3105,6 +3136,7 @@ async function renderTargetDetail(name, loading = true) {
   // wrong instead of "I clicked and ended up somewhere else".
   if (!name) {
     if (loading) showLoading();
+    if (isStaleRender(_gen)) return;
     content.innerHTML = `<div class="empty-state"><h3>Missing target name in URL</h3>
       <p>Hash was <code>${escAttr(location.hash)}</code> — expected <code>#/target/&lt;name&gt;</code>.</p>
       <a href="#/" class="btn btn-secondary">Back to Dashboard</a></div>`;
@@ -3116,6 +3148,7 @@ async function renderTargetDetail(name, loading = true) {
   // /api/jobs failure doesn't blow away targets and leave us showing
   // "target not found" for a real target.
   const got = await fastDataAllSettled(['/api/targets', '/api/destinations', '/api/jobs']);
+  if (isStaleRender(_gen)) return;
   targets = got[0] || [];
   dests   = got[1] || [];
   jobs    = got[2] || [];
@@ -3128,6 +3161,7 @@ async function renderTargetDetail(name, loading = true) {
   }
 
   try { runs = (await api('/api/targets/' + name + '/runs')) || []; } catch(e) { /* ok */ }
+  if (isStaleRender(_gen)) return;
 
   // Find any in-flight Job for this target so we can render the same
   // progress bar the Jobs page uses. Multiple running jobs is rare but
@@ -3621,6 +3655,7 @@ function getSettingsSteps() {
 
 window.renderSettings = renderSettings;
 async function renderSettings(loading = true) {
+  const _gen = _renderGen;
   if (loading) showLoading();
   let settings = null;
   let errorMsg = '';
@@ -3631,6 +3666,8 @@ async function renderSettings(loading = true) {
     errorMsg = e.message || 'unknown error';
     console.error('[Settings] Failed to load:', errorMsg);
   }
+
+  if (isStaleRender(_gen)) return;
 
   if (!settings) {
     window._currentSettings = null;
@@ -3697,7 +3734,9 @@ function renderSettingsPage(settings) {
 
 // --- Age Keys page ---
 async function renderAgeKeys(loading = true) {
+  const _gen = _renderGen;
   if (loading) showLoading();
+  if (isStaleRender(_gen)) return;
   content.innerHTML = `
     <div class="page-header">
       <div>

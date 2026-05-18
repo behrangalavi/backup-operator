@@ -182,7 +182,7 @@ const sseEventPages = {
   // Emitted by the server when a background storage probe finishes
   // refreshing the per-destination meta cache. The render path served
   // stale data instantly; this event closes the loop with fresh data.
-  refresh:             ['dashboard', 'destinations', 'target'],
+  refresh:             ['dashboard', 'sources', 'destinations', 'target'],
   // Emitted by the JobWatcher controller on every K8s Job state
   // transition in the backup namespace (create, pod-start, complete,
   // fail, delete). Dashboard + Jobs page + Target detail all care.
@@ -264,14 +264,16 @@ function currentParam() {
   return parts.length > 1 ? parts.slice(1).join('/') : null;
 }
 
-// _renderGen is a monotonic counter bumped on every renderPage() call
-// and every external render trigger (SSE, refresh callbacks). Each
-// async render function captures the current gen at entry; before
-// writing content.innerHTML it checks isStaleRender(gen). When the
-// user clicks View 1 → starts loading → clicks View 2, View 1's stale
-// fetch resolves later and used to overwrite View 2's content,
-// producing the "page flickers back and forth" symptom. Now View 1's
-// late write is dropped because its gen no longer matches.
+// _renderGen is a monotonic counter bumped ONLY on user-initiated
+// navigation (renderPage with loading=true). Each async render function
+// captures the current gen at entry; before writing content.innerHTML
+// it checks isStaleRender(gen). When the user clicks View 1 → starts
+// loading → clicks View 2, View 1's stale fetch resolves later and
+// would overwrite View 2's content, producing the "page flickers back
+// and forth" symptom. Now View 1's late write is dropped because its
+// gen no longer matches. Background SSE re-renders (loading=false) do
+// NOT bump the gen — so rapid SSE events can never starve a user-
+// initiated render.
 let _renderGen = 0;
 function newRenderGen() { return ++_renderGen; }
 function isStaleRender(gen) { return gen !== _renderGen; }
@@ -279,7 +281,15 @@ function isStaleRender(gen) { return gen !== _renderGen; }
 window.addEventListener('hashchange', () => renderPage(currentPage()));
 
 function renderPage(page, loading = true) {
-  newRenderGen(); // bump first so any in-flight render sees its gen as stale
+  // Bump gen ONLY on user-initiated navigation (loading=true) — this
+  // ensures a user click always completes its render. Background SSE
+  // re-renders (loading=false) reuse the current gen so they cannot
+  // invalidate a user-initiated render that is still awaiting data.
+  // Without this guard, rapid SSE events (e.g. job_state_change during
+  // an active backup) each bumped the gen and dropped the previous
+  // render — including the user's — leaving the page stuck on the
+  // loading spinner until events calmed down.
+  if (loading) newRenderGen();
   $$('.nav-link').forEach(a => {
     a.classList.toggle('active', a.dataset.page === page);
   });
@@ -3044,14 +3054,7 @@ function renderStorageByDestination(targets, dests) {
   </div>`;
 }
 
-// Stable colour from target name — same target gets the same colour across
-// all bars and across page reloads. djb2-style hash → HSL hue.
-function colorForTarget(name) {
-  let hash = 5381;
-  for (let i = 0; i < name.length; i++) hash = ((hash << 5) + hash + name.charCodeAt(i)) | 0;
-  const hue = Math.abs(hash) % 360;
-  return 'hsl(' + hue + ', 55%, 55%)';
-}
+// colorForTarget is defined once above (near hashHue) — do not duplicate.
 
 // Per-table row-count trend on the target detail page. Builds a name→history
 // map across all successful runs, then renders the latest run's tables sorted

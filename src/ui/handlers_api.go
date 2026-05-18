@@ -1207,7 +1207,7 @@ func (s *Server) handleAPIDestinationStats(w http.ResponseWriter, r *http.Reques
 				stat.TotalSizeBytes += o.Size
 				if strings.HasSuffix(o.Path, ".meta.json") {
 					stat.MetaCount++
-				} else if strings.HasSuffix(o.Path, ".sql.gz.age") || strings.HasSuffix(o.Path, ".archive.gz.age") {
+				} else if strings.HasSuffix(o.Path, ".sql.gz.age") {
 					stat.BackupCount++
 				}
 			}

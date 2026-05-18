@@ -49,6 +49,10 @@ const (
 	tlsModeImplicit = "implicit"
 )
 
+// Compile-time interface checks.
+var _ storage.Storage = (*ftpsStorage)(nil)
+var _ storage.BatchStorage = (*ftpsStorage)(nil)
+
 type ftpsStorage struct {
 	name        string
 	addr        string
@@ -351,4 +355,64 @@ func (s *ftpsStorage) RemoveDirectory(ctx context.Context, p string) error {
 	}
 	defer func() { _ = c.Quit() }()
 	return c.RemoveDir(s.full(p))
+}
+
+// WithSession opens one FTPS connection and returns a Storage that reuses
+// it for every call. The caller MUST call closer() when done. This
+// prevents NAS firmware (QNAP, Synology) from triggering Network Access
+// Protection IP-blocks during retention — without it, deleting 30 old
+// dumps opens 30 separate TLS connections in rapid succession.
+func (s *ftpsStorage) WithSession(ctx context.Context) (storage.Storage, func() error, error) {
+	c, err := s.dial(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	sess := &ftpsSession{parent: s, c: c}
+	closer := func() error { return c.Quit() }
+	return sess, closer, nil
+}
+
+// ftpsSession wraps a single FTPS connection so multiple List/Delete calls
+// don't re-dial. Mirrors sftpSession in the sftp package.
+type ftpsSession struct {
+	parent *ftpsStorage
+	c      *ftp.ServerConn
+}
+
+func (s *ftpsSession) Name() string { return s.parent.name }
+
+func (s *ftpsSession) Upload(_ context.Context, p string, r io.Reader) error {
+	full := s.parent.full(p)
+	if err := mkdirAll(s.c, path.Dir(full)); err != nil {
+		return err
+	}
+	if err := s.c.Stor(full, r); err != nil {
+		_ = s.c.Delete(full)
+		return fmt.Errorf("store %s: %w", full, err)
+	}
+	return nil
+}
+
+func (s *ftpsSession) List(ctx context.Context, prefix string) ([]storage.Object, error) {
+	return walkList(ctx, s.c, s.parent.full(prefix), s.parent.stripPrefix)
+}
+
+func (s *ftpsSession) Get(_ context.Context, p string) (io.ReadCloser, error) {
+	resp, err := s.c.Retr(s.parent.full(p))
+	if err != nil {
+		return nil, fmt.Errorf("retr %s: %w", p, err)
+	}
+	// Don't wrap with ftpsReader — the session owns the connection.
+	return resp, nil
+}
+
+func (s *ftpsSession) Delete(_ context.Context, p string) error {
+	if err := s.c.Delete(s.parent.full(p)); err != nil {
+		return fmt.Errorf("delete %s: %w", p, err)
+	}
+	return nil
+}
+
+func (s *ftpsSession) RemoveDirectory(_ context.Context, p string) error {
+	return s.c.RemoveDir(s.parent.full(p))
 }

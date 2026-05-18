@@ -12,7 +12,6 @@ import (
 	"backup-operator/internal/safe"
 	"backup-operator/internal/secrets"
 	"backup-operator/metrics"
-	storageFactory "backup-operator/storage/factory"
 	"backup-operator/verifier"
 
 	"github.com/go-logr/logr"
@@ -106,7 +105,7 @@ func (p *Pipeline) recordFailure(
 		go func(d *secrets.Destination) {
 			defer wg.Done()
 			defer safe.Goroutine(log, "failure-meta", d.Name)
-			st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, log)
+			st, err := p.getStorage(d)
 			if err != nil {
 				log.V(1).Info("failure-meta: init storage failed", "destination", d.Name, "err", err.Error())
 				return

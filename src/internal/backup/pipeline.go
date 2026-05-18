@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"sync"
 	"time"
 
 	"backup-operator/analyzer"
@@ -16,6 +17,8 @@ import (
 	"backup-operator/internal/meta"
 	"backup-operator/internal/secrets"
 	"backup-operator/metrics"
+	"backup-operator/storage"
+	storageFactory "backup-operator/storage/factory"
 	"backup-operator/verifier"
 	"backup-operator/verifier/ephemeral"
 
@@ -62,6 +65,13 @@ type Pipeline struct {
 	spawner   ephemeral.Spawner
 	namespace string
 	ownerRef  *metav1.OwnerReference
+
+	// storageCache reuses storage clients across upload, meta-upload,
+	// and retention phases within a single Run(). The worker is one-shot
+	// so this avoids 3×N TCP+TLS handshakes (N = destination count).
+	// Guarded by storageMu for concurrent fan-out goroutines.
+	storageMu    sync.Mutex
+	storageCache map[string]storage.Storage
 }
 
 // DestinationProvider returns the current set of destinations at run time.
@@ -129,6 +139,25 @@ func (p *Pipeline) WithRestoreSpawner(s ephemeral.Spawner, namespace string, own
 	p.namespace = namespace
 	p.ownerRef = owner
 	return p
+}
+
+// getStorage returns a cached storage client for the destination, creating
+// one on first access. Thread-safe for concurrent fan-out goroutines.
+func (p *Pipeline) getStorage(d *secrets.Destination) (storage.Storage, error) {
+	p.storageMu.Lock()
+	defer p.storageMu.Unlock()
+	if p.storageCache == nil {
+		p.storageCache = make(map[string]storage.Storage)
+	}
+	if st, ok := p.storageCache[d.Name]; ok {
+		return st, nil
+	}
+	st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, p.logger)
+	if err != nil {
+		return nil, err
+	}
+	p.storageCache[d.Name] = st
+	return st, nil
 }
 
 // resolvePolicy turns the source's annotation values + global defaults into

@@ -15,7 +15,6 @@ import (
 	"backup-operator/internal/secrets"
 	"backup-operator/metrics"
 	"backup-operator/storage"
-	storageFactory "backup-operator/storage/factory"
 )
 
 // loadPreviousMeta returns the most recent successful meta across destinations.
@@ -34,7 +33,7 @@ func (p *Pipeline) loadPreviousMeta(ctx context.Context, dests []*secrets.Destin
 	// is running blind and the operator should know.
 	destAccessed := 0
 	for _, d := range dests {
-		st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, p.logger)
+		st, err := p.getStorage(d)
 		if err != nil {
 			p.logger.V(1).Info("baseline: storage init failed", "target", target, "destination", d.Name, "err", err.Error())
 			continue

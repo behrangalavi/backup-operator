@@ -618,6 +618,24 @@ func (s *Server) handleAPIJobs(w http.ResponseWriter, r *http.Request) {
 		out[i].EstimateSampleSize = n
 	}
 
+	if hasPaginationParams(r) {
+		limit, offset := parsePagination(r, 50)
+		total := len(out)
+		if offset > total {
+			offset = total
+		}
+		end := offset + limit
+		if end > total {
+			end = total
+		}
+		writeJSON(w, http.StatusOK, paginatedResponse{
+			Items:  out[offset:end],
+			Total:  total,
+			Limit:  limit,
+			Offset: offset,
+		})
+		return
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 

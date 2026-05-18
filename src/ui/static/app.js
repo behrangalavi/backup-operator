@@ -226,6 +226,9 @@ function handleSSEEvent(eventType) {
 }
 
 let eventSource = null;
+let _sseBackoff = 0;
+const _sseBaseDelay = 1000;
+const _sseMaxDelay = 30000;
 function connectSSE() {
   if (eventSource) eventSource.close();
   eventSource = new EventSource('/api/events');
@@ -235,6 +238,7 @@ function connectSSE() {
   eventSource.addEventListener('connected', () => {
     dot.className = 'status-dot connected';
     txt.textContent = tr('status.live');
+    _sseBackoff = 0;
   });
   // Each event re-renders only when the current page actually depends on
   // the changed resource. Other events are dropped — page renderers
@@ -250,7 +254,10 @@ function connectSSE() {
   eventSource.onerror = () => {
     dot.className = 'status-dot error';
     txt.textContent = tr('status.disconnected');
-    setTimeout(connectSSE, 5000);
+    const delay = Math.min(_sseBaseDelay * Math.pow(2, _sseBackoff), _sseMaxDelay);
+    const jitter = delay * (0.5 + Math.random() * 0.5);
+    _sseBackoff++;
+    setTimeout(connectSSE, jitter);
   };
 }
 

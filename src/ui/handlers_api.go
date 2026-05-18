@@ -510,7 +510,10 @@ func (s *Server) handleAPITriggerBackup(w http.ResponseWriter, r *http.Request) 
 
 	// Find the CronJob for this target.
 	var cronJobs batchv1.CronJobList
-	if err := s.cfg.Client.List(r.Context(), &cronJobs, client.InNamespace(s.cfg.Namespace)); err != nil {
+	if err := s.cfg.Client.List(r.Context(), &cronJobs,
+		client.InNamespace(s.cfg.Namespace),
+		client.MatchingLabels{"app.kubernetes.io/managed-by": "backup-operator"},
+	); err != nil {
 		writeError(w, http.StatusInternalServerError, codeInternal, "failed to list cronjobs")
 		return
 	}
@@ -1207,7 +1210,7 @@ func (s *Server) handleAPIDestinationStats(w http.ResponseWriter, r *http.Reques
 				stat.TotalSizeBytes += o.Size
 				if strings.HasSuffix(o.Path, ".meta.json") {
 					stat.MetaCount++
-				} else if strings.HasSuffix(o.Path, ".sql.gz.age") {
+				} else if labels.IsDumpSuffix(o.Path) {
 					stat.BackupCount++
 				}
 			}
@@ -1712,12 +1715,12 @@ func isSupportedDBType(t string) bool {
 	return false
 }
 
-// validateCronSchedule does basic structural validation of a cron expression.
-// Accepts standard 5-field cron (minute hour dom month dow).
+// validateCronSchedule validates a cron expression using the same 5-field
+// parser Kubernetes CronJobs use. Catches field-count errors AND invalid
+// values (e.g. minute=99) that the old len-only check missed.
 func validateCronSchedule(schedule string) string {
-	fields := strings.Fields(schedule)
-	if len(fields) != 5 {
-		return "schedule must have exactly 5 fields (minute hour day-of-month month day-of-week)"
+	if _, err := cronParser.Parse(schedule); err != nil {
+		return fmt.Sprintf("invalid cron schedule: %v", err)
 	}
 	return ""
 }

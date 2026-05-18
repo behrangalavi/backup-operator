@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"backup-operator/internal/labels"
 	"backup-operator/internal/meta"
 	"backup-operator/internal/secrets"
 	"backup-operator/storage"
@@ -253,7 +254,7 @@ func classifyKind(p string) string {
 	if strings.HasSuffix(p, ".meta.json") {
 		return "meta"
 	}
-	if strings.HasSuffix(p, ".sql.gz.age") {
+	if labels.IsDumpSuffix(p) {
 		return "dump"
 	}
 	return "other"

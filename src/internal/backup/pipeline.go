@@ -12,6 +12,7 @@ import (
 	"backup-operator/crypto"
 	"backup-operator/dumper"
 	dumperFactory "backup-operator/dumper/factory"
+	"backup-operator/internal/labels"
 	"backup-operator/internal/meta"
 	"backup-operator/internal/secrets"
 	"backup-operator/metrics"
@@ -210,7 +211,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		p.recordFailure(ctx, dests, src, timestamp, "temp-dir", runStart, err, log)
 		return fmt.Errorf("create temp dir: %w", err)
 	}
-	dumpFile := path.Join(p.tempDir, fmt.Sprintf("%s-%s.sql.gz.age", src.TargetName, timestamp))
+	dumpFile := path.Join(p.tempDir, fmt.Sprintf("%s-%s.%s", src.TargetName, timestamp, labels.DumpSuffix(src.Compression)))
 
 	// Decide whether THIS run gets a restore-verifier attached BEFORE we
 	// build the encryptor — if yes, we generate an ephemeral keypair and
@@ -334,7 +335,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		return fmt.Errorf("cancelled after dump: %w", err)
 	}
 
-	objectPath := buildObjectPath(src.TargetName, timestamp, "sql.gz.age")
+	objectPath := buildObjectPath(src.TargetName, timestamp, labels.DumpSuffix(src.Compression))
 	metaPath := buildObjectPath(src.TargetName, timestamp, "meta.json")
 
 	// Use preStats for analyzer comparison (same as before)

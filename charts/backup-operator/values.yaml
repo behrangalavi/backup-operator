@@ -54,10 +54,10 @@ agePublicKeys: ""
 resources:
   limits:
     cpu: 1000m
-    memory: 512Mi
+    memory: 1Gi
   requests:
     cpu: 100m
-    memory: 128Mi
+    memory: 256Mi
 
 # Resource limits for worker pods spawned by CronJobs. Size according to
 # the largest expected dump. A MySQL/Postgres dump of ~5 GB typically needs

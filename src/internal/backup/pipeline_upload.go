@@ -16,7 +16,6 @@ import (
 	"backup-operator/internal/secrets"
 	"backup-operator/metrics"
 	"backup-operator/storage"
-	storageFactory "backup-operator/storage/factory"
 
 	"github.com/go-logr/logr"
 )
@@ -84,7 +83,7 @@ func (p *Pipeline) uploadMeta(
 		go func(d *secrets.Destination) {
 			defer wg.Done()
 			defer safe.Goroutine(log, "meta-upload", d.Name)
-			st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, p.logger)
+			st, err := p.getStorage(d)
 			if err != nil {
 				log.Info("meta upload: init storage failed", "destination", d.Name, "err", err.Error())
 				return
@@ -156,7 +155,7 @@ func (p *Pipeline) uploadDumpOne(
 	d *secrets.Destination,
 	target, dumpFile, objectPath string,
 ) error {
-	st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, p.logger)
+	st, err := p.getStorage(d)
 	if err != nil {
 		return &PermanentError{Op: "init storage", Err: err}
 	}

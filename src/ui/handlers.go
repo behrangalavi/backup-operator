@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
+	"backup-operator/internal/labels"
 	"backup-operator/internal/secrets"
 )
 
@@ -56,6 +58,24 @@ func (s *Server) handleAPITargets(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.cfg.Logger.Error(err, "list targets (API)")
 		renderError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if hasPaginationParams(r) {
+		limit, offset := parsePagination(r, 50)
+		total := len(targets)
+		if offset > total {
+			offset = total
+		}
+		end := offset + limit
+		if end > total {
+			end = total
+		}
+		writeJSON(w, http.StatusOK, paginatedResponse{
+			Items:  targets[offset:end],
+			Total:  total,
+			Limit:  limit,
+			Offset: offset,
+		})
 		return
 	}
 	writeJSON(w, http.StatusOK, targets)
@@ -115,9 +135,10 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		contentType = "application/json"
 		filename = fmt.Sprintf("%s-%s.meta.json", target, timestamp)
 	case "dump":
-		objectPath = strings.TrimSuffix(run.Path, ".meta.json") + ".sql.gz.age"
+		suffix := labels.DumpSuffix(run.Compression)
+		objectPath = strings.TrimSuffix(run.Path, ".meta.json") + "." + suffix
 		contentType = "application/octet-stream"
-		filename = fmt.Sprintf("%s-%s.sql.gz.age", target, timestamp)
+		filename = fmt.Sprintf("%s-%s.%s", target, timestamp, suffix)
 	default:
 		http.NotFound(w, r)
 		return
@@ -147,7 +168,16 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		destsToTry = []*secrets.Destination{found}
 	}
 
-	for _, dest := range destsToTry {
+	if err := s.streamFromFirstDest(w, r, destsToTry, objectPath, contentType, filename, target, kind); err != nil {
+		renderError(w, http.StatusBadGateway, err.Error())
+	}
+}
+
+// streamFromFirstDest tries each destination in order; the first one that
+// yields the object wins. Extracted from handleDownload so the io.ReadCloser
+// lifetime is scoped to the function call rather than deferred in a loop.
+func (s *Server) streamFromFirstDest(w http.ResponseWriter, r *http.Request, dests []*secrets.Destination, objectPath, contentType, filename, target, kind string) error {
+	for _, dest := range dests {
 		st, err := s.storageFor(dest, "download")
 		if err != nil {
 			continue
@@ -156,17 +186,50 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		defer func() { _ = rc.Close() }()
-
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, filename))
 		w.Header().Set("X-Source-Destination", dest.Name)
-		if _, err := io.Copy(w, rc); err != nil {
-			s.cfg.Logger.Error(err, "stream download", "target", target, "kind", kind)
+		_, copyErr := io.Copy(w, rc)
+		_ = rc.Close()
+		if copyErr != nil {
+			s.cfg.Logger.Error(copyErr, "stream download", "target", target, "kind", kind)
 		}
-		return
+		return nil
 	}
-	renderError(w, http.StatusBadGateway, "no destination served the artifact")
+	return fmt.Errorf("no destination served the artifact")
+}
+
+// paginatedResponse wraps any list endpoint with offset-based pagination
+// metadata. Used when the client explicitly passes ?limit= or ?offset=.
+// Without those params, endpoints return a bare array for backward compat.
+type paginatedResponse struct {
+	Items  any `json:"items"`
+	Total  int `json:"total"`
+	Limit  int `json:"limit"`
+	Offset int `json:"offset"`
+}
+
+// hasPaginationParams returns true when the request carries explicit
+// limit or offset query parameters. Used to decide between paginated
+// envelope and backward-compatible bare array responses.
+func hasPaginationParams(r *http.Request) bool {
+	q := r.URL.Query()
+	return q.Get("limit") != "" || q.Get("offset") != ""
+}
+
+func parsePagination(r *http.Request, defaultLimit int) (limit, offset int) {
+	limit = defaultLimit
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 1000 {
+			limit = n
+		}
+	}
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	return
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"backup-operator/crypto"
+	"backup-operator/internal/labels"
 	"backup-operator/internal/meta"
 	"backup-operator/internal/secrets"
 	"backup-operator/storage"
@@ -38,7 +39,13 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-const dumpSuffix = ".sql.gz.age"
+// knownDumpSuffixes lists every encrypted-dump file extension the restore
+// CLI recognises. Order matters: newer suffix first so pickDumps matches
+// zstd-compressed dumps before falling back to gzip.
+var knownDumpSuffixes = []string{
+	"." + labels.DumpSuffix(labels.CompressionZstd),
+	"." + labels.DumpSuffix(labels.CompressionGzip),
+}
 
 type dumpEntry struct {
 	timestamp string
@@ -182,10 +189,16 @@ func pickDumps(objs []storage.Object) []dumpEntry {
 	out := make([]dumpEntry, 0, len(objs))
 	for _, o := range objs {
 		base := path.Base(o.Path)
-		if !strings.HasPrefix(base, "dump-") || !strings.HasSuffix(base, dumpSuffix) {
+		if !strings.HasPrefix(base, "dump-") {
 			continue
 		}
-		ts := strings.TrimSuffix(strings.TrimPrefix(base, "dump-"), dumpSuffix)
+		var ts string
+		for _, sfx := range knownDumpSuffixes {
+			if strings.HasSuffix(base, sfx) {
+				ts = strings.TrimSuffix(strings.TrimPrefix(base, "dump-"), sfx)
+				break
+			}
+		}
 		if ts == "" {
 			continue
 		}
@@ -293,7 +306,17 @@ func parseCutoff(s string) (time.Time, error) {
 // detectCompression reads the meta.json sidecar next to the dump and returns
 // the compression field. Falls back to "gzip" when meta is absent or unparseable.
 func detectCompression(ctx context.Context, st storage.Storage, dumpPath string, log logr.Logger) string {
-	metaPath := strings.TrimSuffix(dumpPath, dumpSuffix) + ".meta.json"
+	var metaPath string
+	for _, sfx := range knownDumpSuffixes {
+		if strings.HasSuffix(dumpPath, sfx) {
+			metaPath = strings.TrimSuffix(dumpPath, sfx) + ".meta.json"
+			break
+		}
+	}
+	if metaPath == "" {
+		log.V(1).Info("cannot derive meta path from dump, defaulting to gzip")
+		return "gzip"
+	}
 	rc, err := st.Get(ctx, metaPath)
 	if err != nil {
 		log.V(1).Info("meta.json not found, defaulting to gzip", "path", metaPath, "err", err)

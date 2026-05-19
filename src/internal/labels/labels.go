@@ -108,3 +108,25 @@ const (
 	CompressionGzip = "gzip"
 	CompressionZstd = "zstd"
 )
+
+// DumpSuffix returns the file extension for an encrypted dump based on the
+// compression algorithm: "sql.zst.age" for zstd, "sql.gz.age" for gzip
+// (or empty/unknown, preserving backward compat).
+func DumpSuffix(compression string) string {
+	if compression == CompressionZstd {
+		return "sql.zst.age"
+	}
+	return "sql.gz.age"
+}
+
+// IsDumpSuffix returns true if the path ends with any known encrypted dump
+// suffix (.sql.gz.age or .sql.zst.age). Used by retention classification,
+// storage scrubber, and destination stats to recognise dump artifacts
+// regardless of which compression algorithm was used.
+func IsDumpSuffix(path string) bool {
+	return hasSuffix(path, ".sql.gz.age") || hasSuffix(path, ".sql.zst.age")
+}
+
+func hasSuffix(s, suffix string) bool {
+	return len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix
+}

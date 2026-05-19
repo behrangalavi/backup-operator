@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"backup-operator/internal/labels"
 	"backup-operator/internal/safe"
 	"backup-operator/internal/secrets"
 	"backup-operator/metrics"
@@ -142,7 +143,7 @@ func (s *StorageScrubber) scrubOne(ctx context.Context, target string, d *secret
 		log.V(1).Info("scrub skipped: meta has no sha256 field (legacy run)")
 		return
 	}
-	dumpPath := dumpPathFromMeta(m.Path)
+	dumpPath := dumpPathFromMeta(m.Path, m.Compression)
 	if dumpPath == "" {
 		log.V(1).Info("scrub skipped: cannot derive dump path from meta", "meta", m.Path)
 		return
@@ -200,16 +201,14 @@ func (s *StorageScrubber) scrubOne(ctx context.Context, target string, d *secret
 }
 
 // dumpPathFromMeta replaces the trailing ".meta.json" with the encrypted dump
-// suffix (".sql.gz.age") used by the pipeline. Returns "" when the meta path
-// does not match the expected suffix — keeps the scrubber robust against
-// future format changes rather than silently scrubbing the wrong object.
-func dumpPathFromMeta(metaPath string) string {
+// suffix derived from the compression algorithm recorded in the meta. Returns
+// "" when the meta path does not match the expected suffix.
+func dumpPathFromMeta(metaPath, compression string) string {
 	const metaSuffix = ".meta.json"
-	const dumpSuffix = ".sql.gz.age"
 	if !strings.HasSuffix(metaPath, metaSuffix) {
 		return ""
 	}
 	base := strings.TrimSuffix(metaPath, metaSuffix)
-	return base + dumpSuffix
+	return base + "." + labels.DumpSuffix(compression)
 }
 

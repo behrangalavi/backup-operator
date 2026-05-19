@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"backup-operator/internal/labels"
 	"backup-operator/internal/meta"
 	"backup-operator/internal/secrets"
 	"backup-operator/storage"
-	storageFactory "backup-operator/storage/factory"
 
 	"github.com/go-logr/logr"
 )
@@ -97,7 +97,7 @@ func (p *Pipeline) retainForDestination(
 		return res
 	}
 
-	st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, log)
+	st, err := p.getStorage(dest)
 	if err != nil {
 		return fail("init storage", err)
 	}
@@ -253,7 +253,7 @@ func classifyKind(p string) string {
 	if strings.HasSuffix(p, ".meta.json") {
 		return "meta"
 	}
-	if strings.HasSuffix(p, ".sql.gz.age") {
+	if labels.IsDumpSuffix(p) {
 		return "dump"
 	}
 	return "other"

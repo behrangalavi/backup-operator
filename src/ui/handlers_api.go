@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -510,7 +509,10 @@ func (s *Server) handleAPITriggerBackup(w http.ResponseWriter, r *http.Request) 
 
 	// Find the CronJob for this target.
 	var cronJobs batchv1.CronJobList
-	if err := s.cfg.Client.List(r.Context(), &cronJobs, client.InNamespace(s.cfg.Namespace)); err != nil {
+	if err := s.cfg.Client.List(r.Context(), &cronJobs,
+		client.InNamespace(s.cfg.Namespace),
+		client.MatchingLabels{"app.kubernetes.io/managed-by": "backup-operator"},
+	); err != nil {
 		writeError(w, http.StatusInternalServerError, codeInternal, "failed to list cronjobs")
 		return
 	}
@@ -616,121 +618,29 @@ func (s *Server) handleAPIJobs(w http.ResponseWriter, r *http.Request) {
 		out[i].EstimateSampleSize = n
 	}
 
+	if hasPaginationParams(r) {
+		limit, offset := parsePagination(r, 50)
+		total := len(out)
+		if offset > total {
+			offset = total
+		}
+		end := offset + limit
+		if end > total {
+			end = total
+		}
+		writeJSON(w, http.StatusOK, paginatedResponse{
+			Items:  out[offset:end],
+			Total:  total,
+			Limit:  limit,
+			Offset: offset,
+		})
+		return
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 
-// --- Server-Sent Events ---
-
-type sseEvent struct {
-	Type string `json:"type"`
-	Data string `json:"data"`
-}
-
-type sseBroker struct {
-	mu         sync.Mutex
-	clients    map[chan sseEvent]struct{}
-	maxClients int // 0 = unlimited
-}
-
-func newSSEBroker() *sseBroker {
-	return &sseBroker{clients: make(map[chan sseEvent]struct{})}
-}
-
-// subscribe registers a new SSE client. Returns nil when the broker is at
-// maxClients capacity, in which case the caller MUST refuse the connection
-// rather than block — otherwise an unauthenticated client (UI auth is
-// pluggable) can pin operator memory by hoarding subscriptions.
-func (b *sseBroker) subscribe() chan sseEvent {
-	ch := make(chan sseEvent, 16)
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.maxClients > 0 && len(b.clients) >= b.maxClients {
-		close(ch)
-		return nil
-	}
-	b.clients[ch] = struct{}{}
-	return ch
-}
-
-func (b *sseBroker) unsubscribe(ch chan sseEvent) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if _, ok := b.clients[ch]; !ok {
-		return
-	}
-	delete(b.clients, ch)
-	close(ch)
-}
-
-func (b *sseBroker) publish(ev sseEvent) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for ch := range b.clients {
-		select {
-		case ch <- ev:
-		default:
-		}
-	}
-}
-
-func (s *Server) broadcast(ev sseEvent) {
-	if s.sse != nil {
-		s.sse.publish(ev)
-	}
-}
-
-// Broadcast is the public entry point for controllers and other
-// non-UI packages to push an SSE event. Wraps the internal sseEvent
-// type so callers don't need to import it. Safe to call from any
-// goroutine and before the SSE broker has any subscribers — the
-// broker's publish handles both cases.
-func (s *Server) Broadcast(eventType, data string) {
-	s.broadcast(sseEvent{Type: eventType, Data: data})
-}
-
-func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, codeInternal, "SSE not supported")
-		return
-	}
-
-	ch := s.sse.subscribe()
-	if ch == nil {
-		// Broker is full. Refuse explicitly so the client retries later
-		// rather than holding a half-open SSE stream that pins memory.
-		writeError(w, http.StatusServiceUnavailable, codeInternal, "too many SSE clients; retry shortly")
-		return
-	}
-	defer s.sse.unsubscribe(ch)
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-
-	// Send initial ping.
-	_, _ = fmt.Fprintf(w, "event: connected\ndata: ok\n\n")
-	flusher.Flush()
-
-	ctx := r.Context()
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case ev := <-ch:
-			data, _ := json.Marshal(ev)
-			_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, data)
-			flusher.Flush()
-		case <-ticker.C:
-			_, _ = fmt.Fprintf(w, ": keepalive\n\n")
-			flusher.Flush()
-		}
-	}
-}
+// SSE broker, subscribe, unsubscribe, publish, broadcast, handleSSE →
+// see sse.go
 
 // --- Helpers ---
 
@@ -1207,7 +1117,7 @@ func (s *Server) handleAPIDestinationStats(w http.ResponseWriter, r *http.Reques
 				stat.TotalSizeBytes += o.Size
 				if strings.HasSuffix(o.Path, ".meta.json") {
 					stat.MetaCount++
-				} else if strings.HasSuffix(o.Path, ".sql.gz.age") {
+				} else if labels.IsDumpSuffix(o.Path) {
 					stat.BackupCount++
 				}
 			}
@@ -1676,51 +1586,8 @@ func (s *Server) handleAPIConsistencyCheck(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, issues)
 }
 
-// --- Input validation helpers ---
-
-var k8sNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`)
-
-func validateK8sName(name string) string {
-	if len(name) > 253 {
-		return "name must be at most 253 characters"
-	}
-	if !k8sNameRe.MatchString(name) {
-		return "name must consist of lowercase alphanumeric characters, '-' or '.', and start/end with alphanumeric"
-	}
-	return ""
-}
-
-func validatePort(port string) string {
-	p, err := strconv.Atoi(strings.TrimSpace(port))
-	if err != nil {
-		return "port must be a number"
-	}
-	if p < 1 || p > 65535 {
-		return "port must be between 1 and 65535"
-	}
-	return ""
-}
-
-// isSupportedDBType is the single allow-list checked at the API edge. The
-// dumper factory is the only other place that knows about DB types; the UI
-// must stay in sync with it.
-func isSupportedDBType(t string) bool {
-	switch t {
-	case "postgres", "mysql", "mariadb", "mongo", "redis":
-		return true
-	}
-	return false
-}
-
-// validateCronSchedule does basic structural validation of a cron expression.
-// Accepts standard 5-field cron (minute hour dom month dow).
-func validateCronSchedule(schedule string) string {
-	fields := strings.Fields(schedule)
-	if len(fields) != 5 {
-		return "schedule must have exactly 5 fields (minute hour day-of-month month day-of-week)"
-	}
-	return ""
-}
+// Input validation helpers (validateK8sName, validatePort,
+// isSupportedDBType, validateCronSchedule) → see validation.go
 
 // uiReportingInstance returns a stable identifier for this operator pod
 // used as Event.ReportingInstance. K8s validates the field as non-empty

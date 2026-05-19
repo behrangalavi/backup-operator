@@ -6,15 +6,19 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"sync"
 	"time"
 
 	"backup-operator/analyzer"
 	"backup-operator/crypto"
 	"backup-operator/dumper"
 	dumperFactory "backup-operator/dumper/factory"
+	"backup-operator/internal/labels"
 	"backup-operator/internal/meta"
 	"backup-operator/internal/secrets"
 	"backup-operator/metrics"
+	"backup-operator/storage"
+	storageFactory "backup-operator/storage/factory"
 	"backup-operator/verifier"
 	"backup-operator/verifier/ephemeral"
 
@@ -61,6 +65,13 @@ type Pipeline struct {
 	spawner   ephemeral.Spawner
 	namespace string
 	ownerRef  *metav1.OwnerReference
+
+	// storageCache reuses storage clients across upload, meta-upload,
+	// and retention phases within a single Run(). The worker is one-shot
+	// so this avoids 3×N TCP+TLS handshakes (N = destination count).
+	// Guarded by storageMu for concurrent fan-out goroutines.
+	storageMu    sync.Mutex
+	storageCache map[string]storage.Storage
 }
 
 // DestinationProvider returns the current set of destinations at run time.
@@ -128,6 +139,25 @@ func (p *Pipeline) WithRestoreSpawner(s ephemeral.Spawner, namespace string, own
 	p.namespace = namespace
 	p.ownerRef = owner
 	return p
+}
+
+// getStorage returns a cached storage client for the destination, creating
+// one on first access. Thread-safe for concurrent fan-out goroutines.
+func (p *Pipeline) getStorage(d *secrets.Destination) (storage.Storage, error) {
+	p.storageMu.Lock()
+	defer p.storageMu.Unlock()
+	if p.storageCache == nil {
+		p.storageCache = make(map[string]storage.Storage)
+	}
+	if st, ok := p.storageCache[d.Name]; ok {
+		return st, nil
+	}
+	st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, p.logger)
+	if err != nil {
+		return nil, err
+	}
+	p.storageCache[d.Name] = st
+	return st, nil
 }
 
 // resolvePolicy turns the source's annotation values + global defaults into
@@ -210,7 +240,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		p.recordFailure(ctx, dests, src, timestamp, "temp-dir", runStart, err, log)
 		return fmt.Errorf("create temp dir: %w", err)
 	}
-	dumpFile := path.Join(p.tempDir, fmt.Sprintf("%s-%s.sql.gz.age", src.TargetName, timestamp))
+	dumpFile := path.Join(p.tempDir, fmt.Sprintf("%s-%s.%s", src.TargetName, timestamp, labels.DumpSuffix(src.Compression)))
 
 	// Decide whether THIS run gets a restore-verifier attached BEFORE we
 	// build the encryptor — if yes, we generate an ephemeral keypair and
@@ -334,7 +364,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		return fmt.Errorf("cancelled after dump: %w", err)
 	}
 
-	objectPath := buildObjectPath(src.TargetName, timestamp, "sql.gz.age")
+	objectPath := buildObjectPath(src.TargetName, timestamp, labels.DumpSuffix(src.Compression))
 	metaPath := buildObjectPath(src.TargetName, timestamp, "meta.json")
 
 	// Use preStats for analyzer comparison (same as before)

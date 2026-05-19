@@ -22,6 +22,7 @@ import (
 	"backup-operator/dumper"
 	"backup-operator/internal/alerts"
 	"backup-operator/internal/secrets"
+	"backup-operator/metrics"
 	"backup-operator/storage"
 	storageFactory "backup-operator/storage/factory"
 
@@ -224,7 +225,7 @@ func (s *Server) Start(ctx context.Context) error {
 		// accept large uploads — the worst case is a few KiB of JSON or an
 		// SSH key blob. Without this an unauthenticated POST of a multi-GB
 		// body OOMs the operator.
-		Handler:           limitBodyMiddleware(s.cfg.MaxBodyBytes, mux),
+		Handler:           latencyMiddleware(limitBodyMiddleware(s.cfg.MaxBodyBytes, mux)),
 		ReadHeaderTimeout: 5 * time.Second,
 		// MaxHeaderBytes defaults to 1MB which is fine; lower would require
 		// careful audit of cookies/auth-proxy headers downstream users add.
@@ -296,6 +297,40 @@ func limitBodyMiddleware(max int64, next http.Handler) http.Handler {
 			r.Body = http.MaxBytesReader(w, r.Body, max)
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	code int
+}
+
+func (sr *statusRecorder) WriteHeader(code int) {
+	sr.code = code
+	sr.ResponseWriter.WriteHeader(code)
+}
+
+func latencyMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip static assets and SSE — they are long-lived or high-volume
+		// and would pollute the histogram with noise.
+		if strings.HasPrefix(r.URL.Path, "/static/") || r.URL.Path == "/api/events" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, code: 200}
+		next.ServeHTTP(rec, r)
+		// Normalize path: strip the trailing resource name for CRUD routes
+		// so /api/sources/foo and /api/sources/bar collapse into one label.
+		p := r.URL.Path
+		for _, prefix := range []string{"/api/sources/", "/api/destinations/", "/api/targets/", "/api/trigger/", "/api/age-keys/", "/download/"} {
+			if strings.HasPrefix(p, prefix) {
+				p = prefix
+				break
+			}
+		}
+		metrics.HTTPRequestDuration.WithLabelValues(r.Method, p, strconv.Itoa(rec.code)).Observe(time.Since(start).Seconds())
 	})
 }
 

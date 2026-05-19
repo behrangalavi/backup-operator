@@ -259,6 +259,15 @@ var (
 		},
 		[]string{"target", "mode"},
 	)
+
+	HTTPRequestDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "backup_operator_http_request_duration_seconds",
+			Help:    "Latency of HTTP requests served by the UI/API server",
+			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+		},
+		[]string{"method", "path", "status"},
+	)
 )
 
 // gatherer holds the same registry we registered to, so the alerts package
@@ -294,6 +303,7 @@ func Register(registry prometheus.Registerer) {
 		restoreVerificationPassed,
 		restoreVerificationLastTimestamp,
 		restoreVerificationDuration,
+		HTTPRequestDuration,
 	)
 	if g, ok := registry.(prometheus.Gatherer); ok {
 		gatherer = g

@@ -2516,3 +2516,7 @@ document.addEventListener('click', function(e) {
     $$('.dropdown-menu.open').forEach(m => m.classList.remove('open'));
   }
 });
+
+// Expose page renderers used in inline onclick handlers (refresh buttons).
+window.renderAlerts = renderAlerts;
+window.renderAudit = renderAudit;

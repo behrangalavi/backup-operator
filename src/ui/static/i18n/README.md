@@ -10,7 +10,7 @@ embeds the whole `static/` tree at build time (`//go:embed static` in
 2. Translate values in place. Keep the key shape identical — missing keys
    fall back to English, then to the raw key, so partial dictionaries are
    safe to ship.
-3. Register the code in `static/app.js` → `availableLangs`.
+3. Register the code in `static/js/core.js` → `availableLangs`.
 4. Set `lang.name` to the language's native form (e.g. `"Italiano"`,
    `"Español"`); that is what the picker displays.
 
@@ -18,8 +18,8 @@ That is the entire contract — no backend code changes.
 
 ## Translating new strings
 
-Visible strings live in `static/app.js` (page renderers) and
-`static/index.html` (sidebar / shell).
+Visible strings live in `static/js/pages.js` (page renderers),
+`static/js/core.js` (helpers), and `static/index.html` (sidebar / shell).
 
 - Page renderers: replace the literal with `${tr('namespace.key')}` and
   add the key to every `<code>.json`. The named export is `tr` (not `t`)

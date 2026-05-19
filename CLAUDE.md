@@ -258,7 +258,11 @@ src/
 │   ├── static/          # SPA frontend (vanilla JS, no build step)
 │   │   ├── index.html   # SPA shell with sidebar (Dashboard / Sources / Destinations / Jobs / Alerts / Audit / Age Keys / Settings), modal, toast containers
 │   │   ├── style.css    # Dark theme, responsive layout, chart-svg + chart-svg-tall variants, gantt + heatmap + loading-spinner styles
-│   │   ├── app.js       # Hash-router, API helpers, page renderers, forms; seven dashboard charts (Storage Donut, Next-Run Gantt, Fleet Heatmap, Storage Growth, Anomaly Stream, Duration Distribution, Verification Trend); running-job progress bar shared between Jobs page and Target detail
+│   │   ├── js/          # ES-module split of the former monolithic app.js
+│   │   │   ├── core.js  # DOM helpers ($, $$), i18n, API, toast, modal, escape/format, sort state
+│   │   │   ├── charts.js # SVG chart renderers (heatmap, donut, gantt, growth, anomaly, duration, verification, sparkline, tables)
+│   │   │   ├── pages.js # Page renderers (dashboard, sources, destinations, alerts, jobs, audit, target detail, settings, age keys)
+│   │   │   └── app.js   # Entry point: SSE wiring, hash-router, renderPage switch, init
 │   │   └── i18n/        # EN/DE/FR translation dictionaries (loaded by lang picker)
 │   └── templates/       # Legacy Go HTML templates (kept for backward compat)
 └── docs/                # Read-only docs portal: serves CLAUDE.md + README.md + generated tech stack

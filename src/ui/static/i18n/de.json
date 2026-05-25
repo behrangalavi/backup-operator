@@ -237,7 +237,10 @@
     "nextRun": "Nächster Lauf",
     "nextRunImminent": "gleich",
     "in": "in",
-    "runningTitle": "Backup läuft gerade"
+    "runningTitle": "Backup läuft gerade",
+    "progressOverdue": "läuft {elapsed} — länger als üblich (Ø {est}, n={n})",
+    "progressNormal": "{elapsed} / ~{est} — {remaining} verbleibend (n={n})",
+    "progressNoEstimate": "läuft seit {elapsed}"
   },
   "form": {
     "source": {

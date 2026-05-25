@@ -237,7 +237,10 @@
     "nextRun": "Prochain lancement",
     "nextRunImminent": "imminent",
     "in": "dans",
-    "runningTitle": "Sauvegarde en cours"
+    "runningTitle": "Sauvegarde en cours",
+    "progressOverdue": "en cours {elapsed} — plus long que d'habitude (Ø {est}, n={n})",
+    "progressNormal": "{elapsed} / ~{est} — {remaining} restant (n={n})",
+    "progressNoEstimate": "en cours depuis {elapsed}"
   },
   "form": {
     "source": {

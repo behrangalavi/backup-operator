@@ -121,10 +121,15 @@ function applyStaticTranslations() {
 
 // --- API helpers ---
 async function api(path, opts = {}) {
-  const resp = await fetch(path, {
-    headers: { 'Content-Type': 'application/json', ...opts.headers },
-    ...opts
-  });
+  // Only set Content-Type on requests that carry a body. Sending it on
+  // bodyless GETs/DELETEs is harmless for same-origin but can trigger a
+  // CORS preflight (OPTIONS) when an auth proxy sits in front — which
+  // some proxies don't handle, breaking the request with a 405.
+  const headers = { ...opts.headers };
+  if (opts.body) {
+    headers['Content-Type'] = headers['Content-Type'] || 'application/json';
+  }
+  const resp = await fetch(path, { ...opts, headers });
   let data = {};
   try { data = await resp.json(); } catch (_) { /* empty body / non-JSON */ }
   if (!resp.ok) {
@@ -262,7 +267,7 @@ function escJS(s) {
 // Matches the legacy templates' "✗ failed (phase)" + title=error pattern.
 function failedBadge(m) {
   const phase = m && m.phase ? ' (' + escHTML(m.phase) + ')' : '';
-  const tip = m && (m.error || m.phase) ? escHTML((m.phase ? m.phase + ': ' : '') + (m.error || '')) : '';
+  const tip = m && (m.error || m.phase) ? escAttr((m.phase ? m.phase + ': ' : '') + (m.error || '')) : '';
   return `<span class="badge badge-failed"${tip ? ' title="' + tip + '"' : ''}>Failed${phase}</span>`;
 }
 

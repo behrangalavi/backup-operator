@@ -347,11 +347,18 @@ async function renderDashboard(loading = true) {
 
 
 // --- Sources ---
+let _sourcesLastGood = null;
 async function renderSources(loading = true) {
   const _gen = _renderGen;
   if (loading) showLoading();
   let targets = [];
-  try { targets = (await api('/api/targets')) || []; } catch(e) { toast(e.message, 'error'); }
+  try {
+    targets = (await api('/api/targets')) || [];
+    _sourcesLastGood = targets;
+  } catch(e) {
+    if (_sourcesLastGood) { targets = _sourcesLastGood; }
+    else { toast(e.message, 'error'); }
+  }
   if (isStaleRender(_gen)) return;
 
   const srcGetters = {
@@ -793,13 +800,18 @@ async function refreshDestStats() {
 
 
 // --- Destinations ---
+let _destsLastGood = null;
 async function renderDestinations(loading = true) {
   const _gen = _renderGen;
   if (loading) showLoading();
   let dests = [];
   try {
     dests = (await api('/api/destinations')) || [];
-  } catch(e) { toast(e.message, 'error'); }
+    _destsLastGood = dests;
+  } catch(e) {
+    if (_destsLastGood) { dests = _destsLastGood; }
+    else { toast(e.message, 'error'); }
+  }
   if (isStaleRender(_gen)) return;
   const stats = _destStatsCache.stats;
   if (loading && Date.now() - _destStatsCache.lastFetch > SLOW_PROBE_TTL_MS) refreshDestStats();
@@ -1456,21 +1468,28 @@ function renderProgressCell(j) {
     const fillCls = overdue ? 'job-progress-fill overdue' : 'job-progress-fill';
     const labelCls = overdue ? 'job-progress-label overdue' : 'job-progress-label';
     const label = overdue
-      ? `läuft ${fmtDurationShort(elapsed)} — länger als üblich (Ø ${fmtDurationShort(est)}, n=${sample})`
-      : `${fmtDurationShort(elapsed)} / ~${fmtDurationShort(est)} — ${fmtDurationShort(remaining)} verbleibend (n=${sample})`;
+      ? tr('target.progressOverdue', {elapsed: fmtDurationShort(elapsed), est: fmtDurationShort(est), n: sample})
+      : tr('target.progressNormal', {elapsed: fmtDurationShort(elapsed), est: fmtDurationShort(est), remaining: fmtDurationShort(remaining), n: sample});
     return `<div class="job-progress">
       <div class="job-progress-bar"><div class="${fillCls}" style="width:${(ratio * 100).toFixed(1)}%"></div></div>
       <div class="${labelCls}">${escHTML(label)}</div>
     </div>`;
   }
-  return `<span style="color:var(--text-muted)">läuft seit ${fmtDurationShort(elapsed)}</span>`;
+  return `<span style="color:var(--text-muted)">${escHTML(tr('target.progressNoEstimate', {elapsed: fmtDurationShort(elapsed)}))}</span>`;
 }
 
+let _jobsLastGood = null;
 async function renderJobs(loading = true) {
   const _gen = _renderGen;
   if (loading) showLoading();
   let jobs = [];
-  try { jobs = (await api('/api/jobs')) || []; } catch(e) { toast(e.message, 'error'); }
+  try {
+    jobs = (await api('/api/jobs')) || [];
+    _jobsLastGood = jobs;
+  } catch(e) {
+    if (_jobsLastGood) { jobs = _jobsLastGood; }
+    else { toast(e.message, 'error'); }
+  }
 
   const jobGetters = {
     name:      j => j.name || '',
@@ -1528,6 +1547,7 @@ async function renderJobs(loading = true) {
 
 // --- Audit log ---
 let auditFilter = 'all';
+let _auditLastGood = null;
 async function renderAudit(loading = true) {
   const _gen = _renderGen;
   if (loading) showLoading();
@@ -1535,7 +1555,11 @@ async function renderAudit(loading = true) {
   try {
     const url = '/api/audit-log' + (auditFilter !== 'all' ? '?category=' + encodeURIComponent(auditFilter) : '');
     data = (await api(url)) || data;
-  } catch(e) { toast(e.message, 'error'); }
+    _auditLastGood = data;
+  } catch(e) {
+    if (_auditLastGood) { data = _auditLastGood; }
+    else { toast(e.message, 'error'); }
+  }
   if (isStaleRender(_gen)) return;
 
   const entries = data.entries || [];
@@ -1966,7 +1990,7 @@ function renderScrubChip(h) {
   const tip = ok
     ? 'SHA256 scrub matched meta.json' + when
     : 'SHA256 scrub failed' + (h.scrubFailedTotal ? ' — ' + h.scrubFailedTotal + ' total failures' : '') + when;
-  return '<div style="font-size:10px;margin-top:2px"><span class="badge ' + cls + '" style="font-size:9px;padding:1px 4px" title="' + escHTML(tip) + '">' + icon + ' scrub</span></div>';
+  return '<div style="font-size:10px;margin-top:2px"><span class="badge ' + cls + '" style="font-size:9px;padding:1px 4px" title="' + escAttr(tip) + '">' + icon + ' scrub</span></div>';
 }
 
 // Run-history "Schema" cell. Combines schema-fingerprint drift and charset
@@ -2010,7 +2034,7 @@ function renderSchemaAgeRow(run) {
   if (isNaN(t.getTime())) return '';
   const days = Math.floor((Date.now() - t.getTime()) / 86400000);
   const label = days <= 0 ? tr('time.today') : days === 1 ? tr('time.oneDay') : tr('time.nDays', {n: days});
-  const tip = ' title="Schema fingerprint last changed at ' + escHTML(t.toISOString()) + '. Old schemas may not match the current application."';
+  const tip = ' title="Schema fingerprint last changed at ' + escAttr(t.toISOString()) + '. Old schemas may not match the current application."';
   return `<div class="detail-row"><span class="key">${tr('schemaAge.label')}</span><span class="val"${tip}>${tr('time.unchangedFor', {label})}</span></div>`;
 }
 
@@ -2026,7 +2050,7 @@ function renderVerificationBadge(v) {
   const cls = clsMap[v.verdict] || 'badge-pending';
   const labelKey = 'verification.verdictLabel.' + v.verdict;
   const label = tr(labelKey) === labelKey ? (v.verdict || '?') : tr(labelKey);
-  const tip = v.summary ? ' title="' + escHTML(v.summary) + '"' : '';
+  const tip = v.summary ? ' title="' + escAttr(v.summary) + '"' : '';
   return `<span class="badge ${cls}"${tip}>${label}</span>`;
 }
 
@@ -2047,7 +2071,7 @@ function renderRestoreVerificationBadge(rv) {
   const labelKey = 'verification.verdictLabel.' + rv.verdict;
   const label = tr(labelKey) === labelKey ? (rv.verdict || '?') : tr(labelKey);
   const mode = rv.mode ? ' · ' + escHTML(rv.mode) : '';
-  const tip = rv.summary ? ' title="' + escHTML(rv.summary) + '"' : '';
+  const tip = rv.summary ? ' title="' + escAttr(rv.summary) + '"' : '';
   return `<span class="badge ${cls}"${tip}>${label}${mode}</span>`;
 }
 
@@ -2261,15 +2285,10 @@ async function loadAgeKeysSection() {
   host.innerHTML = `<div class="table-card-header"><h2>${tr('ageKeys.title')}</h2></div><div class="empty-state"><div class="spinner"></div></div>`;
   let resp;
   try {
-    resp = await fetch('/api/age-keys').then(r => r.json());
+    resp = await api('/api/age-keys');
   } catch(e) {
     host.innerHTML = `<div class="table-card-header"><h2>${tr('ageKeys.titleShort')}</h2></div>
       <div class="empty-state"><p style="color:var(--danger)">${tr('toast.loadFailed', {error: e.message})}</p></div>`;
-    return;
-  }
-  if (!resp.ok && resp.message) {
-    host.innerHTML = `<div class="table-card-header"><h2>${tr('ageKeys.titleShort')}</h2></div>
-      <div class="empty-state"><p>${escHTML(resp.message)}</p></div>`;
     return;
   }
   const keys = resp.keys || [];

@@ -87,10 +87,10 @@ function connectSSE() {
   // the changed resource. Other events are dropped — page renderers
   // always re-fetch on navigation, so a user who lands on the affected
   // page later still sees fresh data.
-  eventSource.addEventListener('refresh', () => {
-    const page = currentPage();
-    if (page === 'dashboard' || page === 'jobs') scheduleSSERender();
-  });
+  // NOTE: 'refresh' is handled by sseEventPages like every other event —
+  // no dedicated handler needed. The previous hard-coded handler added
+  // 'jobs' to the refresh scope which is wrong (refresh = storage probe
+  // data, not job state; job_state_change handles jobs).
   Object.keys(sseEventPages).forEach(ev => {
     eventSource.addEventListener(ev, () => handleSSEEvent(ev));
   });
@@ -143,9 +143,9 @@ function renderPage(page, loading = true) {
   $$('.nav-link').forEach(a => {
     a.classList.toggle('active', a.dataset.page === page);
   });
-  // Stop the per-second progress-bar tick whenever we leave the Jobs page.
-  // renderJobs re-arms it as needed.
-  if (page !== 'jobs' && jobProgressTimer) {
+  // Stop the per-second progress-bar tick whenever we leave a page that
+  // uses it (Jobs + Target detail). Both renderers re-arm as needed.
+  if (page !== 'jobs' && page !== 'target' && jobProgressTimer) {
     clearInterval(jobProgressTimer);
     jobProgressTimer = null;
   }

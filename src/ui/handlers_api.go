@@ -56,6 +56,7 @@ type sourceRequest struct {
 	RestoreVerificationInterval string `json:"restoreVerificationInterval"`
 	VerificationImage           string `json:"verificationImage"`
 	VerificationVolumeSize      string `json:"verificationVolumeSize"`
+	Compression                 string `json:"compression"`
 	Extra              map[string]string `json:"extra"`
 }
 
@@ -712,6 +713,9 @@ func buildSourceAnnotations(req sourceRequest) map[string]string {
 	if req.VerificationVolumeSize != "" {
 		ann[labels.AnnotationVerificationVolumeSize] = req.VerificationVolumeSize
 	}
+	if req.Compression != "" {
+		ann[labels.AnnotationCompression] = req.Compression
+	}
 	for k, v := range req.Extra {
 		ann["backup.mogenius.io/extra-"+k] = v
 	}
@@ -779,6 +783,7 @@ func mergeSourceAnnotations(sec *corev1.Secret, req sourceRequest) {
 	applyOptionalAnnotation(sec, labels.AnnotationRestoreVerificationInterval, req.RestoreVerificationInterval)
 	applyOptionalAnnotation(sec, labels.AnnotationVerificationImage, req.VerificationImage)
 	applyOptionalAnnotation(sec, labels.AnnotationVerificationVolumeSize, req.VerificationVolumeSize)
+	applyOptionalAnnotation(sec, labels.AnnotationCompression, req.Compression)
 	for k, v := range req.Extra {
 		sec.Annotations["backup.mogenius.io/extra-"+k] = v
 	}
@@ -864,6 +869,7 @@ func (s *Server) handleAPIGetSource(w http.ResponseWriter, r *http.Request) {
 		RestoreVerificationInterval string `json:"restoreVerificationInterval"`
 		VerificationImage           string `json:"verificationImage"`
 		VerificationVolumeSize      string `json:"verificationVolumeSize"`
+		Compression                 string `json:"compression"`
 	}
 
 	name := sec.Annotations[labels.AnnotationName]
@@ -895,6 +901,7 @@ func (s *Server) handleAPIGetSource(w http.ResponseWriter, r *http.Request) {
 		RestoreVerificationInterval: sec.Annotations[labels.AnnotationRestoreVerificationInterval],
 		VerificationImage:           sec.Annotations[labels.AnnotationVerificationImage],
 		VerificationVolumeSize:      sec.Annotations[labels.AnnotationVerificationVolumeSize],
+		Compression:                 sec.Annotations[labels.AnnotationCompression],
 	})
 }
 

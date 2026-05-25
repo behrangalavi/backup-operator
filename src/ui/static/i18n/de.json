@@ -273,7 +273,8 @@
         "analyzer": "Analyzer",
         "emptyDumpCheck": "Leerer-Dump-Check",
         "rowDropThreshold": "Schwelle Zeilen-Rückgang",
-        "sizeDropThreshold": "Schwelle Größen-Rückgang"
+        "sizeDropThreshold": "Schwelle Größen-Rückgang",
+        "compression": "Kompression"
       },
       "placeholder": {
         "name": "prod-users",
@@ -306,7 +307,8 @@
         "analyzer": "Aus → Stats-Erfassung überspringen: keine Schema-/Charset-Drift- oder Zeilen-Anomalie-Erkennung.",
         "emptyDumpCheck": "Aus → kein Fehler, wenn der Dump leer aussieht. Nur für legitim leere schema-only Quellen.",
         "rowDropThreshold": "Anomalie löst aus, wenn eine Tabelle unter diesen Anteil ihrer Vorgröße schrumpft. 0..1.",
-        "sizeDropThreshold": "Anomalie löst aus, wenn der Dump unter diesen Anteil seiner Vorgröße schrumpft. 0..1."
+        "sizeDropThreshold": "Anomalie löst aus, wenn der Dump unter diesen Anteil seiner Vorgröße schrumpft. 0..1.",
+        "compression": "gzip ist Standard. zstd bietet 30–50 % bessere Kompression bei ähnlicher CPU-Last."
       },
       "verifyMode": {
         "off": "Aus (Standard)",

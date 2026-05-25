@@ -273,7 +273,8 @@
         "analyzer": "Analyseur",
         "emptyDumpCheck": "Détection dump vide",
         "rowDropThreshold": "Seuil chute de lignes",
-        "sizeDropThreshold": "Seuil chute de taille"
+        "sizeDropThreshold": "Seuil chute de taille",
+        "compression": "Compression"
       },
       "placeholder": {
         "name": "prod-users",
@@ -306,7 +307,8 @@
         "analyzer": "Désactivé → pas de collecte de stats : pas de détection de dérive de schéma/charset ni de chute de lignes.",
         "emptyDumpCheck": "Désactivé → ne pas échouer si le dump semble vide. Uniquement pour les sources schema-only légitimement vides.",
         "rowDropThreshold": "Anomalie déclenchée si une table chute sous cette fraction de sa taille précédente. 0..1.",
-        "sizeDropThreshold": "Anomalie déclenchée si le dump chute sous cette fraction de sa taille précédente. 0..1."
+        "sizeDropThreshold": "Anomalie déclenchée si le dump chute sous cette fraction de sa taille précédente. 0..1.",
+        "compression": "gzip par défaut. zstd offre 30–50 % de meilleure compression à coût CPU similaire."
       },
       "verifyMode": {
         "off": "Désactivé (défaut)",

@@ -14,6 +14,8 @@ const sseEventPages = {
   source_created:      ['dashboard', 'sources', 'audit'],
   source_updated:      ['dashboard', 'sources', 'target', 'audit'],
   source_deleted:      ['dashboard', 'sources', 'audit'],
+  source_suspended:    ['dashboard', 'sources', 'target', 'audit'],
+  source_resumed:      ['dashboard', 'sources', 'target', 'audit'],
   destination_created: ['dashboard', 'destinations', 'audit'],
   destination_updated: ['dashboard', 'destinations', 'audit'],
   destination_deleted: ['dashboard', 'destinations', 'audit'],

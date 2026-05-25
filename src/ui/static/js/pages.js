@@ -510,6 +510,15 @@ window.openSourceForm = function(secretName) {
         <div class="form-group"><label>${tr('form.source.label.anonymize')}</label>
           <select name="anonymizeTables"><option value="">${tr('common.no')}</option><option value="true">${tr('common.yes')}</option></select></div>
       </div>
+      <div class="form-row">
+        <div class="form-group"><label>${tr('form.source.label.compression')}</label>
+          <select name="compression">
+            <option value="">gzip (${tr('form.source.select.default')})</option>
+            <option value="gzip">gzip</option>
+            <option value="zstd">zstd</option>
+          </select>
+          <div class="hint">${tr('form.source.hint.compression')}</div></div>
+      </div>
     </div>
     <div class="form-section"><h4>${tr('form.source.section.verification')}</h4>
       <div class="hint" style="margin-bottom:12px">${tr('form.source.hint.verifyIntro')}</div>
@@ -621,6 +630,7 @@ window.openSourceForm = function(secretName) {
       f.restoreVerificationInterval.value = src.restoreVerificationInterval || '';
       f.verificationImage.value = src.verificationImage || '';
       f.verificationVolumeSize.value = src.verificationVolumeSize || '';
+      f.compression.value = src.compression || '';
       // Programmatic value-set does not fire a change event, so the
       // Phase-2 banner needs an explicit nudge after edit-mode populates.
       getClusterCapabilities().then(caps => refreshPhase2RBACWarning(f, caps));
@@ -719,6 +729,7 @@ window.submitSourceForm = async function(e, secretName) {
     restoreVerificationInterval: f.restoreVerificationInterval.value,
     verificationImage: f.verificationImage.value,
     verificationVolumeSize: f.verificationVolumeSize.value,
+    compression: f.compression.value,
   };
   try {
     if (secretName) {

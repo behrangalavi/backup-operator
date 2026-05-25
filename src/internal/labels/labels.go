@@ -87,6 +87,8 @@ var KnownAnnotations = map[string]bool{
 	AnnotationVerificationImage:           true,
 	AnnotationVerificationVolumeSize:      true,
 	AnnotationCompression:                 true,
+	AnnotationSuspended:                   true,
+	AnnotationJitterMinutes:               true,
 }
 
 // Restore-verification mode values. RestoreVerificationOff /

@@ -1,0 +1,631 @@
+{{- if .Values.grafanaDashboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "backup-operator.fullname" . }}-grafana-dashboard
+  namespace: {{ .Values.grafanaDashboard.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "backup-operator.labels" . | nindent 4 }}
+    grafana_dashboard: "1"
+    {{- with .Values.grafanaDashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  backup-operator.json: |-
+    {
+      "__inputs": [],
+      "__requires": [
+        { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "9.0.0" },
+        { "type": "datasource", "id": "prometheus", "name": "Prometheus" }
+      ],
+      "annotations": { "list": [] },
+      "description": "Backup Operator — job success/failure, durations, storage, anomalies, verification",
+      "editable": true,
+      "graphTooltip": 1,
+      "links": [],
+      "panels": [
+        {
+          "title": "Fleet Overview",
+          "type": "row",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "title": "Backup Success Rate (24h)",
+          "type": "stat",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "orange", "value": 0.9 },
+                  { "color": "green", "value": 1.0 }
+                ]
+              },
+              "min": 0, "max": 1
+            }
+          },
+          "targets": [
+            {
+              "expr": "avg(backup_operator_last_run_status)",
+              "legendFormat": "success rate"
+            }
+          ]
+        },
+        {
+          "title": "Active Targets",
+          "type": "stat",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 4, "w": 4, "x": 6, "y": 1 },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [{ "color": "blue", "value": null }]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "count(backup_operator_last_run_status)",
+              "legendFormat": "targets"
+            }
+          ]
+        },
+        {
+          "title": "Failed Targets",
+          "type": "stat",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 4, "w": 4, "x": 10, "y": 1 },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 1 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "count(backup_operator_last_run_status == 0) or vector(0)",
+              "legendFormat": "failed"
+            }
+          ]
+        },
+        {
+          "title": "Open Anomalies",
+          "type": "stat",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 4, "w": 4, "x": 14, "y": 1 },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 1 },
+                  { "color": "red", "value": 5 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(backup_operator_last_run_anomalies) or vector(0)",
+              "legendFormat": "anomalies"
+            }
+          ]
+        },
+        {
+          "title": "Schema Changes",
+          "type": "stat",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 1 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "count(backup_operator_schema_changed == 1) or vector(0)",
+              "legendFormat": "targets with schema change"
+            }
+          ]
+        },
+        {
+          "title": "Job Status",
+          "type": "row",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "title": "Last Run Status per Target",
+          "type": "table",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 6 },
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "status" },
+                "properties": [
+                  {
+                    "id": "custom.cellOptions",
+                    "value": { "type": "color-background" }
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      { "type": "value", "options": { "0": { "text": "FAILED", "color": "red" }, "1": { "text": "OK", "color": "green" } } }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": { "id": "byName", "options": "last_success" },
+                "properties": [{ "id": "unit", "value": "dateTimeFromNow" }]
+              },
+              {
+                "matcher": { "id": "byName", "options": "anomalies" },
+                "properties": [
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        { "color": "green", "value": null },
+                        { "color": "orange", "value": 1 }
+                      ]
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "transformations": [
+            { "id": "merge" },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": { "Time": true },
+                "renameByName": {
+                  "target": "Target",
+                  "Value #status": "status",
+                  "Value #last_success": "last_success",
+                  "Value #anomalies": "anomalies",
+                  "Value #duration": "duration (s)"
+                }
+              }
+            }
+          ],
+          "targets": [
+            {
+              "expr": "backup_operator_last_run_status",
+              "legendFormat": "",
+              "format": "table",
+              "instant": true,
+              "refId": "status"
+            },
+            {
+              "expr": "max by (target) (backup_operator_last_success_timestamp_seconds) * 1000",
+              "legendFormat": "",
+              "format": "table",
+              "instant": true,
+              "refId": "last_success"
+            },
+            {
+              "expr": "backup_operator_last_run_anomalies",
+              "legendFormat": "",
+              "format": "table",
+              "instant": true,
+              "refId": "anomalies"
+            },
+            {
+              "expr": "backup_operator_last_run_duration_seconds",
+              "legendFormat": "",
+              "format": "table",
+              "instant": true,
+              "refId": "duration"
+            }
+          ]
+        },
+        {
+          "title": "Durations & Storage",
+          "type": "row",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "title": "Backup Duration per Target",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": { "drawStyle": "bars", "fillOpacity": 30, "stacking": { "mode": "none" } }
+            }
+          },
+          "targets": [
+            {
+              "expr": "backup_operator_last_run_duration_seconds",
+              "legendFormat": "{{`{{target}}`}}"
+            }
+          ]
+        },
+        {
+          "title": "Dump Duration per Target",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": { "drawStyle": "bars", "fillOpacity": 30, "stacking": { "mode": "none" } }
+            }
+          },
+          "targets": [
+            {
+              "expr": "backup_operator_last_dump_duration_seconds",
+              "legendFormat": "{{`{{target}}`}}"
+            }
+          ]
+        },
+        {
+          "title": "Dump Size per Target",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "decbytes",
+              "custom": { "fillOpacity": 15 }
+            }
+          },
+          "targets": [
+            {
+              "expr": "backup_operator_dump_size_bytes",
+              "legendFormat": "{{`{{target}}`}}"
+            }
+          ]
+        },
+        {
+          "title": "Dump Size Change Ratio",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "custom": { "fillOpacity": 10 },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 0.5 }
+                ]
+              },
+              "custom.thresholdsStyle": { "mode": "line" }
+            }
+          },
+          "targets": [
+            {
+              "expr": "backup_operator_dump_size_change_ratio",
+              "legendFormat": "{{`{{target}}`}}"
+            }
+          ]
+        },
+        {
+          "title": "Destination Health",
+          "type": "row",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "title": "Destination Failures",
+          "type": "state-timeline",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 12, "x": 0, "y": 32 },
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                { "type": "value", "options": { "0": { "text": "OK", "color": "green" }, "1": { "text": "FAILED", "color": "red" } } }
+              ]
+            }
+          },
+          "targets": [
+            {
+              "expr": "backup_operator_destination_failed",
+              "legendFormat": "{{`{{target}}`}} → {{`{{destination}}`}}"
+            }
+          ]
+        },
+        {
+          "title": "Last Success Age",
+          "type": "bargauge",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 12, "x": 12, "y": 32 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "h",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 36 },
+                  { "color": "red", "value": 72 }
+                ]
+              },
+              "min": 0
+            }
+          },
+          "targets": [
+            {
+              "expr": "(time() - max by (target, destination) (backup_operator_last_success_timestamp_seconds)) / 3600",
+              "legendFormat": "{{`{{target}}`}} → {{`{{destination}}`}}"
+            }
+          ]
+        },
+        {
+          "title": "Retention Status",
+          "type": "state-timeline",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 12, "x": 0, "y": 38 },
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                { "type": "value", "options": { "0": { "text": "FAILING", "color": "red" }, "1": { "text": "OK", "color": "green" } } }
+              ]
+            }
+          },
+          "targets": [
+            {
+              "expr": "backup_operator_retention_last_status",
+              "legendFormat": "{{`{{target}}`}} → {{`{{destination}}`}}"
+            }
+          ]
+        },
+        {
+          "title": "Retention — Dumps Deleted",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 12, "x": 12, "y": 38 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "drawStyle": "bars", "fillOpacity": 40 }
+            }
+          },
+          "targets": [
+            {
+              "expr": "backup_operator_retention_last_deleted_count",
+              "legendFormat": "{{`{{target}}`}} → {{`{{destination}}`}}"
+            }
+          ]
+        },
+        {
+          "title": "Integrity & Verification",
+          "type": "row",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 44 },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "title": "Storage Scrub Status",
+          "type": "state-timeline",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 12, "x": 0, "y": 45 },
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                { "type": "value", "options": { "0": { "text": "CORRUPT", "color": "red" }, "1": { "text": "OK", "color": "green" } } }
+              ]
+            }
+          },
+          "targets": [
+            {
+              "expr": "backup_operator_storage_scrub_passed",
+              "legendFormat": "{{`{{target}}`}} → {{`{{destination}}`}}"
+            }
+          ]
+        },
+        {
+          "title": "Restore Verification",
+          "type": "state-timeline",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 12, "x": 12, "y": 45 },
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                { "type": "value", "options": { "0": { "text": "FAILED", "color": "red" }, "1": { "text": "PASSED", "color": "green" } } }
+              ]
+            }
+          },
+          "targets": [
+            {
+              "expr": "backup_operator_restore_verification_passed",
+              "legendFormat": "{{`{{target}}`}} ({{`{{mode}}`}})"
+            }
+          ]
+        },
+        {
+          "title": "Anomalies per Target",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 12, "x": 0, "y": 51 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "drawStyle": "bars", "fillOpacity": 40 },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 1 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "backup_operator_last_run_anomalies",
+              "legendFormat": "{{`{{target}}`}}"
+            }
+          ]
+        },
+        {
+          "title": "Table Count per Target",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 12, "x": 12, "y": 51 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "fillOpacity": 10 }
+            }
+          },
+          "targets": [
+            {
+              "expr": "backup_operator_table_count",
+              "legendFormat": "{{`{{target}}`}}"
+            }
+          ]
+        },
+        {
+          "title": "API Performance",
+          "type": "row",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 57 },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "title": "API Request Latency (p50 / p90 / p99)",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 58 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": { "fillOpacity": 10 }
+            }
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum by (le) (rate(backup_operator_http_request_duration_seconds_bucket[$__rate_interval])))",
+              "legendFormat": "p50"
+            },
+            {
+              "expr": "histogram_quantile(0.90, sum by (le) (rate(backup_operator_http_request_duration_seconds_bucket[$__rate_interval])))",
+              "legendFormat": "p90"
+            },
+            {
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(backup_operator_http_request_duration_seconds_bucket[$__rate_interval])))",
+              "legendFormat": "p99"
+            }
+          ]
+        },
+        {
+          "title": "API Request Rate by Endpoint",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 58 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": { "drawStyle": "bars", "fillOpacity": 30, "stacking": { "mode": "normal" } }
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum by (path) (rate(backup_operator_http_request_duration_seconds_count[$__rate_interval]))",
+              "legendFormat": "{{`{{path}}`}}"
+            }
+          ]
+        },
+        {
+          "title": "Source Parse Errors",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 12, "x": 0, "y": 66 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "drawStyle": "bars", "fillOpacity": 40 },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 1 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "increase(backup_operator_source_parse_errors_total[$__rate_interval])",
+              "legendFormat": "{{`{{secret}}`}}"
+            }
+          ]
+        },
+        {
+          "title": "Storage Scrub Failures (cumulative)",
+          "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "h": 6, "w": 12, "x": 12, "y": 66 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "drawStyle": "line", "fillOpacity": 10 }
+            }
+          },
+          "targets": [
+            {
+              "expr": "backup_operator_storage_scrub_failed_total",
+              "legendFormat": "{{`{{target}}`}} → {{`{{destination}}`}}"
+            }
+          ]
+        }
+      ],
+      "schemaVersion": 39,
+      "tags": ["backup-operator", "backup", "kubernetes"],
+      "templating": {
+        "list": [
+          {
+            "current": {},
+            "hide": 0,
+            "includeAll": false,
+            "label": "Datasource",
+            "multi": false,
+            "name": "datasource",
+            "options": [],
+            "query": "prometheus",
+            "refresh": 1,
+            "type": "datasource"
+          }
+        ]
+      },
+      "time": { "from": "now-24h", "to": "now" },
+      "timezone": "browser",
+      "title": "Backup Operator",
+      "uid": "backup-operator",
+      "version": 1
+    }
+{{- end }}

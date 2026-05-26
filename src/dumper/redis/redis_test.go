@@ -33,6 +33,41 @@ func TestParseKeyspace_Sorted(t *testing.T) {
 	}
 }
 
+func TestParseDatabaseFilter_Single(t *testing.T) {
+	got := parseDatabaseFilter("3")
+	if !got["db3"] || len(got) != 1 {
+		t.Errorf("expected {db3}, got %v", got)
+	}
+}
+
+func TestParseDatabaseFilter_Multiple(t *testing.T) {
+	got := parseDatabaseFilter("0, 3, 7")
+	if len(got) != 3 || !got["db0"] || !got["db3"] || !got["db7"] {
+		t.Errorf("expected {db0,db3,db7}, got %v", got)
+	}
+}
+
+func TestParseDatabaseFilter_WithPrefix(t *testing.T) {
+	got := parseDatabaseFilter("db0,db5")
+	if len(got) != 2 || !got["db0"] || !got["db5"] {
+		t.Errorf("expected {db0,db5}, got %v", got)
+	}
+}
+
+func TestParseDatabaseFilter_Empty(t *testing.T) {
+	got := parseDatabaseFilter("")
+	if len(got) != 0 {
+		t.Errorf("expected empty, got %v", got)
+	}
+}
+
+func TestParseDatabaseFilter_Mixed(t *testing.T) {
+	got := parseDatabaseFilter("db0, 3, db7")
+	if len(got) != 3 || !got["db0"] || !got["db3"] || !got["db7"] {
+		t.Errorf("expected {db0,db3,db7}, got %v", got)
+	}
+}
+
 func TestHashSchema_StableOrder(t *testing.T) {
 	a := hashSchema([]string{"db0", "db1"})
 	b := hashSchema([]string{"db1", "db0"})

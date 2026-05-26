@@ -486,7 +486,8 @@ window.openSourceForm = function(secretName) {
       <div class="form-group"><label>${tr('form.source.label.port')}</label><input name="port" placeholder="${tr('form.source.placeholder.port')}"></div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label>${tr('form.source.label.database')}</label><input name="database" placeholder="${tr('form.source.placeholder.database')}"></div>
+      <div class="form-group"><label>${tr('form.source.label.database')}</label><input name="database" placeholder="${tr('form.source.placeholder.database')}">
+        <div class="hint" id="databaseHint" style="display:none"></div></div>
       <div class="form-group"><label>${tr('form.source.label.schedule')}</label>
         <input name="schedule" placeholder="${tr('form.source.placeholder.schedule')}">
         <div class="hint">${tr('form.source.hint.schedule')}</div></div>
@@ -604,6 +605,21 @@ window.openSourceForm = function(secretName) {
     }
   }
 
+  // Show Redis-specific database hint when db-type is redis.
+  const dbTypeSelect = formEl && formEl.elements['dbType'];
+  const dbHint = document.getElementById('databaseHint');
+  function syncDbHint() {
+    if (!dbHint) return;
+    if (dbTypeSelect && dbTypeSelect.value === 'redis') {
+      dbHint.textContent = tr('form.source.hint.databaseRedis');
+      dbHint.style.display = '';
+    } else {
+      dbHint.style.display = 'none';
+    }
+  }
+  if (dbTypeSelect) dbTypeSelect.addEventListener('change', syncDbHint);
+  syncDbHint();
+
   // In create mode we have no preselection to wait for — populate immediately.
   // In edit mode the source fetch below kicks off the picker so we don't fire
   // two fetches and risk the empty-preselection response overwriting the real
@@ -639,8 +655,9 @@ window.openSourceForm = function(secretName) {
       f.verificationVolumeSize.value = src.verificationVolumeSize || '';
       f.compression.value = src.compression || '';
       // Programmatic value-set does not fire a change event, so the
-      // Phase-2 banner needs an explicit nudge after edit-mode populates.
+      // Phase-2 banner and db-type hint need an explicit nudge.
       getClusterCapabilities().then(caps => refreshPhase2RBACWarning(f, caps));
+      syncDbHint();
     }).catch(e => toast(tr('toast.loadFailed', {error: e.message}), 'error'));
   }
 };

@@ -32,9 +32,15 @@ func New(cfg dumper.Config, logger logr.Logger) dumper.Dumper {
 func (d *redisDumper) Type() string { return "redis" }
 
 // Dump streams an RDB snapshot from the live instance via `redis-cli --rdb -`.
-// RDB is per-instance, so the entire keyspace (all DB indexes) is captured —
-// cfg.Database scopes stats only.
+// RDB is per-instance, so the entire keyspace (all DB indexes) is captured.
+// When cfg.Database is set, stats/analyzer scope to those databases only,
+// but the dump still contains the full instance for restore safety.
 func (d *redisDumper) Dump(ctx context.Context, w io.Writer) error {
+	if d.cfg.Database != "" {
+		d.logger.Info("redis database filter is stats-only; RDB dump captures the full instance",
+			"databases", d.cfg.Database)
+	}
+
 	args := d.baseArgs()
 	args = append(args, "--rdb", "-")
 
@@ -64,14 +70,10 @@ func (d *redisDumper) CollectStats(ctx context.Context) (*dumper.Stats, error) {
 	dbs := parseKeyspace(out)
 
 	if d.cfg.Database != "" {
-		// User narrowed the source to one DB — keep only that one in stats.
-		want := strings.TrimSpace(d.cfg.Database)
-		if !strings.HasPrefix(want, "db") {
-			want = "db" + want
-		}
-		filtered := make([]dbStat, 0, 1)
+		want := parseDatabaseFilter(d.cfg.Database)
+		filtered := make([]dbStat, 0, len(want))
 		for _, s := range dbs {
-			if s.name == want {
+			if want[s.name] {
 				filtered = append(filtered, s)
 			}
 		}
@@ -174,6 +176,24 @@ func parseKeyspace(s string) []dbStat {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
 	return out
+}
+
+// parseDatabaseFilter turns a comma-separated database field (e.g. "0,3,7"
+// or "db0,db3") into a set of canonical "dbN" names for filtering.
+func parseDatabaseFilter(s string) map[string]bool {
+	parts := strings.Split(s, ",")
+	m := make(map[string]bool, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if !strings.HasPrefix(p, "db") {
+			p = "db" + p
+		}
+		m[p] = true
+	}
+	return m
 }
 
 func hashSchema(seed []string) string {

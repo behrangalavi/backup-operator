@@ -311,7 +311,8 @@
         "emptyDumpCheck": "Aus → kein Fehler, wenn der Dump leer aussieht. Nur für legitim leere schema-only Quellen.",
         "rowDropThreshold": "Anomalie löst aus, wenn eine Tabelle unter diesen Anteil ihrer Vorgröße schrumpft. 0..1.",
         "sizeDropThreshold": "Anomalie löst aus, wenn der Dump unter diesen Anteil seiner Vorgröße schrumpft. 0..1.",
-        "compression": "gzip ist Standard. zstd bietet 30–50 % bessere Kompression bei ähnlicher CPU-Last."
+        "compression": "gzip ist Standard. zstd bietet 30–50 % bessere Kompression bei ähnlicher CPU-Last.",
+        "databaseRedis": "Komma-getrennte DB-Indizes (z.B. 0,3,7) für Stats-/Anomalie-Erkennung. Dump erfasst immer die gesamte Instanz (RDB-Limitation)."
       },
       "verifyMode": {
         "off": "Aus (Standard)",

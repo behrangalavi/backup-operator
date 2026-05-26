@@ -80,6 +80,35 @@ type DestinationProvider interface {
 	Destinations() []*secrets.Destination
 }
 
+// Option configures a Pipeline. Pass to NewPipeline.
+type Option func(*Pipeline)
+
+// WithEvents sets the EventEmitter for Kubernetes audit events.
+func WithEvents(e EventEmitter) Option {
+	return func(p *Pipeline) { p.events = e }
+}
+
+// WithVerifierFactory wires a restore-verifier factory. nil disables
+// restore-verification.
+func WithVerifierFactory(f func(mode, dbType string, log logr.Logger) (verifier.Verifier, error)) Option {
+	return func(p *Pipeline) { p.verifierFactory = f }
+}
+
+// WithRestoreSpawner wires the ephemeral-DB spawning context the
+// Phase-2 restore verifier needs. Pass spawner=nil if you want
+// Phase-1 stream-validate only — Phase-2 verifiers will then refuse
+// to run with a clear error rather than half-execute.
+func WithRestoreSpawner(s ephemeral.Spawner, namespace string, owner *metav1.OwnerReference) Option {
+	return func(p *Pipeline) {
+		p.spawner = s
+		p.namespace = namespace
+		p.ownerRef = owner
+	}
+}
+
+// NewPipeline creates a Pipeline with the required dependencies and any
+// optional settings. Use WithEvents, WithVerifierFactory, and
+// WithRestoreSpawner to configure optional behavior.
 func NewPipeline(
 	enc crypto.Encryptor,
 	an analyzer.Analyzer,
@@ -87,8 +116,9 @@ func NewPipeline(
 	dp DestinationProvider,
 	defaults RetentionPolicy,
 	logger logr.Logger,
+	opts ...Option,
 ) *Pipeline {
-	return &Pipeline{
+	p := &Pipeline{
 		encryptor:      enc,
 		analyzer:       an,
 		tempDir:        tempDir,
@@ -98,46 +128,9 @@ func NewPipeline(
 		events:         NoopEventEmitter{},
 		maxConcurrency: defaultMaxConcurrency,
 	}
-}
-
-// NewPipelineWithEvents creates a pipeline that emits Kubernetes events for
-// audit-trail compliance. Used by the worker binary.
-func NewPipelineWithEvents(
-	enc crypto.Encryptor,
-	an analyzer.Analyzer,
-	tempDir string,
-	dp DestinationProvider,
-	defaults RetentionPolicy,
-	logger logr.Logger,
-	events EventEmitter,
-) *Pipeline {
-	return &Pipeline{
-		encryptor:      enc,
-		analyzer:       an,
-		tempDir:        tempDir,
-		logger:         logger,
-		destProvider:   dp,
-		defaults:       defaults,
-		events:         events,
-		maxConcurrency: defaultMaxConcurrency,
+	for _, o := range opts {
+		o(p)
 	}
-}
-
-// WithVerifierFactory wires a restore-verifier factory into an existing
-// Pipeline and returns it for chaining. nil disables verification.
-func (p *Pipeline) WithVerifierFactory(f func(mode, dbType string, log logr.Logger) (verifier.Verifier, error)) *Pipeline {
-	p.verifierFactory = f
-	return p
-}
-
-// WithRestoreSpawner wires the ephemeral-DB spawning context the
-// Phase-2 restore verifier needs. Pass spawner=nil if you want
-// Phase-1 stream-validate only — Phase-2 verifiers will then refuse
-// to run with a clear error rather than half-execute.
-func (p *Pipeline) WithRestoreSpawner(s ephemeral.Spawner, namespace string, owner *metav1.OwnerReference) *Pipeline {
-	p.spawner = s
-	p.namespace = namespace
-	p.ownerRef = owner
 	return p
 }
 

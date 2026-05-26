@@ -153,20 +153,21 @@ func run() int {
 	events, flushEvents := buildEventEmitter(cs, srcSecret)
 	defer flushEvents()
 
-	pipeline := backup.NewPipelineWithEvents(
+	pipeline := backup.NewPipeline(
 		enc,
 		analyzer.NewAnalyzer(),
 		config.GetValue("TEMP_DIR"),
 		&staticDestProvider{dests: dests},
 		policy,
 		log.WithName("pipeline"),
-		events,
-	).WithVerifierFactory(verifierFactory.New).
-		WithRestoreSpawner(
+		backup.WithEvents(events),
+		backup.WithVerifierFactory(verifierFactory.New),
+		backup.WithRestoreSpawner(
 			ephemeral.NewK8sSpawner(cs, ns),
 			ns,
 			workerOwnerRef(),
-		)
+		),
+	)
 
 	if err := pipeline.Run(ctx, src); err != nil {
 		log.Error(err, "backup run failed", "target", src.TargetName)

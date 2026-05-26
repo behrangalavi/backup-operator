@@ -311,7 +311,8 @@
         "emptyDumpCheck": "Off → don't fail when a dump appears empty. Use only for legitimately empty schema-only sources.",
         "rowDropThreshold": "Anomaly fires when a table shrinks below this fraction of its previous size. 0..1.",
         "sizeDropThreshold": "Anomaly fires when the dump shrinks below this fraction of its previous size. 0..1.",
-        "compression": "gzip is the default. zstd offers 30–50% better compression at similar CPU cost."
+        "compression": "gzip is the default. zstd offers 30–50% better compression at similar CPU cost.",
+        "databaseRedis": "Comma-separated DB indexes (e.g. 0,3,7) to scope stats/anomaly detection. Dump always captures the full instance (RDB limitation)."
       },
       "verifyMode": {
         "off": "Off (default)",

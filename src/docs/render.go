@@ -45,7 +45,7 @@ func renderMarkdown(src []byte) (htmlOut string, headings []heading, h1 string) 
 	root := md.Parser().Parse(text.NewReader(src))
 
 	// Walk for headings — goldmark assigned IDs already.
-	ast.Walk(root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+	_ = ast.Walk(root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
 		if !entering {
 			return ast.WalkContinue, nil
 		}

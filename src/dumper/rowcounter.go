@@ -95,7 +95,7 @@ func (rc *RowCounter) TotalRows() int64 {
 
 func (rc *RowCounter) scan() {
 	defer close(rc.done)
-	defer rc.pr.Close() // unblock pending pw.Write if scanner stops early (e.g. token too long)
+	defer func() { _ = rc.pr.Close() }() // unblock pending pw.Write if scanner stops early (e.g. token too long)
 	scanner := bufio.NewScanner(rc.pr)
 	scanner.Buffer(make([]byte, 256*1024), 10*1024*1024) // 10 MB max line for extended-insert
 
@@ -257,12 +257,13 @@ func countMySQLRows(s string) int64 {
 		if inStr {
 			continue
 		}
-		if c == '(' {
+		switch c {
+		case '(':
 			if depth == 0 {
 				count++
 			}
 			depth++
-		} else if c == ')' {
+		case ')':
 			depth--
 		}
 	}

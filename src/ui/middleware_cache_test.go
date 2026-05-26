@@ -28,7 +28,7 @@ func TestCachedJSON_EmitsETagAndCacheControl(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.Header.Get("ETag") == "" {
 		t.Error("ETag header must be set")
 	}
@@ -49,7 +49,7 @@ func TestCachedJSON_IfNoneMatchReturns304(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first.Body.Close()
+	_ = first.Body.Close()
 	etag := first.Header.Get("ETag")
 	if etag == "" {
 		t.Fatal("first request must set ETag")
@@ -61,7 +61,7 @@ func TestCachedJSON_IfNoneMatchReturns304(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer second.Body.Close()
+	defer func() { _ = second.Body.Close() }()
 	if second.StatusCode != http.StatusNotModified {
 		t.Errorf("expected 304, got %d", second.StatusCode)
 	}
@@ -82,7 +82,7 @@ func TestCachedJSON_GzipWhenAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.Header.Get("Content-Encoding") != "gzip" {
 		t.Fatalf("expected Content-Encoding=gzip, got %q", resp.Header.Get("Content-Encoding"))
@@ -108,7 +108,7 @@ func TestCachedJSON_SkipsGzipForSmallBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.Header.Get("Content-Encoding") == "gzip" {
 		t.Error("small bodies should not be gzipped — overhead exceeds savings")
 	}
@@ -125,7 +125,7 @@ func TestCachedJSON_DoesNotCacheErrorResponses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status passthrough: got %d", resp.StatusCode)
 	}
@@ -150,7 +150,7 @@ func TestCachedJSON_PassesThroughNonGET(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if !called {
 		t.Fatal("handler must be invoked even for non-GET requests")
 	}

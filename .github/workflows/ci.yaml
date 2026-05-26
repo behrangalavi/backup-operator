@@ -30,6 +30,23 @@ jobs:
         working-directory: src
         run: go vet ./...
 
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
+
+      - name: Install golangci-lint
+        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b $(go env GOPATH)/bin
+
+      - name: Run golangci-lint
+        working-directory: src
+        run: golangci-lint run ./...
+
   govulncheck:
     runs-on: ubuntu-latest
     steps:

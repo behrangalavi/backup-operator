@@ -93,7 +93,7 @@ func (c *cache[V]) getOrRefreshAsync(key string, load func() (V, error), onRefre
 }
 
 // invalidate drops a key. Currently unused — kept for explicit refresh wiring later.
-func (c *cache[V]) invalidate(key string) {
+func (c *cache[V]) invalidate(key string) { //nolint:unused // reserved for future cache-invalidation wiring
 	c.mu.Lock()
 	delete(c.m, key)
 	c.mu.Unlock()

@@ -1,0 +1,53 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - gosec
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  settings:
+    gosec:
+      excludes:
+        # G101: hardcoded credentials — false positives on test fixtures and
+        # ephemeral verifier passwords that only live inside short-lived pods.
+        - G101
+        # G106: InsecureIgnoreHostKey — opt-in via explicit annotation, logged.
+        - G106
+        # G115: integer overflow int→int32 — K8s API types require int32;
+        # the source values are small config integers (backoff limits, replicas).
+        - G115
+        # G118: goroutine launched without request-scoped context — the SSE
+        # keepalive and server lifecycle goroutines intentionally outlive any
+        # single HTTP request.
+        - G118
+        # G201/G202: SQL string formatting/concatenation — the dumper stats
+        # queries build WHERE clauses from DB-name lists sourced from K8s
+        # Secrets, not HTTP input. The verifier uses quoteMySQLIdent().
+        - G201
+        - G202
+        # G204: subprocess launched with variable — the dumpers MUST shell out
+        # to pg_dump / mysqldump / mongodump / redis-cli with user-supplied
+        # host/port/db. The arguments are sourced from K8s Secrets, not from
+        # HTTP input.
+        - G204
+        # G301: directory permissions 0755 — standard for temp dirs.
+        - G301
+        # G304: file inclusion via variable — the restore CLI writes to a
+        # user-specified path (that's its entire purpose); docs server reads
+        # from a known directory.
+        - G304
+        # G705: XSS via taint analysis — the cache middleware writes its own
+        # buffered response (already sanitised upstream); the SSE error writer
+        # sends a fixed string.
+        - G705
+        # G710: open redirect — docs server redirect from /foo → /#foo is
+        # intentional SPA routing, not user-controlled input.
+        - G710
+
+  exclusions:
+    paths:
+      - vendor

@@ -106,42 +106,70 @@ func (d *mysqlDumper) dumpBinary() string {
 	return "mysqldump"
 }
 
-func (d *mysqlDumper) Dump(ctx context.Context, w io.Writer) error {
-	// Flag rationale:
-	//   --single-transaction: InnoDB-consistent snapshot without locking.
-	//   --quick: stream rows without buffering — required for large tables.
-	//   --routines / --triggers / --events: include stored procs, triggers,
-	//     and the MySQL Event Scheduler. Without these, restore loses
-	//     server-side logic the application may depend on.
-	//   --default-character-set=utf8mb4: emit dump in utf8mb4 so umlauts
-	//     and emoji round-trip correctly. The pre-utf8mb4 default ("utf8"
-	//     in MySQL <8) is actually 3-byte and silently truncates 4-byte
-	//     characters at restore time.
-	//   --column-statistics=0: Oracle's MySQL-8 mysqldump probes
-	//     information_schema.column_statistics by default and fails
-	//     when the target lacks the table (older MySQL, MariaDB).
-	//     Setting =0 disables the probe — Oracle's documented compat
-	//     flag. mariadb-dump does not know the flag and aborts with
-	//     "unknown variable" if given it. supportsColumnStatistics()
-	//     probes `<binary> --help` once per binary so we pass the flag
-	//     only when it's actually accepted.
+// defaultMaxAllowedPacket is the client packet ceiling we pass to
+// mysqldump unless overridden via the `extra-max-allowed-packet`
+// annotation. mysqldump's own default is only ~24 MiB, so a single wide
+// row (large BLOB/JSON/TEXT column) bigger than that makes the server
+// abort the connection mid-table — surfacing on the client as
+// "Error 2026: TLS/SSL error: unexpected eof while reading ... at row: N"
+// (an abrupt TCP close with no TLS close_notify). 1 GiB matches MySQL's
+// own maximum and is the documented first remedy for that failure.
+const defaultMaxAllowedPacket = "1G"
+
+// buildDumpArgs assembles the mysqldump argument list. Split out from
+// Dump so the flag set is unit-testable without exec'ing the binary.
+//
+// Flag rationale:
+//   --single-transaction: InnoDB-consistent snapshot without locking.
+//   --quick: stream rows without buffering — required for large tables.
+//   --max-allowed-packet: raise the client packet ceiling well above
+//     mysqldump's ~24 MiB default so wide rows don't trip the server
+//     into dropping the connection (the Error 2026 above). Note the
+//     server's own max_allowed_packet must also be large enough to send
+//     such a row; if rows are genuinely huge, raise it server-side too.
+//   --routines / --triggers / --events: include stored procs, triggers,
+//     and the MySQL Event Scheduler. Without these, restore loses
+//     server-side logic the application may depend on.
+//   --default-character-set=utf8mb4: emit dump in utf8mb4 so umlauts
+//     and emoji round-trip correctly. The pre-utf8mb4 default ("utf8"
+//     in MySQL <8) is actually 3-byte and silently truncates 4-byte
+//     characters at restore time.
+//   --column-statistics=0: Oracle's MySQL-8 mysqldump probes
+//     information_schema.column_statistics by default and fails
+//     when the target lacks the table (older MySQL, MariaDB).
+//     Setting =0 disables the probe — Oracle's documented compat
+//     flag. mariadb-dump does not know the flag and aborts with
+//     "unknown variable" if given it. supportsColumnStatistics()
+//     probes `<binary> --help` once per binary so we pass the flag
+//     only when it's actually accepted.
+func (d *mysqlDumper) buildDumpArgs(bin string) []string {
+	maxPacket := d.cfg.Extra["max-allowed-packet"]
+	if maxPacket == "" {
+		maxPacket = defaultMaxAllowedPacket
+	}
 	args := []string{
 		"-h", d.cfg.Host,
 		"-P", strconv.Itoa(d.cfg.Port),
 		"-u", d.cfg.Username,
 		"--single-transaction",
 		"--quick",
+		"--max-allowed-packet=" + maxPacket,
 		"--routines",
 		"--triggers",
 		"--events",
 		"--default-character-set=utf8mb4",
 		d.cfg.Database,
 	}
-	bin := d.dumpBinary()
 	if supportsColumnStatistics(bin) {
 		// Insert before the trailing database arg.
 		args = append(args[:len(args)-1], append([]string{"--column-statistics=0"}, args[len(args)-1])...)
 	}
+	return args
+}
+
+func (d *mysqlDumper) Dump(ctx context.Context, w io.Writer) error {
+	bin := d.dumpBinary()
+	args := d.buildDumpArgs(bin)
 	cmd := exec.CommandContext(ctx, bin, args...)
 	// Pass the password via MYSQL_PWD instead of `-p<value>` on the command
 	// line. `-p` would be visible in `ps` output and any process-listing

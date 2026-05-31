@@ -82,6 +82,43 @@ func TestDSN_TLSOverride(t *testing.T) {
 	}
 }
 
+func argList(args []string) string { return strings.Join(args, " ") }
+
+func TestBuildDumpArgs_Defaults(t *testing.T) {
+	d := &mysqlDumper{cfg: dumper.Config{
+		Host: "h", Port: 3306, Username: "u", Database: "mydb",
+	}}
+	args := d.buildDumpArgs("mariadb-dump") // mariadb-dump: no column-statistics probe interference
+	joined := argList(args)
+	for _, want := range []string{
+		"--single-transaction", "--quick", "--routines", "--triggers",
+		"--events", "--default-character-set=utf8mb4",
+		"--max-allowed-packet=1G",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("buildDumpArgs() missing %q in: %s", want, joined)
+		}
+	}
+	// Database must be the final positional argument.
+	if args[len(args)-1] != "mydb" {
+		t.Errorf("expected database as last arg, got %q (full: %s)", args[len(args)-1], joined)
+	}
+}
+
+func TestBuildDumpArgs_MaxAllowedPacketOverride(t *testing.T) {
+	d := &mysqlDumper{cfg: dumper.Config{
+		Host: "h", Port: 3306, Username: "u", Database: "mydb",
+		Extra: map[string]string{"max-allowed-packet": "512M"},
+	}}
+	joined := argList(d.buildDumpArgs("mariadb-dump"))
+	if !strings.Contains(joined, "--max-allowed-packet=512M") {
+		t.Errorf("override not applied: %s", joined)
+	}
+	if strings.Contains(joined, "--max-allowed-packet=1G") {
+		t.Errorf("default should not appear alongside override: %s", joined)
+	}
+}
+
 func TestScopeFilter_WithDatabase(t *testing.T) {
 	d := &mysqlDumper{cfg: dumper.Config{Database: "mydb"}}
 	clause, args := d.scopeFilter("WHERE")

@@ -120,6 +120,20 @@ function applyStaticTranslations() {
 }
 
 // --- API helpers ---
+// Default client-side request timeout. Browsers cap concurrent HTTP/1.1
+// connections per host at ~6, and the SSE /api/events stream permanently
+// occupies one of them. Without a timeout a single request the server
+// holds open — e.g. a storage probe stalled on an unreachable QNAP FTPS
+// destination — stays "pending" forever and pins a connection slot. A
+// few of those saturate the pool, so every other request (even instant
+// K8s-API reads like /api/destinations) queues behind them and the page
+// renders only the nav with no content. The timeout aborts the stalled
+// fetch, frees the slot, and lets the caller's last-good fallback render
+// stale data instead of hanging. It is deliberately longer than the
+// server-side probe bounds (8 s destination-health/stats/consistency,
+// 15 s test-connection) so legitimate slow calls still complete; callers
+// that need more can pass opts.timeoutMs.
+const DEFAULT_API_TIMEOUT_MS = 20000;
 async function api(path, opts = {}) {
   // Only set Content-Type on requests that carry a body. Sending it on
   // bodyless GETs/DELETEs is harmless for same-origin but can trigger a
@@ -129,7 +143,36 @@ async function api(path, opts = {}) {
   if (opts.body) {
     headers['Content-Type'] = headers['Content-Type'] || 'application/json';
   }
-  const resp = await fetch(path, { ...opts, headers });
+
+  // Honour a caller-supplied AbortSignal while still enforcing our own
+  // timeout. timeoutMs<=0 disables the timeout (e.g. long-poll callers).
+  const timeoutMs = opts.timeoutMs != null ? opts.timeoutMs : DEFAULT_API_TIMEOUT_MS;
+  const ctrl = new AbortController();
+  let timer = null;
+  if (timeoutMs > 0) {
+    timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  }
+  if (opts.signal) {
+    if (opts.signal.aborted) ctrl.abort();
+    else opts.signal.addEventListener('abort', () => ctrl.abort(), { once: true });
+  }
+
+  let resp;
+  try {
+    resp = await fetch(path, { ...opts, headers, signal: ctrl.signal });
+  } catch (e) {
+    // AbortError (our timeout or a caller abort) and genuine network
+    // failures both land here. Surface a typed error so callers'
+    // last-good fallbacks treat it like any other transient failure.
+    const aborted = e && e.name === 'AbortError';
+    const err = new Error(aborted ? 'request timed out' : (e && e.message) || 'network error');
+    err.code = aborted ? 'timeout' : 'network_error';
+    err.status = 0;
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+
   let data = {};
   try { data = await resp.json(); } catch (_) { /* empty body / non-JSON */ }
   if (!resp.ok) {
@@ -155,6 +198,8 @@ const apiErrorMessages = {
   not_found:            e => e.message || 'Not found',
   method_not_allowed:   e => e.message || 'Operation not allowed',
   server_error:         e => 'Server error: ' + (e.message || 'try again'),
+  timeout:              () => 'Request timed out — the destination may be slow or unreachable',
+  network_error:        () => 'Network error — check your connection',
 };
 function apiErrorToast(err, fallback) {
   const msg = (apiErrorMessages[err.code] || (() => err.message || fallback || 'Request failed'))(err);

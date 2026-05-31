@@ -343,6 +343,17 @@ func (d *k8sData) listTargets(ctx context.Context) ([]targetSummary, error) {
 // (e.g. brand-new target, all destinations unreachable, only legacy
 // metas without DurationSeconds). Reuses runsCache so calling this
 // per-running-job from /api/jobs does not amplify storage I/O.
+//
+// CRITICAL: the storage probe is non-blocking (getOrRefreshAsync). The
+// estimate is only a progress-bar nicety, so it must NEVER pin /api/jobs
+// on a slow/unreachable destination. The previous blocking getOrLoad
+// inherited the request context (no deadline) and probed destinations
+// sequentially — a hung QNAP FTPS destination would fall back to its 30 s
+// dial timeout and freeze /api/jobs on every poll while a job ran, which
+// in turn starved the browser's per-host connection pool and left the
+// whole dashboard showing only the nav. Now we return whatever's cached
+// immediately and let the background refresh + onRefresh SSE event fill
+// in the estimate on a later render.
 func (d *k8sData) estimateDuration(ctx context.Context, name string, n int) (time.Duration, int, error) {
 	sources, err := d.listSourceSecrets(ctx)
 	if err != nil {
@@ -370,17 +381,21 @@ func (d *k8sData) estimateDuration(ctx context.Context, name string, n int) (tim
 	// destination may be unreachable or lag behind. Dedup by timestamp.
 	byTimestamp := map[string]*meta.MetaFile{}
 	for _, dest := range dests {
+		dest := dest // capture for the goroutine closure
 		key := name + "@" + dest.Name
-		got, err := d.runsCache.getOrLoad(key, func() ([]*meta.MetaFile, error) {
+		got, _ := d.runsCache.getOrRefreshAsync(key, func() ([]*meta.MetaFile, error) {
+			// Background refresh runs in its own goroutine with a bounded
+			// context — the request's ctx has likely returned to the client
+			// by the time this runs, and an unbounded probe would let a hung
+			// destination pin a goroutine forever.
+			rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 			st, err := d.storageFor(dest)
 			if err != nil {
 				return nil, err
 			}
-			return meta.List(ctx, st, name)
-		})
-		if err != nil {
-			continue
-		}
+			return meta.List(rctx, st, name)
+		}, d.onRefresh)
 		for _, m := range got {
 			if _, ok := byTimestamp[m.Timestamp]; !ok {
 				byTimestamp[m.Timestamp] = m

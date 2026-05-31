@@ -349,8 +349,9 @@ func (s *Server) handleAPICreateDestination(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, codeBadRequest, "name and storageType are required")
 		return
 	}
-	if req.StorageType != "sftp" && req.StorageType != "hetzner-sftp" && req.StorageType != "s3" && req.StorageType != "ftps" {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "storageType must be sftp, hetzner-sftp, ftps, or s3")
+	validTypes := map[string]bool{"sftp": true, "hetzner-sftp": true, "s3": true, "ftps": true, "azure": true, "gcs": true}
+	if !validTypes[req.StorageType] {
+		writeError(w, http.StatusBadRequest, codeBadRequest, "storageType must be sftp, hetzner-sftp, ftps, s3, azure, or gcs")
 		return
 	}
 	if msg := validateK8sName(req.Name); msg != "" {

@@ -952,6 +952,18 @@ window.openDestForm = function(secretName) {
       <div class="hint hint-warn">${tr('form.destination.hint.insecureSkipCertVerify')}</div>
     </div>`;
 
+  const azureFields = `
+    <div class="form-group"><label>${tr('form.destination.label.accountName')} *</label><input name="data_account-name" required></div>
+    <div class="form-group"><label>${tr('form.destination.label.accountKey')} *</label><input name="data_account-key" type="password" required></div>
+    <div class="form-group"><label>${tr('form.destination.label.container')} *</label><input name="data_container" required></div>`;
+
+  const gcsFields = `
+    <div class="form-group"><label>${tr('form.destination.label.bucket')} *</label><input name="data_bucket" required></div>
+    <div class="form-group"><label>${tr('form.destination.label.serviceAccountJson')} *</label>
+      <textarea name="data_service-account-json" rows="4" required placeholder='{"type":"service_account",...}'></textarea>
+      <div class="hint">${tr('form.destination.hint.serviceAccountJson')}</div>
+    </div>`;
+
   openModal(title, `<form id="destForm" onsubmit="submitDestForm(event, '${secretName || ''}')">
     <div class="form-row">
       <div class="form-group"><label>${tr('common.name')} *</label><input name="name" required placeholder="${tr('form.destination.placeholder.name')}" ${isEdit ? 'disabled' : ''}></div>
@@ -962,6 +974,8 @@ window.openDestForm = function(secretName) {
           <option value="hetzner-sftp">${tr('form.destination.type.hetznerSftp')}</option>
           <option value="ftps">${tr('form.destination.type.ftps')}</option>
           <option value="s3">${tr('form.destination.type.s3')}</option>
+          <option value="azure">${tr('form.destination.type.azure')}</option>
+          <option value="gcs">${tr('form.destination.type.gcs')}</option>
         </select></div>
     </div>
     <div class="form-group"><label>${tr('form.destination.label.pathPrefix')}</label><input name="pathPrefix" placeholder="${tr('form.destination.placeholder.pathPrefix')}"></div>
@@ -973,7 +987,9 @@ window.openDestForm = function(secretName) {
   </form>
   <div id="destSFTPTemplate" style="display:none">${sftpFields}</div>
   <div id="destS3Template" style="display:none">${s3Fields}</div>
-  <div id="destFTPSTemplate" style="display:none">${ftpsFields}</div>`);
+  <div id="destFTPSTemplate" style="display:none">${ftpsFields}</div>
+  <div id="destAzureTemplate" style="display:none">${azureFields}</div>
+  <div id="destGCSTemplate" style="display:none">${gcsFields}</div>`);
 
   if (isEdit) {
     api('/api/destinations/' + secretName).then(d => {
@@ -1011,15 +1027,13 @@ window.openDestForm = function(secretName) {
 
 window.toggleDestFields = function(type) {
   const container = $('#destTypeFields');
-  if (type === 'sftp' || type === 'hetzner-sftp') {
-    container.innerHTML = $('#destSFTPTemplate').innerHTML;
-  } else if (type === 's3') {
-    container.innerHTML = $('#destS3Template').innerHTML;
-  } else if (type === 'ftps') {
-    container.innerHTML = $('#destFTPSTemplate').innerHTML;
-  } else {
-    container.innerHTML = '';
-  }
+  const templates = {
+    'sftp': '#destSFTPTemplate', 'hetzner-sftp': '#destSFTPTemplate',
+    's3': '#destS3Template', 'ftps': '#destFTPSTemplate',
+    'azure': '#destAzureTemplate', 'gcs': '#destGCSTemplate',
+  };
+  const tpl = templates[type];
+  container.innerHTML = tpl ? $(tpl).innerHTML : '';
 };
 
 // Show only the input matching the selected SFTP auth method. The hidden

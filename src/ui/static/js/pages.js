@@ -1120,7 +1120,9 @@ window.testDestConnection = async function(secretName, displayName) {
   const el = document.getElementById('dest-status-' + secretName);
   if (el) { el.innerHTML = `<span class="badge badge-pending">${tr('badge.testing')}</span>`; }
   try {
-    const result = await api('/api/destinations/' + secretName + '/test', { method: 'POST' });
+    // User-initiated probe: the server bounds it at 15 s (upload+readback),
+    // so allow more than the default client timeout before giving up.
+    const result = await api('/api/destinations/' + secretName + '/test', { method: 'POST', timeoutMs: 30000 });
     if (result.ok) {
       if (el) el.innerHTML = `<span class="badge badge-ok">${tr('badge.connected')}</span>`;
       toast(displayName + ': ' + tr('badge.ok'), 'success');

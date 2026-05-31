@@ -237,7 +237,7 @@ A **Source** is any `Secret` with `backup.mogenius.io/role=source` in the operat
 | `backup.mogenius.io/destinations` | unset | CSV allow-list of destination *names*. Empty = fan out to all destinations in the namespace. |
 | `backup.mogenius.io/retention-days` | `30` (chart default) | Delete dumps older than N days. `0` = keep forever. |
 | `backup.mogenius.io/min-keep` | `3` (chart default) | Safety floor: never delete below this many newest dumps. |
-| `backup.mogenius.io/extra-<key>` | none | Surfaced into `dumper.Config.Extra[key]` for db-specific options (e.g. `extra-sslmode=require`, `extra-authSource=admin`). |
+| `backup.mogenius.io/extra-<key>` | none | Surfaced into `dumper.Config.Extra[key]` for db-specific options (e.g. `extra-sslmode=require`, `extra-authSource=admin`). For MySQL/MariaDB, `extra-max-allowed-packet` overrides the mysqldump client packet ceiling (default `1G`); raise it if a wide row aborts the dump with `Error 2026: TLS/SSL error: unexpected eof`. |
 
 A typo on a feature-flag annotation (`analyzer-enabled: tru`) silently falls back to the default — backups must keep running even if a flag is misspelled.
 

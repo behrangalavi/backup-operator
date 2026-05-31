@@ -380,7 +380,7 @@ backup-restore --storage-secret hetzner-sb -n backup --target prod-users \
 | `backup.mogenius.io/verification-image` | per-DB-type default | Container image for the verifier pod. Only consulted in Phase-2 modes. Pin this to match the source DB's exact major version when restore semantics depend on the engine version (charset defaults, function signatures, dump format compatibility). Per-DB defaults from `verifier/restore/engine.go.DefaultImage`: `postgres:16-alpine`, `mysql:8.0`, `mariadb:11`, `mongo:7`, `redis:7-alpine`. |
 | `backup.mogenius.io/verification-volume-size` | per-mode default | `emptyDir.sizeLimit` for the verifier pod's data volume (e.g. `100Gi`, `5Gi`). Defaults: `1Gi` (schema-only), `5Gi` (sample), `50Gi` (full). Accepts decimal (`K`/`M`/`G`/`T`) and binary (`Ki`/`Mi`/`Gi`/`Ti`) suffixes. Override when a single source's restore needs more headroom — at scale, the node's ephemeral storage is a real budget. |
 | `backup.mogenius.io/compression` | `gzip` | Compression algorithm for the dump before age encryption. `gzip` (default, backward compatible) or `zstd` (30-50% better compression at comparable CPU). Stored in `meta.json` so restore CLI and verifiers auto-detect the decompressor. |
-| `backup.mogenius.io/extra-<key>` | none | Surfaced into `dumper.Config.Extra[key]`. Used for DB-specific options (e.g. `extra-sslmode`, `extra-authSource`). |
+| `backup.mogenius.io/extra-<key>` | none | Surfaced into `dumper.Config.Extra[key]`. Used for DB-specific options (e.g. `extra-sslmode`, `extra-authSource`, `extra-max-allowed-packet` for MySQL/MariaDB — default `1G`). |
 
 A typo on a feature-flag annotation falls back to the default rather than rejecting the Secret — backups must keep running even if a flag is misspelled.
 

@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"backup-operator/internal/labels"
 	"backup-operator/internal/meta"
+	"backup-operator/internal/safe"
 	"backup-operator/internal/scheduler"
 	"backup-operator/internal/secrets"
 	"backup-operator/storage"
@@ -440,29 +442,56 @@ func (d *k8sData) target(ctx context.Context, name string) (*targetDetail, error
 	// runs that others don't (e.g. partial upload failures). Deduplicate
 	// by timestamp, preferring the meta from the destination it was fetched
 	// from so SourceDestination is set for download routing.
+	//
+	// Probe destinations in parallel, each under a bounded per-destination
+	// timeout. The detail page genuinely needs the run history (unlike the
+	// dashboard, which can show stale), so this stays blocking — but it must
+	// NOT inherit the request context unbounded and probe sequentially: a
+	// slow/unreachable QNAP FTPS would otherwise pin /api/targets/<t>/runs
+	// until the browser's client-side timeout aborted it, leaving the detail
+	// page perpetually "loading". With a 12 s cap per destination and
+	// fan-out, the endpoint returns within ~12 s worst case and yields the
+	// runs from whichever destinations are reachable.
 	byTimestamp := map[string]*meta.MetaFile{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4)
 	for _, dest := range dests {
+		dest := dest
 		key := name + "@" + dest.Name
-		got, err := d.runsCache.getOrLoad(key, func() ([]*meta.MetaFile, error) {
-			st, err := d.storageFor(dest)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer safe.Goroutine(d.log, "target-runs", dest.Name)
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			got, err := d.runsCache.getOrLoad(key, func() ([]*meta.MetaFile, error) {
+				rctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+				defer cancel()
+				st, err := d.storageFor(dest)
+				if err != nil {
+					return nil, err
+				}
+				return meta.List(rctx, st, name)
+			})
 			if err != nil {
-				return nil, err
+				d.log.V(1).Info("destination unreadable for run history", "destination", dest.Name, "err", err.Error())
+				return
 			}
-			return meta.List(ctx, st, name)
-		})
-		if err != nil {
-			d.log.V(1).Info("destination unreadable for run history", "destination", dest.Name, "err", err.Error())
-			continue
-		}
-		for _, m := range got {
-			existing, ok := byTimestamp[m.Timestamp]
-			if !ok {
-				byTimestamp[m.Timestamp] = m
-			} else if existing.IsFailure() && !m.IsFailure() {
-				byTimestamp[m.Timestamp] = m
+			mu.Lock()
+			defer mu.Unlock()
+			for _, m := range got {
+				existing, ok := byTimestamp[m.Timestamp]
+				if !ok {
+					byTimestamp[m.Timestamp] = m
+				} else if existing.IsFailure() && !m.IsFailure() {
+					byTimestamp[m.Timestamp] = m
+				}
 			}
-		}
+		}()
 	}
+	wg.Wait()
 	runs := make([]*meta.MetaFile, 0, len(byTimestamp))
 	for _, m := range byTimestamp {
 		runs = append(runs, m)

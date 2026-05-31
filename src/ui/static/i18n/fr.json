@@ -352,7 +352,11 @@
         "accessKey": "Access Key ID",
         "secretKey": "Secret Access Key",
         "pathStyle": "Path-style",
-        "pathPrefix": "Préfixe de chemin"
+        "pathPrefix": "Préfixe de chemin",
+        "accountName": "Nom du compte",
+        "accountKey": "Clé du compte",
+        "container": "Conteneur",
+        "serviceAccountJson": "JSON du compte de service"
       },
       "placeholder": {
         "name": "hetzner-sb",
@@ -366,7 +370,9 @@
         "sftp": "SFTP",
         "hetznerSftp": "Hetzner Storage Box (SFTP)",
         "ftps": "FTPS (FTP via TLS)",
-        "s3": "S3 / compatible S3"
+        "s3": "S3 / compatible S3",
+        "azure": "Azure Blob Storage",
+        "gcs": "Google Cloud Storage"
       },
       "tlsMode": {
         "explicit": "Explicite (AUTH TLS, port 21 par défaut)",
@@ -376,7 +382,8 @@
         "knownHosts": "Exécute <code>ssh-keyscan -p &lt;port&gt; -t ed25519,rsa &lt;hôte&gt;</code> et colle la sortie ici. Obligatoire sauf si 'Ignorer la vérification' ci-dessous est coché.",
         "insecureSkipHostVerify": "Accepte N'IMPORTE QUELLE clé d'hôte — vulnérable au MITM. Uniquement pour les tests initiaux ; renseigne Known Hosts en production.",
         "tlsMode": "La plupart des firmwares NAS (QNAP, Synology) appellent ceci 'FTP avec SSL/TLS (explicite)' — choisis Explicite. Implicite est l'ancienne variante port 990.",
-        "insecureSkipCertVerify": "Ignore la validation du certificat TLS. Accepte n'importe quel certificat serveur — vulnérable au MITM. Uniquement quand le NAS fournit un certificat auto-signé que tu ne peux pas remplacer."
+        "insecureSkipCertVerify": "Ignore la validation du certificat TLS. Accepte n'importe quel certificat serveur — vulnérable au MITM. Uniquement quand le NAS fournit un certificat auto-signé que tu ne peux pas remplacer.",
+        "serviceAccountJson": "Collez le fichier de clé JSON complet téléchargé depuis la console GCP (IAM → Comptes de service → Clés → Ajouter une clé)."
       }
     }
   },

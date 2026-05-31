@@ -352,7 +352,11 @@
         "accessKey": "Access Key ID",
         "secretKey": "Secret Access Key",
         "pathStyle": "Path-style",
-        "pathPrefix": "Path Prefix"
+        "pathPrefix": "Path Prefix",
+        "accountName": "Account Name",
+        "accountKey": "Account Key",
+        "container": "Container",
+        "serviceAccountJson": "Service Account JSON"
       },
       "placeholder": {
         "name": "hetzner-sb",
@@ -366,7 +370,9 @@
         "sftp": "SFTP",
         "hetznerSftp": "Hetzner Storage Box (SFTP)",
         "ftps": "FTPS (FTP over TLS)",
-        "s3": "S3 / S3-compatible"
+        "s3": "S3 / S3-compatible",
+        "azure": "Azure Blob Storage",
+        "gcs": "Google Cloud Storage"
       },
       "tlsMode": {
         "explicit": "Explicit (AUTH TLS, default port 21)",
@@ -376,7 +382,8 @@
         "knownHosts": "Run <code>ssh-keyscan -p &lt;port&gt; -t ed25519,rsa &lt;host&gt;</code> and paste the output here. Required unless 'Skip host-key verification' below is checked.",
         "insecureSkipHostVerify": "Accepts ANY host key — vulnerable to MITM. Use only for initial testing; populate Known Hosts for production.",
         "tlsMode": "Most NAS firmware (QNAP, Synology) labels this 'FTP with SSL/TLS (explicit)' — pick Explicit. Implicit is the older port-990 variant.",
-        "insecureSkipCertVerify": "Skips TLS certificate validation. Accept any server cert — vulnerable to MITM. Use only when the NAS ships a self-signed cert you cannot replace."
+        "insecureSkipCertVerify": "Skips TLS certificate validation. Accept any server cert — vulnerable to MITM. Use only when the NAS ships a self-signed cert you cannot replace.",
+        "serviceAccountJson": "Paste the full JSON key file downloaded from the GCP console (IAM → Service Accounts → Keys → Add Key)."
       }
     }
   },

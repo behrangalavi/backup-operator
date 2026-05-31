@@ -10,12 +10,40 @@ import (
 )
 
 func TestNewStorage_Unsupported(t *testing.T) {
-	_, err := NewStorage("azure", "test", storage.SecretData{}, logr.Discard())
+	_, err := NewStorage("dropbox", "test", storage.SecretData{}, logr.Discard())
 	if err == nil {
 		t.Fatal("expected error for unsupported storage-type")
 	}
-	if !strings.Contains(err.Error(), "azure") {
+	if !strings.Contains(err.Error(), "dropbox") {
 		t.Errorf("error should mention the type, got: %v", err)
+	}
+}
+
+func TestNewStorage_Azure_MissingAccountName(t *testing.T) {
+	// Routing check: azure with missing data should reach the azure
+	// constructor (missing-field error), not "unsupported type".
+	_, err := NewStorage(TypeAzure, "test", storage.SecretData{
+		"container": []byte("backups"),
+	}, logr.Discard())
+	if err == nil {
+		t.Fatal("expected error for missing azure account name")
+	}
+	if strings.Contains(err.Error(), "unsupported") {
+		t.Errorf("azure should route to azure constructor, got: %v", err)
+	}
+}
+
+func TestNewStorage_GCS_MissingBucket(t *testing.T) {
+	// Routing check: gcs with missing data should reach the gcs
+	// constructor (missing-field error), not "unsupported type".
+	_, err := NewStorage(TypeGCS, "test", storage.SecretData{
+		"service-account-json": []byte(`{"type":"service_account"}`),
+	}, logr.Discard())
+	if err == nil {
+		t.Fatal("expected error for missing gcs bucket")
+	}
+	if strings.Contains(err.Error(), "unsupported") {
+		t.Errorf("gcs should route to gcs constructor, got: %v", err)
 	}
 }
 

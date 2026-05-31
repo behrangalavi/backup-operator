@@ -238,7 +238,9 @@ src/
 │   ├── factory/         # Creates the right Storage from storage-type label
 │   ├── sftp/            # Hetzner Storage Box and generic SFTP
 │   ├── ftps/            # FTP over TLS (QNAP, Synology, FreeNAS-style NAS firmware)
-│   └── s3/              # AWS S3, MinIO, Hetzner Object Storage, R2, B2, ...
+│   ├── s3/              # AWS S3, MinIO, Hetzner Object Storage, R2, B2, ...
+│   ├── azure/           # Azure Blob Storage (shared-key auth)
+│   └── gcs/             # Google Cloud Storage (service-account JSON auth)
 ├── verifier/            # Restore-verification: prove the uploaded artifact is decryptable+parseable
 │   ├── verifier.go      # Verifier interface, ShouldVerify schedule logic, FailureResult helper
 │   ├── factory/         # Mode → Verifier (stream-validate, schema-only, sample, full)
@@ -355,7 +357,7 @@ backup-restore --storage-secret hetzner-sb -n backup --target prod-users \
 |---|---|---|
 | `backup.mogenius.io/role` | **yes** | `source` \| `destination` \| `age-recipient` |
 | `backup.mogenius.io/db-type` | yes (sources only) | `postgres` \| `mysql` \| `mariadb` \| `mongo` \| `redis` |
-| `backup.mogenius.io/storage-type` | yes (destinations only) | `sftp` \| `hetzner-sftp` \| `ftps` \| `s3` |
+| `backup.mogenius.io/storage-type` | yes (destinations only) | `sftp` \| `hetzner-sftp` \| `ftps` \| `s3` \| `azure` \| `gcs` |
 
 ### 6.2 Source Secret annotations
 
@@ -436,6 +438,27 @@ For NAS firmware (QNAP, older Synology, FreeNAS) that only offers FTP over TLS, 
 | `region` | no | Defaults to `us-east-1`; non-AWS providers usually ignore this |
 | `endpoint` | no | Required for non-AWS (MinIO, Hetzner Object Storage, R2, B2, Wasabi). Omit for AWS. |
 | `path-style` | no | `"true"` for MinIO etc. that require path-style addressing. |
+
+#### `storage-type: azure`
+
+Azure Blob Storage using shared-key (account name + key) authentication.
+
+| Key | Required | Notes |
+|---|---|---|
+| `account-name` | **yes** | Storage account name (the `<name>` in `<name>.blob.core.windows.net`). |
+| `account-key` | **yes** | Base64 account access key. |
+| `container` | **yes** | Blob container the dumps are written to. |
+| `path-prefix` | no | Optional object-name prefix for namespace isolation (shared with all backends). |
+
+#### `storage-type: gcs`
+
+Google Cloud Storage authenticated with a service-account JSON key.
+
+| Key | Required | Notes |
+|---|---|---|
+| `bucket` | **yes** | GCS bucket the dumps are written to. |
+| `service-account-json` | **yes** | Full service-account JSON key file (IAM → Service Accounts → Keys → Add Key). Needs object read/write on the bucket. |
+| `path-prefix` | no | Optional object-name prefix for namespace isolation (shared with all backends). |
 
 ### 6.6 Age-recipient Secrets
 

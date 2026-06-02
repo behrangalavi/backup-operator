@@ -204,17 +204,31 @@ func (s *sftpStorage) dial(ctx context.Context) (*ssh.Client, *sftp.Client, erro
 
 	// Send keep-alive requests every 30 seconds so long-running sessions
 	// (retention with many deletes) are not killed by idle-timeout on the
-	// server side. The goroutine exits when the SSH connection closes.
+	// server side.
+	//
+	// The goroutine's lifetime is tied to the connection via client.Wait(),
+	// which unblocks the instant the connection closes — caller's ssh.Close(),
+	// a server-side drop, or pool eviction. Watching ctx.Done() alone was not
+	// enough: a pooled client (dialed under the operator's long-lived context)
+	// stays open across ticks, so when the pool finally closes it the keepalive
+	// goroutine would survive until the next 30s tick happened to fail
+	// SendRequest — leaking one goroutine per dial for up to a full interval.
+	closed := make(chan struct{})
+	go func() {
+		_ = client.Wait()
+		close(closed)
+	}()
 	go func() {
 		t := time.NewTicker(30 * time.Second)
 		defer t.Stop()
 		for {
 			select {
 			case <-t.C:
-				_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
-				if err != nil {
+				if _, _, err := client.SendRequest("keepalive@openssh.com", true, nil); err != nil {
 					return
 				}
+			case <-closed:
+				return
 			case <-ctx.Done():
 				return
 			}

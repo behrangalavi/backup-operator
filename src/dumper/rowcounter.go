@@ -55,15 +55,24 @@ func (rc *RowCounter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// Close signals end of input to the scanner goroutine. Must be called
-// after the dump completes.
+// Close signals end of input to the scanner goroutine and returns any error
+// the scanner hit (e.g. a dump line exceeding the 10 MB buffer). Must be called
+// after the dump completes. A non-nil error means the per-table counts are
+// incomplete and must not be trusted — callers should fall back to pre/post
+// stats comparison rather than acting on a partial count.
 func (rc *RowCounter) Close() error {
 	if rc.pw != nil {
 		_ = rc.pw.Close()
 		<-rc.done
+		return rc.scanErr
 	}
 	return nil
 }
+
+// Err returns the scanner error captured during parsing, or nil. Only
+// meaningful after Close has returned (the done-channel close establishes the
+// happens-before needed to read scanErr without a lock).
+func (rc *RowCounter) Err() error { return rc.scanErr }
 
 // Counts returns the per-table row counts observed in the dump stream.
 func (rc *RowCounter) Counts() map[string]int64 {

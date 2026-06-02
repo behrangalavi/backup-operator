@@ -323,7 +323,17 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	// verification falls back to pre/post stats comparison.
 	var dumpCounts map[string]int64
 	if rowCounter.Active() {
-		dumpCounts = rowCounter.Counts()
+		if scanErr := rowCounter.Err(); scanErr != nil {
+			// The parser hit an error (typically a dump line exceeding the
+			// scanner's 10 MB buffer). The counts are incomplete, so trusting
+			// them would let the empty-dump detector hard-fail a perfectly good
+			// large-row dump. Leave dumpCounts nil → BuildVerification falls
+			// back to pre/post stats comparison instead of acting on bad data.
+			log.Info("row counter parse error; skipping count-based empty-dump check, falling back to stats",
+				"err", scanErr.Error())
+		} else {
+			dumpCounts = rowCounter.Counts()
+		}
 	}
 	verification := meta.BuildVerification(preStats, postStats, dumpCounts, src.DBType, encryptedSize)
 	if verification.Verdict == meta.VerificationMismatch {

@@ -53,7 +53,8 @@ type MetricsRefresher struct {
 	// refresher lazy-builds its own pool on first refresh, but production
 	// wiring shares one pool with the StorageScrubber via main.go to keep
 	// a single client lifecycle per backend on the leader pod.
-	Pool *StoragePool
+	Pool     *StoragePool
+	poolOnce sync.Once
 
 	// Broadcast is called when a per-target latest-meta timestamp
 	// changes between two refresh ticks — i.e. a new backup run has
@@ -135,10 +136,18 @@ func (r *MetricsRefresher) Start(ctx context.Context) error {
 // replicas don't multiply the read load against destinations.
 func (r *MetricsRefresher) NeedLeaderElection() bool { return true }
 
+// ensurePool lazy-builds the pool exactly once, race-free. A pool wired
+// externally (main.go) is left untouched.
+func (r *MetricsRefresher) ensurePool() {
+	r.poolOnce.Do(func() {
+		if r.Pool == nil {
+			r.Pool = NewStoragePool(r.Logger)
+		}
+	})
+}
+
 func (r *MetricsRefresher) refresh(ctx context.Context) {
-	if r.Pool == nil {
-		r.Pool = NewStoragePool(r.Logger)
-	}
+	r.ensurePool()
 	res, err := listBackupSecrets(ctx, r.Client, r.Namespace)
 	if err != nil {
 		r.Logger.Error(err, "list secrets")
@@ -223,16 +232,23 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 		wg                     sync.WaitGroup
 	)
 	for _, d := range allowed {
+		// Acquire the per-destination slot BEFORE spawning the goroutine.
+		// The slot is shared across every source fanning out to this
+		// backend, so the backend sees at most defaultPerDestConcurrency
+		// in-flight calls. Acquiring before `go` means a slow/down backend
+		// blocks the (already globally-bounded) source goroutine here
+		// instead of accumulating one blocked goroutine per source×dest —
+		// the unbounded-queue growth the previous in-goroutine acquire had.
+		slot := r.destSlot(d.Name)
+		select {
+		case slot <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
 		wg.Add(1)
 		go func(d *secrets.Destination) {
 			defer wg.Done()
 			defer safe.Goroutine(r.Logger, "metrics-refresh-destination", d.Name)
-			// Per-destination slot is shared across every source that
-			// fans out to this backend, so a destination cannot be hit
-			// by more than defaultPerDestConcurrency calls in flight at
-			// once even when the global pool runs many sources at once.
-			slot := r.destSlot(d.Name)
-			slot <- struct{}{}
 			defer func() { <-slot }()
 
 			st, err := r.Pool.Get(d)

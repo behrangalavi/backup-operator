@@ -37,7 +37,20 @@ type StorageScrubber struct {
 
 	// Pool is the per-destination storage cache. Optional; lazy-built when
 	// nil. Production wiring shares one pool with MetricsRefresher.
-	Pool *StoragePool
+	Pool     *StoragePool
+	poolOnce sync.Once
+}
+
+// ensurePool lazy-builds the pool exactly once. scrubSource fans out to
+// concurrent scrubOne goroutines, so an unguarded `if s.Pool == nil` was a
+// data race on the lazy path; sync.Once makes it safe and idempotent. A
+// pool wired externally (main.go) is left untouched.
+func (s *StorageScrubber) ensurePool() {
+	s.poolOnce.Do(func() {
+		if s.Pool == nil {
+			s.Pool = NewStoragePool(s.Logger)
+		}
+	})
 }
 
 const (
@@ -78,6 +91,7 @@ func (s *StorageScrubber) Start(ctx context.Context) error {
 func (s *StorageScrubber) NeedLeaderElection() bool { return true }
 
 func (s *StorageScrubber) scrub(ctx context.Context) {
+	s.ensurePool()
 	res, err := listBackupSecrets(ctx, s.Client, s.Namespace)
 	if err != nil {
 		s.Logger.Error(err, "list secrets")
@@ -120,9 +134,6 @@ func (s *StorageScrubber) scrubSource(ctx context.Context, src *secrets.Source, 
 // gauges/counters so Alertmanager can notice corruption.
 func (s *StorageScrubber) scrubOne(ctx context.Context, target string, d *secrets.Destination) {
 	log := s.Logger.WithValues("target", target, "destination", d.Name)
-	if s.Pool == nil {
-		s.Pool = NewStoragePool(s.Logger)
-	}
 	st, err := s.Pool.Get(d)
 	if err != nil {
 		log.V(1).Info("scrub skipped: storage init failed", "err", err.Error())

@@ -2,6 +2,7 @@ package dumper
 
 import (
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -170,6 +171,28 @@ func TestExtractMySQLTable(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("extractMySQLTable(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestRowCounterScanErrorPropagates(t *testing.T) {
+	// A single dump line longer than the scanner's 10 MB max triggers
+	// bufio.ErrTooLong. Close must surface it so the pipeline can fall back to
+	// stats instead of acting on a truncated count.
+	var b strings.Builder
+	b.WriteString("COPY public.big (id, blob) FROM stdin;\n")
+	b.WriteString("1\t")
+	b.WriteString(strings.Repeat("x", 11*1024*1024)) // 11 MB, no newline within
+	b.WriteString("\n\\.\n")
+
+	rc := NewRowCounter(io.Discard, "postgres")
+	if _, err := rc.Write([]byte(b.String())); err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.Close(); err == nil {
+		t.Fatal("expected scan error from oversized line, got nil")
+	}
+	if rc.Err() == nil {
+		t.Error("Err() should report the scan error after Close")
 	}
 }
 

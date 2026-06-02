@@ -62,7 +62,6 @@ jobs:
 
       - name: Run govulncheck
         working-directory: src
-        continue-on-error: true
         run: govulncheck ./...
 
   helm-lint:

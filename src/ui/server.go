@@ -15,6 +15,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -225,7 +226,7 @@ func (s *Server) Start(ctx context.Context) error {
 		// accept large uploads — the worst case is a few KiB of JSON or an
 		// SSH key blob. Without this an unauthenticated POST of a multi-GB
 		// body OOMs the operator.
-		Handler:           latencyMiddleware(limitBodyMiddleware(s.cfg.MaxBodyBytes, mux)),
+		Handler:           latencyMiddleware(csrfMiddleware(limitBodyMiddleware(s.cfg.MaxBodyBytes, mux))),
 		ReadHeaderTimeout: 5 * time.Second,
 		// MaxHeaderBytes defaults to 1MB which is fine; lower would require
 		// careful audit of cookies/auth-proxy headers downstream users add.
@@ -274,6 +275,56 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	_, _ = w.Write(data)
+}
+
+// csrfMiddleware rejects browser-driven cross-origin state changes. The UI
+// has no built-in auth (§3.1), so when it sits behind a cookie-based auth
+// proxy a malicious page could otherwise drive any mutating endpoint via the
+// victim's browser. We gate on Sec-Fetch-Site (set by all modern browsers,
+// computed client-side so it survives reverse proxies) and fall back to an
+// Origin/Host comparison for older browsers. Non-browser clients (curl, the
+// restore CLI, monitoring) send neither header and pass through unchanged —
+// this narrows the browser attack surface, it does not replace the auth proxy.
+func csrfMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			next.ServeHTTP(w, r)
+			return
+		}
+		switch r.Header.Get("Sec-Fetch-Site") {
+		case "cross-site", "same-site":
+			writeError(w, http.StatusForbidden, codeForbidden, "cross-origin request rejected")
+			return
+		}
+		// Defence in depth for browsers that send Origin but not
+		// Sec-Fetch-Site: the Origin host must match the request host.
+		if origin := r.Header.Get("Origin"); origin != "" {
+			u, err := url.Parse(origin)
+			if err != nil || !originMatchesHost(u.Host, r) {
+				writeError(w, http.StatusForbidden, codeForbidden, "cross-origin request rejected")
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// originMatchesHost reports whether the Origin header's host belongs to the
+// same site the request was addressed to. X-Forwarded-Host is honoured for
+// the documented reverse-proxy deployment; it is spoofable, but an attacker
+// who can set it can already reach the operator directly, so it adds no risk.
+func originMatchesHost(originHost string, r *http.Request) bool {
+	if originHost == "" {
+		return false
+	}
+	if strings.EqualFold(originHost, r.Host) {
+		return true
+	}
+	if xfh := r.Header.Get("X-Forwarded-Host"); xfh != "" && strings.EqualFold(originHost, xfh) {
+		return true
+	}
+	return false
 }
 
 func noCacheMiddleware(next http.Handler) http.Handler {

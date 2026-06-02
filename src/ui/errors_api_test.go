@@ -2,8 +2,10 @@ package ui
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -56,6 +58,94 @@ func TestApiResponse_CodeOmittedWhenEmpty(t *testing.T) {
 	body := rec.Body.String()
 	if contains(body, `"code"`) {
 		t.Errorf("empty Code should be omitted from JSON, got: %s", body)
+	}
+}
+
+func TestSanitizeStorageError(t *testing.T) {
+	cases := []struct {
+		name        string
+		in          string
+		wantContain []string
+		wantAbsent  []string
+	}{
+		{
+			name:        "keeps protocol diagnostic",
+			in:          "upload: 550 Permission denied",
+			wantContain: []string{"550 Permission denied"},
+		},
+		{
+			name:        "scrubs URI userinfo",
+			in:          "dial sftp://backupuser:s3cr3t@nas.internal:23: connection refused",
+			wantContain: []string{"sftp://***@nas.internal:23", "connection refused"},
+			wantAbsent:  []string{"s3cr3t", "backupuser"},
+		},
+		{
+			name:        "scrubs key=value password",
+			in:          "auth failed: password=hunter2 rejected",
+			wantContain: []string{"password=***", "rejected"},
+			wantAbsent:  []string{"hunter2"},
+		},
+		{
+			name:        "scrubs access-key-id",
+			in:          "config error access-key-id=AKIAIOSFODNN7EXAMPLE invalid",
+			wantContain: []string{"access-key-id=***"},
+			wantAbsent:  []string{"AKIAIOSFODNN7EXAMPLE"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := sanitizeStorageError(errors.New(c.in))
+			for _, want := range c.wantContain {
+				if !strings.Contains(got, want) {
+					t.Errorf("sanitized %q missing %q", got, want)
+				}
+			}
+			for _, absent := range c.wantAbsent {
+				if strings.Contains(got, absent) {
+					t.Errorf("sanitized %q still leaks %q", got, absent)
+				}
+			}
+		})
+	}
+	if sanitizeStorageError(nil) != "" {
+		t.Error("nil error should sanitize to empty string")
+	}
+}
+
+func TestCSRFMiddleware(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	h := csrfMiddleware(next)
+
+	cases := []struct {
+		name    string
+		method  string
+		headers map[string]string
+		want    int
+	}{
+		{"GET always allowed", http.MethodGet, map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusOK},
+		{"POST same-origin allowed", http.MethodPost, map[string]string{"Sec-Fetch-Site": "same-origin"}, http.StatusOK},
+		{"POST none allowed", http.MethodPost, map[string]string{"Sec-Fetch-Site": "none"}, http.StatusOK},
+		{"POST cross-site rejected", http.MethodPost, map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusForbidden},
+		{"DELETE same-site rejected", http.MethodDelete, map[string]string{"Sec-Fetch-Site": "same-site"}, http.StatusForbidden},
+		{"non-browser client (no headers) allowed", http.MethodPost, nil, http.StatusOK},
+		{"matching Origin allowed", http.MethodPost, map[string]string{"Origin": "http://example.test"}, http.StatusOK},
+		{"mismatched Origin rejected", http.MethodPost, map[string]string{"Origin": "http://evil.test"}, http.StatusForbidden},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := httptest.NewRequest(c.method, "http://example.test/api/sources", nil)
+			req.Host = "example.test"
+			for k, v := range c.headers {
+				req.Header.Set(k, v)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != c.want {
+				t.Errorf("status = %d, want %d", rec.Code, c.want)
+			}
+		})
 	}
 }
 

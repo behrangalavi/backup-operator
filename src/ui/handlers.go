@@ -169,7 +169,8 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.streamFromFirstDest(w, r, destsToTry, objectPath, contentType, filename, target, kind); err != nil {
-		renderError(w, http.StatusBadGateway, err.Error())
+		s.cfg.Logger.Error(err, "download failed", "target", target, "kind", kind)
+		renderError(w, http.StatusBadGateway, "failed to retrieve backup from storage")
 	}
 }
 

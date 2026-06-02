@@ -934,9 +934,14 @@ func (s *Server) handleAPIGetDestination(w http.ResponseWriter, r *http.Request)
 	}
 
 	safeData := make(map[string]string)
+	// Mask every credential-bearing data key. Names must match the actual
+	// destination Secret schema (§6.5): S3 uses access-key-id /
+	// secret-access-key, SFTP uses ssh-private-key / password. access-key-id
+	// was previously absent here, so an S3 access key id leaked in plaintext
+	// on GET. The extra legacy aliases (access-key, secret-key) are harmless.
 	sensitiveKeys := map[string]bool{
 		"password": true, "ssh-private-key": true, "secret-key": true,
-		"access-key": true, "secret-access-key": true,
+		"access-key": true, "secret-access-key": true, "access-key-id": true,
 	}
 	for k, v := range sec.Data {
 		if sensitiveKeys[k] {
@@ -993,7 +998,7 @@ func (s *Server) handleAPITestDestination(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":    false,
-			"error": "storage init failed: " + err.Error(),
+			"error": "storage init failed: " + sanitizeStorageError(err),
 		})
 		return
 	}
@@ -1010,7 +1015,7 @@ func (s *Server) handleAPITestDestination(w http.ResponseWriter, r *http.Request
 	if err := st.Upload(ctx, probePath, strings.NewReader(string(payload))); err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":    false,
-			"error": "upload failed: " + err.Error(),
+			"error": "upload failed: " + sanitizeStorageError(err),
 		})
 		return
 	}
@@ -1025,7 +1030,7 @@ func (s *Server) handleAPITestDestination(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":    false,
-			"error": "readback failed: " + err.Error(),
+			"error": "readback failed: " + sanitizeStorageError(err),
 		})
 		return
 	}
@@ -1111,7 +1116,7 @@ func (s *Server) handleAPIDestinationStats(w http.ResponseWriter, r *http.Reques
 				results[idx] = destStorageStats{
 					Name:        dest.Name,
 					StorageType: dest.StorageType,
-					Error:       err.Error(),
+					Error:       sanitizeStorageError(err),
 				}
 				return
 			}
@@ -1281,7 +1286,7 @@ func (s *Server) handleAPIDestinationHealth(w http.ResponseWriter, r *http.Reque
 			if !ok || lr.err != nil {
 				entry.Status = "unreachable"
 				if lr.err != nil {
-					entry.Error = lr.err.Error()
+					entry.Error = sanitizeStorageError(lr.err)
 				}
 				entries = append(entries, entry)
 				continue

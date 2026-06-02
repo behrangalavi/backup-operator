@@ -377,7 +377,22 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 // given target prefix. Returns (nil, zero-time, false) if storage cannot be
 // listed, no meta exists, or the latest one cannot be parsed.
 func loadLatestMeta(ctx context.Context, st storage.Storage, target string) (*meta.MetaFile, time.Time, bool) {
-	objs, err := st.List(ctx, target+"/")
+	// Reuse one connection for the List + Get when the backend supports it
+	// (SFTP/FTPS). This runs once per (source × destination) every tick on the
+	// refresher and scrubber hot path; without the shared session each call
+	// dials a fresh SSH/TLS connection, so List+Get is two handshakes per pair
+	// per tick. S3 has no session concept and falls through to per-call dialing.
+	active := st
+	if bs, ok := st.(storage.BatchStorage); ok {
+		sess, closer, err := bs.WithSession(ctx)
+		if err != nil {
+			return nil, time.Time{}, false
+		}
+		defer func() { _ = closer() }()
+		active = sess
+	}
+
+	objs, err := active.List(ctx, target+"/")
 	if err != nil || len(objs) == 0 {
 		return nil, time.Time{}, false
 	}
@@ -385,7 +400,7 @@ func loadLatestMeta(ctx context.Context, st storage.Storage, target string) (*me
 	if latest.Path == "" {
 		return nil, time.Time{}, false
 	}
-	rc, err := st.Get(ctx, latest.Path)
+	rc, err := active.Get(ctx, latest.Path)
 	if err != nil {
 		return nil, time.Time{}, false
 	}

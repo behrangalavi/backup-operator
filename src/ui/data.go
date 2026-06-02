@@ -237,13 +237,27 @@ func (d *k8sData) storageFor(dest *secrets.Destination) (storage.Storage, error)
 	return storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, d.log.WithName("storage"))
 }
 
+// maxBackgroundRefreshes caps how many storage-probe goroutines the UI's
+// stale-while-revalidate caches may run concurrently across all keys and both
+// caches combined. Each probe is a fresh SSH/TLS handshake; left unbounded, a
+// single SSE tick on a large fleet fans out one per destination at once and
+// trips backend bruteforce protection (the QNAP IP-block incident, §18 ADR).
+const maxBackgroundRefreshes = 6
+
 func newK8sData(c client.Client, namespace string, log logr.Logger) *k8sData {
+	// One semaphore shared by both caches so the bound is on total in-flight
+	// probes, not per-cache.
+	sem := make(chan struct{}, maxBackgroundRefreshes)
+	latestCache := newCache[map[string]*meta.MetaFile](30 * time.Second)
+	latestCache.sem = sem
+	runsCache := newCache[[]*meta.MetaFile](30 * time.Second)
+	runsCache.sem = sem
 	return &k8sData{
 		client:      c,
 		namespace:   namespace,
 		log:         log,
-		latestCache: newCache[map[string]*meta.MetaFile](30 * time.Second),
-		runsCache:   newCache[[]*meta.MetaFile](30 * time.Second),
+		latestCache: latestCache,
+		runsCache:   runsCache,
 	}
 }
 

@@ -75,10 +75,6 @@ func (p *Pipeline) dumpToFileWithEncryptor(ctx context.Context, d dumper.Dumper,
 		return 0, "", fmt.Errorf("age close: %w", err)
 	}
 
-	if err := f.Sync(); err != nil {
-		return 0, "", fmt.Errorf("fsync dump: %w", err)
-	}
-
 	info, err := f.Stat()
 	if err != nil {
 		return 0, "", err

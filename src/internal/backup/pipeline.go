@@ -304,9 +304,18 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 
 	metrics.SetDumpSize(src.TargetName, encryptedSize)
 
-	// Post-dump stats collection for verification
+	// Post-dump stats collection for verification.
+	//
+	// Only collected when the row counter is INACTIVE (mongo/redis). There the
+	// pre/post comparison is the only verdict path BuildVerification has — no
+	// dump-stream count exists. For SQL engines the row counter already saw
+	// every INSERT/COPY row, so the verdict comes from dumpCounts-vs-preStats
+	// and postStats would be purely informational meta content that nothing
+	// downstream consumes for a decision. Skipping it there saves a full
+	// CollectStats roundtrip (a pg_stat_user_tables / INFORMATION_SCHEMA query)
+	// on every SQL backup — real load at 10k+ daily runs.
 	var postStats *dumper.Stats
-	if src.AnalyzerEnabled {
+	if src.AnalyzerEnabled && !rowCounter.Active() {
 		s, statsErr := d.CollectStats(ctx)
 		if statsErr != nil {
 			log.V(1).Info("post-dump stats collection skipped", "reason", statsErr.Error())

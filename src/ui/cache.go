@@ -17,6 +17,13 @@ type cache[V any] struct {
 	ttl     time.Duration
 	m       map[string]cacheEntry[V]
 	loading map[string]bool // dedup concurrent background refreshes per key
+	// sem bounds the total number of in-flight background refreshes across all
+	// keys. Per-key dedup (loading) stops two goroutines probing the same
+	// destination, but on a fleet with many distinct destinations an SSE tick
+	// can still fan out one refresh per key simultaneously — each a fresh
+	// SSH/TLS handshake. That connection storm is exactly what got the operator
+	// IP-blocked by QNAP's bruteforce protection (see §18 ADR). nil = unbounded.
+	sem chan struct{}
 }
 
 type cacheEntry[V any] struct {
@@ -78,6 +85,10 @@ func (c *cache[V]) getOrRefreshAsync(key string, load func() (V, error), onRefre
 	c.mu.Unlock()
 
 	go func() {
+		if c.sem != nil {
+			c.sem <- struct{}{}
+			defer func() { <-c.sem }()
+		}
 		v, err := load()
 		c.mu.Lock()
 		delete(c.loading, key)

@@ -255,10 +255,19 @@ func (s *Server) Start(ctx context.Context) error {
 // direct storageFactory.NewStorage calls open a fresh client per
 // request and were the trigger for QNAP NAP-blocking the operator's IP.
 func (s *Server) storageFor(d *secrets.Destination, logName string) (storage.Storage, error) {
-	if s.cfg.Pool != nil {
-		return s.cfg.Pool.Get(d)
+	return storageForPool(s.cfg.Pool, d, s.cfg.Logger.WithName(logName))
+}
+
+// storageForPool is the single pool-or-fallback implementation behind both
+// Server.storageFor and k8sData.storageFor. A nil pool (tests, unwired data
+// layer) builds a fresh client; otherwise the shared pool amortises clients
+// across handlers and avoids the per-request handshake storm that tripped
+// QNAP's NAP IP-block (§18 ADR).
+func storageForPool(pool StoragePool, d *secrets.Destination, log logr.Logger) (storage.Storage, error) {
+	if pool != nil {
+		return pool.Get(d)
 	}
-	return storageFactory.NewStorage(d.StorageType, d.Name, d.Data, s.cfg.Logger.WithName(logName))
+	return storageFactory.NewStorage(d.StorageType, d.Name, d.Data, log)
 }
 
 func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {

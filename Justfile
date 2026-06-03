@@ -48,9 +48,21 @@ check: golangci-lint test-unit
 test-unit:
     cd src && go run gotest.tools/gotestsum@latest --format="testname" --hide-summary="skipped" --format-hide-empty-pkg --rerun-fails="0" -- -count=1 ./...
 
-# Execute golangci-lint
+# Execute golangci-lint (pinned to match .github/workflows/ci.yaml — bump both together).
+# Uses the prebuilt release binary, not `go run`: building golangci-lint from
+# source honours its own `toolchain go1.25.x` pin, which then refuses to lint a
+# module whose `go` directive is newer (ours is 1.26.2). The release binary is
+# built with go1.26.2, so it lints cleanly. Cached outside the repo, keyed by
+# version, so a bump re-downloads automatically.
 golangci-lint:
-    cd src && go run github.com/golangci/golangci-lint/cmd/golangci-lint@latest run '--fast=false' --sort-results '--max-same-issues=0' '--timeout=1h' ./...
+    #!/usr/bin/env sh
+    set -e
+    VERSION=v2.12.2
+    BINDIR="${XDG_CACHE_HOME:-$HOME/.cache}/backup-operator-tools/golangci-lint/$VERSION"
+    if [ ! -x "$BINDIR/golangci-lint" ]; then
+        curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$BINDIR" "$VERSION"
+    fi
+    cd src && "$BINDIR/golangci-lint" run '--max-same-issues=0' '--timeout=1h' ./...
 
 # Build a docker image (multi-arch via buildx)
 build-docker image arch="amd64":

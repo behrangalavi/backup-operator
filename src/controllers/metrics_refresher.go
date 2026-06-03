@@ -74,8 +74,15 @@ type MetricsRefresher struct {
 	// trackedTargets remembers which targets we exposed last refresh, so we
 	// can drop their series when a Source Secret disappears. Without this,
 	// a deleted source would leave stale metrics around indefinitely.
+	//
+	// trackedSeries remembers, per target, the destination and table label
+	// sets we exposed on the previous tick. When a destination leaves a
+	// source's allow-list or a table is dropped from the schema, we delete
+	// the now-orphaned series rather than leaving it stuck at its last value.
+	// Both maps share mu.
 	mu             sync.Mutex
 	trackedTargets map[string]bool
+	trackedSeries  map[string]*targetSeries
 
 	// lastSrcRV / lastDestRV track the ResourceVersion of the most recent
 	// Secret list responses. When neither has changed since the previous
@@ -92,6 +99,59 @@ type MetricsRefresher struct {
 	// in destSlot to keep zero-value MetricsRefresher usable in tests.
 	destMu       sync.Mutex
 	perDestSlots map[string]chan struct{}
+}
+
+// targetSeries records the per-label series a single target currently
+// exposes, so the refresher can diff against the previous tick and delete
+// series for destinations/tables that have since vanished.
+type targetSeries struct {
+	destinations map[string]struct{}
+	tables       map[string]struct{}
+}
+
+// ensureSeries returns the tracked series for target, creating it if absent.
+// Caller must hold r.mu.
+func (r *MetricsRefresher) ensureSeries(target string) *targetSeries {
+	if r.trackedSeries == nil {
+		r.trackedSeries = map[string]*targetSeries{}
+	}
+	ts := r.trackedSeries[target]
+	if ts == nil {
+		ts = &targetSeries{destinations: map[string]struct{}{}, tables: map[string]struct{}{}}
+		r.trackedSeries[target] = ts
+	}
+	return ts
+}
+
+// reconcileDestinations deletes the per-(target,destination) series for any
+// destination tracked last tick but absent from cur (the source's current
+// allow-list), then records cur as the new tracked set.
+func (r *MetricsRefresher) reconcileDestinations(target string, cur map[string]struct{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ts := r.ensureSeries(target)
+	for d := range ts.destinations {
+		if _, ok := cur[d]; !ok {
+			metrics.DeleteDestinationMetrics(target, d)
+		}
+	}
+	ts.destinations = cur
+}
+
+// reconcileTables deletes the per-(target,table) row-count series for any
+// table tracked last tick but absent from cur (the current schema), then
+// records cur as the new tracked set. Only called when authoritative stats
+// exist this tick — a failed run leaves the prior set sticky.
+func (r *MetricsRefresher) reconcileTables(target string, cur map[string]struct{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ts := r.ensureSeries(target)
+	for t := range ts.tables {
+		if _, ok := cur[t]; !ok {
+			metrics.DeleteTableMetric(target, t)
+		}
+	}
+	ts.tables = cur
 }
 
 // destSlot returns the (lazy-initialised) per-destination semaphore
@@ -211,6 +271,7 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 	for prev := range r.trackedTargets {
 		if !current[prev] {
 			metrics.DeleteTargetMetrics(prev)
+			delete(r.trackedSeries, prev)
 		}
 	}
 	r.trackedTargets = current
@@ -219,6 +280,16 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 
 func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Source, all []*secrets.Destination) {
 	allowed := secrets.FilterDestinations(src, all)
+
+	// Reconcile the destination label-set up front (independent of whether
+	// any run data exists yet): a destination dropped from the allow-list
+	// should have its series deleted even if the remaining destinations are
+	// currently empty.
+	curDests := make(map[string]struct{}, len(allowed))
+	for _, d := range allowed {
+		curDests[d.Name] = struct{}{}
+	}
+	r.reconcileDestinations(src.TargetName, curDests)
 
 	// We track two independent "best" metas across destinations:
 	//   - newest:    dictates last_run_status / last_run_anomalies / size_change_ratio
@@ -325,9 +396,12 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 		}
 		if success.Stats != nil {
 			metrics.SetTableCount(src.TargetName, len(success.Stats.Tables))
+			curTables := make(map[string]struct{}, len(success.Stats.Tables))
 			for _, t := range success.Stats.Tables {
 				metrics.SetTableRowCount(src.TargetName, t.Name, t.RowCount)
+				curTables[t.Name] = struct{}{}
 			}
+			r.reconcileTables(src.TargetName, curTables)
 		}
 		// Failed runs typically fail fast and would systematically
 		// underestimate the gauge, so it tracks the latest *successful* run

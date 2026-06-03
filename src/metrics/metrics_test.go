@@ -91,6 +91,86 @@ func TestAnalyzerBaselineUnavailable_GaugeRoundtrip(t *testing.T) {
 	}
 }
 
+// gaugeValue returns the value of the named gauge for the given label set,
+// and whether such a series currently exists in the registry.
+func gaugeValue(t *testing.T, reg *prometheus.Registry, name string, want map[string]string) (float64, bool) {
+	t.Helper()
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			labels := map[string]string{}
+			for _, l := range m.GetLabel() {
+				labels[l.GetName()] = l.GetValue()
+			}
+			match := true
+			for k, v := range want {
+				if labels[k] != v {
+					match = false
+					break
+				}
+			}
+			if match {
+				return m.GetGauge().GetValue(), true
+			}
+		}
+	}
+	return 0, false
+}
+
+func TestDeleteDestinationMetrics(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	Register(reg)
+
+	// Two destinations for the same target; one will be removed.
+	SetRetentionLastStatus("dest-target", "keep", true)
+	SetRetentionLastDeleted("dest-target", "keep", 2)
+	SetDestinationFailed("dest-target", "keep", false)
+	SetRetentionLastStatus("dest-target", "drop", true)
+	SetRetentionLastDeleted("dest-target", "drop", 5)
+	SetDestinationFailed("dest-target", "drop", true)
+
+	DeleteDestinationMetrics("dest-target", "drop")
+
+	if _, ok := gaugeValue(t, reg, "backup_operator_retention_last_status",
+		map[string]string{"target": "dest-target", "destination": "drop"}); ok {
+		t.Error("retention_last_status{drop} should be absent after delete")
+	}
+	if _, ok := gaugeValue(t, reg, "backup_operator_destination_failed",
+		map[string]string{"target": "dest-target", "destination": "drop"}); ok {
+		t.Error("destination_failed{drop} should be absent after delete")
+	}
+	// The surviving destination must be untouched.
+	if v, ok := gaugeValue(t, reg, "backup_operator_retention_last_deleted_count",
+		map[string]string{"target": "dest-target", "destination": "keep"}); !ok || v != 2 {
+		t.Errorf("retention_last_deleted_count{keep} = %v present=%v, want 2/true", v, ok)
+	}
+}
+
+func TestDeleteTableMetric(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	Register(reg)
+
+	SetTableRowCount("tbl-target", "keep", 100)
+	SetTableRowCount("tbl-target", "drop", 200)
+
+	DeleteTableMetric("tbl-target", "drop")
+
+	if _, ok := gaugeValue(t, reg, "backup_operator_table_row_count",
+		map[string]string{"target": "tbl-target", "table": "drop"}); ok {
+		t.Error("table_row_count{drop} should be absent after delete")
+	}
+	if v, ok := gaugeValue(t, reg, "backup_operator_table_row_count",
+		map[string]string{"target": "tbl-target", "table": "keep"}); !ok || v != 100 {
+		t.Errorf("table_row_count{keep} = %v present=%v, want 100/true", v, ok)
+	}
+}
+
 func TestDeleteTargetMetrics(t *testing.T) {
 	reg := prometheus.NewPedanticRegistry()
 	Register(reg)

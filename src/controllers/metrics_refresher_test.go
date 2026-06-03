@@ -5,7 +5,92 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"backup-operator/metrics"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
+
+// hasSeries reports whether a series with the given name and label subset
+// currently exists in reg.
+func hasSeries(t *testing.T, reg *prometheus.Registry, name string, want map[string]string) bool {
+	t.Helper()
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			labels := map[string]string{}
+			for _, l := range m.GetLabel() {
+				labels[l.GetName()] = l.GetValue()
+			}
+			match := true
+			for k, v := range want {
+				if labels[k] != v {
+					match = false
+					break
+				}
+			}
+			if match {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestReconcileDestinations_DropsVanishedSeries proves a destination removed
+// from a source's allow-list has its per-(target,destination) series deleted
+// on the next tick, while a surviving destination is left intact.
+func TestReconcileDestinations_DropsVanishedSeries(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	metrics.Register(reg)
+	r := &MetricsRefresher{}
+
+	// Tick 1: both destinations present and reporting.
+	metrics.SetRetentionLastStatus("recon-t", "keep", true)
+	metrics.SetRetentionLastStatus("recon-t", "drop", false)
+	r.reconcileDestinations("recon-t", map[string]struct{}{"keep": {}, "drop": {}})
+
+	// Tick 2: "drop" left the allow-list.
+	r.reconcileDestinations("recon-t", map[string]struct{}{"keep": {}})
+
+	if hasSeries(t, reg, "backup_operator_retention_last_status",
+		map[string]string{"target": "recon-t", "destination": "drop"}) {
+		t.Error("retention_last_status{drop} should be deleted after destination left allow-list")
+	}
+	if !hasSeries(t, reg, "backup_operator_retention_last_status",
+		map[string]string{"target": "recon-t", "destination": "keep"}) {
+		t.Error("retention_last_status{keep} should survive")
+	}
+}
+
+// TestReconcileTables_DropsVanishedSeries proves a table dropped from the
+// schema has its row-count series deleted on the next tick with stats.
+func TestReconcileTables_DropsVanishedSeries(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	metrics.Register(reg)
+	r := &MetricsRefresher{}
+
+	metrics.SetTableRowCount("recon-tbl", "keep", 10)
+	metrics.SetTableRowCount("recon-tbl", "drop", 20)
+	r.reconcileTables("recon-tbl", map[string]struct{}{"keep": {}, "drop": {}})
+
+	r.reconcileTables("recon-tbl", map[string]struct{}{"keep": {}})
+
+	if hasSeries(t, reg, "backup_operator_table_row_count",
+		map[string]string{"target": "recon-tbl", "table": "drop"}) {
+		t.Error("table_row_count{drop} should be deleted after table dropped from schema")
+	}
+	if !hasSeries(t, reg, "backup_operator_table_row_count",
+		map[string]string{"target": "recon-tbl", "table": "keep"}) {
+		t.Error("table_row_count{keep} should survive")
+	}
+}
 
 // TestDestSlot_CapsConcurrentHolders proves the per-destination slot
 // limits in-flight callers to defaultPerDestConcurrency, summed across

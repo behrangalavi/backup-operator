@@ -236,7 +236,8 @@ func parsePagination(r *http.Request, defaultLimit int) (limit, offset int) {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(v)
+	// No SetIndent: API JSON is machine-consumed and the high-volume read
+	// endpoints are gzipped (middleware_cache.go), so pretty-print whitespace
+	// is pure wasted bytes + compression CPU.
+	_ = json.NewEncoder(w).Encode(v)
 }

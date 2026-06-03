@@ -462,6 +462,27 @@ func ObserveRestoreVerificationDuration(target, mode string, d time.Duration) {
 	restoreVerificationDuration.WithLabelValues(target, mode).Observe(d.Seconds())
 }
 
+// DeleteDestinationMetrics removes every series keyed by the (target,
+// destination) pair. Called when a destination drops out of a source's
+// allow-list so its gauges go absent instead of sticking at the last value
+// the destination ever reported.
+func DeleteDestinationMetrics(target, destination string) {
+	lastSuccessTimestamp.DeleteLabelValues(target, destination)
+	destinationFailed.DeleteLabelValues(target, destination)
+	retentionLastStatus.DeleteLabelValues(target, destination)
+	retentionLastDeleted.DeleteLabelValues(target, destination)
+	storageScrubPassed.DeleteLabelValues(target, destination)
+	storageScrubLastCheck.DeleteLabelValues(target, destination)
+	storageScrubFailedTotal.DeleteLabelValues(target, destination)
+}
+
+// DeleteTableMetric removes the per-table row-count series for a table that no
+// longer exists in the source schema, so a dropped table stops reporting its
+// last-known row count forever.
+func DeleteTableMetric(target, table string) {
+	tableRowCount.DeleteLabelValues(target, table)
+}
+
 func DeleteTargetMetrics(target string) {
 	dumpSizeBytes.DeleteLabelValues(target)
 	dumpSizeChangeRatio.DeleteLabelValues(target)

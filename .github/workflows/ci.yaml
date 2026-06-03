@@ -40,12 +40,16 @@ jobs:
           go-version-file: src/go.mod
           cache-dependency-path: src/go.sum
 
-      - name: Install golangci-lint
-        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b $(go env GOPATH)/bin
-
+      # Pinned to a fixed golangci-lint release (not HEAD) so lint results
+      # are reproducible across identical commits. The release binary must be
+      # built with a Go >= the module's `go` directive (currently 1.26.2);
+      # v2.12.2's binary is built with go1.26.2. Bump this in lockstep with
+      # the Justfile target.
       - name: Run golangci-lint
-        working-directory: src
-        run: golangci-lint run ./...
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.12.2
+          working-directory: src
 
   govulncheck:
     runs-on: ubuntu-latest
@@ -64,7 +68,7 @@ jobs:
         working-directory: src
         run: govulncheck ./...
 
-  helm-lint:
+  helm:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -74,3 +78,30 @@ jobs:
 
       - name: Lint chart
         run: helm lint charts/backup-operator --set agePublicKeys="age1test"
+
+      # Render the manifests so templating errors (bad indentation, missing
+      # required values, invalid refs) fail the PR — helm lint alone does not
+      # catch every render-time break. --strict turns unknown fields into errors.
+      - name: Template chart
+        run: helm template backup-operator charts/backup-operator --set agePublicKeys="age1test" > /dev/null
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Smoke build for the runner's native arch only (no push). Catches
+      # Dockerfile breakage (bad apt package, broken build stage) on every PR
+      # without the cost of the full multi-arch release build. GHA layer cache
+      # keeps repeat runs fast.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

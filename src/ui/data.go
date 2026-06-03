@@ -13,7 +13,6 @@ import (
 	"backup-operator/internal/scheduler"
 	"backup-operator/internal/secrets"
 	"backup-operator/storage"
-	storageFactory "backup-operator/storage/factory"
 
 	"github.com/go-logr/logr"
 	"github.com/robfig/cron/v3"
@@ -226,15 +225,12 @@ type k8sData struct {
 	onRefresh func()
 }
 
-// storageFor mirrors Server.storageFor on the data layer side. Logic
-// is intentionally duplicated rather than threaded through Server
-// because the data layer is wired separately (e.g. tests can build
-// k8sData with a fake client and no pool).
+// storageFor resolves a destination's client via the data layer's pool,
+// sharing storageForPool with Server.storageFor. The data layer is wired
+// separately from Server (tests build k8sData with a fake client and no
+// pool), so it keeps its own thin wrapper over the shared helper.
 func (d *k8sData) storageFor(dest *secrets.Destination) (storage.Storage, error) {
-	if d.pool != nil {
-		return d.pool.Get(dest)
-	}
-	return storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, d.log.WithName("storage"))
+	return storageForPool(d.pool, dest, d.log.WithName("storage"))
 }
 
 // maxBackgroundRefreshes caps how many storage-probe goroutines the UI's

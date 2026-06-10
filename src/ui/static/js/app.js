@@ -62,6 +62,13 @@ function handleSSEEvent(eventType) {
     _fleetSummary.lastFetch = 0;
     refreshFleetSummary();
   }
+  // A new backup landing (meta_changed) or a manual trigger
+  // (backup_triggered) means the open target's run history is now stale.
+  // Invalidate the run-history cache so the next render re-probes instead
+  // of serving the pre-run list. The render itself is scheduled below.
+  if (eventType === 'meta_changed' || eventType === 'backup_triggered') {
+    if (typeof _targetRuns !== 'undefined') _targetRuns.lastFetch = 0;
+  }
   const pages = sseEventPages[eventType] || [];
   if (pages.indexOf(currentPage()) !== -1) {
     scheduleSSERender();

@@ -1686,6 +1686,154 @@ function parseDurationSec(s) {
 }
 
 
+// --- Target detail run-history cache ---
+// Run history is the only storage-probing fetch on the detail page (the
+// backend probes each destination, up to 12 s apiece). Blocking the page
+// render on it made two things bad: (1) clicking a source showed nothing
+// for many seconds even though the summary cards come from the fast
+// /api/targets read, and (2) a language switch — a purely presentational
+// re-render — re-fired the slow probe. This mirrors the dashboard's
+// stale-while-revalidate caches (_fleetSummary / _slowProbes): render the
+// summary immediately, fill the runs region from cache, and only re-probe
+// storage when the cache is for a different target, expired, or explicitly
+// invalidated by an SSE event. `runs == null` means "never loaded yet";
+// `failed` records a probe error so the region can show a retry affordance
+// instead of a misleading "No runs".
+const RUN_HISTORY_TTL_MS = 30000;
+let _targetRuns = { name: '', runs: null, lastFetch: 0, failed: false };
+const _targetRunsInFlight = new Set(); // keyed by target name; dedups SSE-tick storms
+
+// fetchTargetRuns refreshes the run-history cache for `name` in the
+// background and repaints ONLY the runs region when done — never the whole
+// page, so an in-flight probe can't yank the summary away. Per-name
+// in-flight guard so rapid target switches each get their own slot while
+// repeated events for the same target are deduped.
+async function fetchTargetRuns(name) {
+  if (_targetRunsInFlight.has(name)) return;
+  _targetRunsInFlight.add(name);
+  let runs = null, failed = false;
+  try {
+    runs = (await api('/api/targets/' + encodeURIComponent(name) + '/runs')) || [];
+  } catch (e) {
+    failed = true;
+  } finally {
+    _targetRunsInFlight.delete(name);
+  }
+  if (failed) {
+    // Keep any previously cached runs for this target; just flag the
+    // failure so the region offers a retry rather than claiming emptiness.
+    if (_targetRuns.name === name) _targetRuns.failed = true;
+    else _targetRuns = { name, runs: null, lastFetch: 0, failed: true };
+  } else {
+    _targetRuns = { name, runs, lastFetch: Date.now(), failed: false };
+  }
+  // Repaint only if the user is still on this target's page.
+  if (currentPage() === 'target' && currentParam() === name) {
+    const region = document.getElementById('target-runs-region');
+    if (region) {
+      const target = (_fastDataCache['/api/targets'] || []).find(t => t.Name === name);
+      region.innerHTML = targetRunsRegionHTML(name, target);
+    }
+  }
+}
+
+// reloadTargetRuns is the Retry button's handler: invalidate the cache for
+// this target, kick a fresh probe, and repaint the region to its loading
+// state immediately.
+window.reloadTargetRuns = function(name) {
+  if (_targetRuns.name === name) { _targetRuns.lastFetch = 0; _targetRuns.failed = false; }
+  fetchTargetRuns(name); // sets in-flight synchronously before we repaint
+  const region = document.getElementById('target-runs-region');
+  if (region) {
+    const target = (_fastDataCache['/api/targets'] || []).find(t => t.Name === name);
+    region.innerHTML = targetRunsRegionHTML(name, target);
+  }
+};
+
+function runHistoryShell(inner) {
+  return `<div class="table-card"><div class="table-card-header"><h2>${tr('target.runHistory')}</h2></div>${inner}</div>`;
+}
+
+// targetRunsRegionHTML renders the runs-dependent part of the detail page
+// (size/heatmap charts, tables card, run-history table) from the cached
+// _targetRuns state. Crucially it distinguishes three states a flat runs
+// array can't: in-flight load, probe failure, and a genuinely empty
+// history — so a slow/unreachable destination shows a spinner or a retry
+// prompt, never a misleading "No runs".
+function targetRunsRegionHTML(name, target) {
+  const cached = _targetRuns.name === name ? _targetRuns : null;
+  const loading = _targetRunsInFlight.has(name) && !(cached && cached.runs != null);
+  const runs = (cached && cached.runs) || [];
+
+  if (loading) {
+    return runHistoryShell(`<div class="empty-state"><div class="spinner"></div>
+      <p style="color:var(--text-muted);margin-top:8px">${tr('target.runsLoading')}</p></div>`);
+  }
+  if (runs.length === 0) {
+    // A target whose latest meta exists MUST have at least one run, so an
+    // empty list there is a probe failure (timeout / unreachable
+    // destination), not a genuinely empty history. Offer a retry.
+    const probeFailed = (cached && cached.failed) || (target && target.Latest);
+    if (probeFailed) {
+      return runHistoryShell(`<div class="empty-state"><p>${tr('target.runsUnavailable')}</p>
+        <button class="btn btn-secondary btn-sm" onclick="reloadTargetRuns('${escJS(name)}')">${tr('common.retry')}</button></div>`);
+    }
+    return runHistoryShell(`<div class="empty-state"><p>${tr('target.noRuns')}</p></div>`);
+  }
+
+  return `
+    <div class="chart-grid-2">
+      <div class="chart-card">
+        <h3>${tr('target.dumpSizeTrend')}</h3>
+        ${renderSizeChart(runs)}
+      </div>
+      <div class="chart-card">
+        <h3>${tr('target.runStatusHeatmap')}</h3>
+        ${renderStatusHeatmap(runs)}
+      </div>
+    </div>
+    ${renderTablesCard(runs)}
+    <div class="table-card">
+      <div class="table-card-header"><h2>${tr('target.runHistory')}</h2></div>
+      <table>
+        <thead><tr>
+          <th class="num row-num">#</th>
+          <th class="sortable" onclick="toggleSort('runs','timestamp')">${tr('table.timestamp')}${sortIndicator('runs','timestamp')}</th>
+          <th class="sortable" onclick="toggleSort('runs','status')">${tr('table.status')}${sortIndicator('runs','status')}</th>
+          <th class="num sortable" onclick="toggleSort('runs','size')">${tr('table.size')}${sortIndicator('runs','size')}</th>
+          <th>${tr('table.destinations')}</th>
+          <th class="sortable" onclick="toggleSort('runs','verification')">${tr('table.verification')}${sortIndicator('runs','verification')}</th>
+          <th class="sortable" onclick="toggleSort('runs','restoreVerification')">${tr('target.restoreLabel')}${sortIndicator('runs','restoreVerification')}</th>
+          <th class="sortable" onclick="toggleSort('runs','schema')">Schema${sortIndicator('runs','schema')}</th>
+          <th class="num sortable" onclick="toggleSort('runs','tables')">${tr('verification.table')}${sortIndicator('runs','tables')}</th>
+          <th class="sortable" onclick="toggleSort('runs','anomalies')">${tr('table.anomalies')} / ${tr('table.error')}${sortIndicator('runs','anomalies')}</th>
+          <th>${tr('row.download')}</th>
+        </tr></thead>
+        <tbody>${sortRuns(runs).map((r, i) => `<tr>
+          <td class="num row-num">${i + 1}</td>
+          <td style="font-size:12px">${r.timestamp ? new Date(r.timestamp.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/,'$1-$2-$3T$4:$5:$6Z')).toLocaleString() : '—'}</td>
+          <td>${r.status === 'failed' ? failedBadge(r) : `<span class="badge badge-ok">${tr('badge.ok')}</span>`}</td>
+          <td class="num" style="font-size:12px">${r.status !== 'failed' ? humanBytes(r.encryptedSizeBytes) : '—'}</td>
+          <td style="font-size:11px">${r.destinations && r.destinations.length > 0
+            ? r.destinations.map(d => {
+                const cls = d.status === 'success' ? 'badge-ok' : 'badge-failed';
+                const tip = d.error ? ' title="' + escAttr(d.error) + '"' : '';
+                return '<span class="badge ' + cls + '" style="margin:1px;font-size:10px"' + tip + '>' + escHTML(d.name) + '</span>';
+              }).join('')
+            : '<span style="color:var(--text-muted)">—</span>'}</td>
+          <td>${renderVerificationBadge(r.verification)}</td>
+          <td>${renderRestoreVerificationBadge(r.restoreVerification)}</td>
+          <td>${renderSchemaCharsetCell(r)}</td>
+          <td class="num" style="font-size:12px">${r.stats && r.stats.tables ? r.stats.tables.length : '—'}</td>
+          <td>${r.status === 'failed'
+            ? `<span style="color:var(--danger);font-size:12px;word-break:break-word" title="${escAttr(r.error || '')}">${escHTML(truncate(r.error, 120) || '(no message)')}</span>`
+            : (r.report && r.report.anomalies ? `<span class="num" style="color:var(--danger)">${r.report.anomalies.length}</span>` : '<span class="num">0</span>')}</td>
+          <td>${r.status !== 'failed' ? renderDownloadLinks(name, r, target && target.Destinations) : '—'}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>`;
+}
+
 async function renderTargetDetail(name, loading = true) {
   const _gen = _renderGen;
   // Empty name shouldn't reach here from a normal click — hash is
@@ -1703,14 +1851,15 @@ async function renderTargetDetail(name, loading = true) {
     return;
   }
   if (loading) showLoading();
-  let targets = [], runs = [], dests = [], jobs = [];
+  let targets = [], jobs = [];
   // fastDataAllSettled keeps a per-URL last-good cache, so a transient
   // /api/jobs failure doesn't blow away targets and leave us showing
-  // "target not found" for a real target.
+  // "target not found" for a real target. All three are fast, non-blocking
+  // server-side reads — unlike run history, which is fetched separately
+  // below so the slow storage probe never holds up the summary render.
   const got = await fastDataAllSettled(['/api/targets', '/api/destinations', '/api/jobs']);
   if (isStaleRender(_gen)) return;
   targets = got[0] || [];
-  dests   = got[1] || [];
   jobs    = got[2] || [];
 
   const target = targets.find(t => t.Name === name);
@@ -1720,8 +1869,14 @@ async function renderTargetDetail(name, loading = true) {
     return;
   }
 
-  try { runs = (await api('/api/targets/' + name + '/runs')) || []; } catch(e) { /* ok */ }
-  if (isStaleRender(_gen)) return;
+  // Run history: stale-while-revalidate (see _targetRuns above). Kick a
+  // background refresh only when the cache is for a different target,
+  // expired, or invalidated by SSE — NOT on a language switch or sort,
+  // which reuse the cache and so re-render instantly. fetchTargetRuns sets
+  // its in-flight flag synchronously, so the region below shows a spinner.
+  const runsFresh = _targetRuns.name === name && !_targetRuns.failed &&
+    (Date.now() - _targetRuns.lastFetch < RUN_HISTORY_TTL_MS);
+  if (!runsFresh) fetchTargetRuns(name);
 
   // Find any in-flight Job for this target so we can render the same
   // progress bar the Jobs page uses. Multiple running jobs is rare but
@@ -1785,58 +1940,7 @@ async function renderTargetDetail(name, loading = true) {
     ${renderVerificationDetail(target.Latest)}
     ${renderRestoreVerificationDetail(target.Latest)}
     ${renderAnalysisCoverageCard(target)}
-    ${runs.length > 0 ? `
-    <div class="chart-grid-2">
-      <div class="chart-card">
-        <h3>${tr('target.dumpSizeTrend')}</h3>
-        ${renderSizeChart(runs)}
-      </div>
-      <div class="chart-card">
-        <h3>${tr('target.runStatusHeatmap')}</h3>
-        ${renderStatusHeatmap(runs)}
-      </div>
-    </div>
-    ${renderTablesCard(runs)}` : ''}
-    <div class="table-card">
-      <div class="table-card-header"><h2>${tr('target.runHistory')}</h2></div>
-      ${runs.length === 0 ? `<div class="empty-state"><p>${tr('target.noRuns')}</p></div>` : `
-      <table>
-        <thead><tr>
-          <th class="num row-num">#</th>
-          <th class="sortable" onclick="toggleSort('runs','timestamp')">${tr('table.timestamp')}${sortIndicator('runs','timestamp')}</th>
-          <th class="sortable" onclick="toggleSort('runs','status')">${tr('table.status')}${sortIndicator('runs','status')}</th>
-          <th class="num sortable" onclick="toggleSort('runs','size')">${tr('table.size')}${sortIndicator('runs','size')}</th>
-          <th>${tr('table.destinations')}</th>
-          <th class="sortable" onclick="toggleSort('runs','verification')">${tr('table.verification')}${sortIndicator('runs','verification')}</th>
-          <th class="sortable" onclick="toggleSort('runs','restoreVerification')">${tr('target.restoreLabel')}${sortIndicator('runs','restoreVerification')}</th>
-          <th class="sortable" onclick="toggleSort('runs','schema')">Schema${sortIndicator('runs','schema')}</th>
-          <th class="num sortable" onclick="toggleSort('runs','tables')">${tr('verification.table')}${sortIndicator('runs','tables')}</th>
-          <th class="sortable" onclick="toggleSort('runs','anomalies')">${tr('table.anomalies')} / ${tr('table.error')}${sortIndicator('runs','anomalies')}</th>
-          <th>${tr('row.download')}</th>
-        </tr></thead>
-        <tbody>${sortRuns(runs).map((r, i) => `<tr>
-          <td class="num row-num">${i + 1}</td>
-          <td style="font-size:12px">${r.timestamp ? new Date(r.timestamp.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/,'$1-$2-$3T$4:$5:$6Z')).toLocaleString() : '—'}</td>
-          <td>${r.status === 'failed' ? failedBadge(r) : `<span class="badge badge-ok">${tr('badge.ok')}</span>`}</td>
-          <td class="num" style="font-size:12px">${r.status !== 'failed' ? humanBytes(r.encryptedSizeBytes) : '—'}</td>
-          <td style="font-size:11px">${r.destinations && r.destinations.length > 0
-            ? r.destinations.map(d => {
-                const cls = d.status === 'success' ? 'badge-ok' : 'badge-failed';
-                const tip = d.error ? ' title="' + escAttr(d.error) + '"' : '';
-                return '<span class="badge ' + cls + '" style="margin:1px;font-size:10px"' + tip + '>' + escHTML(d.name) + '</span>';
-              }).join('')
-            : '<span style="color:var(--text-muted)">—</span>'}</td>
-          <td>${renderVerificationBadge(r.verification)}</td>
-          <td>${renderRestoreVerificationBadge(r.restoreVerification)}</td>
-          <td>${renderSchemaCharsetCell(r)}</td>
-          <td class="num" style="font-size:12px">${r.stats && r.stats.tables ? r.stats.tables.length : '—'}</td>
-          <td>${r.status === 'failed'
-            ? `<span style="color:var(--danger);font-size:12px;word-break:break-word" title="${escAttr(r.error || '')}">${escHTML(truncate(r.error, 120) || '(no message)')}</span>`
-            : (r.report && r.report.anomalies ? `<span class="num" style="color:var(--danger)">${r.report.anomalies.length}</span>` : '<span class="num">0</span>')}</td>
-          <td>${r.status !== 'failed' ? renderDownloadLinks(name, r, target.Destinations) : '—'}</td>
-        </tr>`).join('')}</tbody>
-      </table>`}
-    </div>`;
+    <div id="target-runs-region">${targetRunsRegionHTML(name, target)}</div>`;
 
   // Per-second tick of the running-banner progress bar — same pattern as
   // the Jobs page so the user sees the time bar advance without waiting

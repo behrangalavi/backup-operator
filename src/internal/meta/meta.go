@@ -225,7 +225,21 @@ func (m *MetaFile) ParsedTimestamp() time.Time {
 // returns them parsed and sorted newest-first. Errors on individual
 // files are skipped — one corrupt meta should not blank the UI.
 func List(ctx context.Context, st storage.Storage, target string) ([]*MetaFile, error) {
-	objs, err := st.List(ctx, target+"/")
+	// Share one connection across the List + per-file Gets on SFTP/FTPS.
+	// Without it, every meta file is a fresh SSH/TLS handshake (~100-300ms),
+	// so a 30-day history is one List dial plus N Get dials — the dominant
+	// cost on the UI hot paths (target detail, fleet heatmap). S3 has no
+	// session concept and falls through to per-call dialing unchanged. A
+	// session-open hiccup falls back to per-call dialing rather than blanking
+	// the UI.
+	active := st
+	if bs, ok := st.(storage.BatchStorage); ok {
+		if sess, closer, err := bs.WithSession(ctx); err == nil {
+			defer func() { _ = closer() }()
+			active = sess
+		}
+	}
+	objs, err := active.List(ctx, target+"/")
 	if err != nil {
 		return nil, fmt.Errorf("list %q: %w", target, err)
 	}
@@ -235,7 +249,7 @@ func List(ctx context.Context, st storage.Storage, target string) ([]*MetaFile, 
 		if path.Ext(o.Path) != ".json" || !strings.HasSuffix(o.Path, ".meta.json") {
 			continue
 		}
-		m, err := fetchOne(ctx, st, o.Path)
+		m, err := fetchOne(ctx, active, o.Path)
 		if err != nil {
 			continue
 		}
@@ -252,7 +266,15 @@ func List(ctx context.Context, st storage.Storage, target string) ([]*MetaFile, 
 // returns the newest MetaFile for each. Used by the dashboard to render
 // a one-row-per-target overview without fetching full histories.
 func LatestPerTarget(ctx context.Context, st storage.Storage) (map[string]*MetaFile, error) {
-	objs, err := st.List(ctx, "")
+	// One shared connection for the root List + per-target Gets (see List).
+	active := st
+	if bs, ok := st.(storage.BatchStorage); ok {
+		if sess, closer, err := bs.WithSession(ctx); err == nil {
+			defer func() { _ = closer() }()
+			active = sess
+		}
+	}
+	objs, err := active.List(ctx, "")
 	if err != nil {
 		return nil, fmt.Errorf("list root: %w", err)
 	}
@@ -274,7 +296,7 @@ func LatestPerTarget(ctx context.Context, st storage.Storage) (map[string]*MetaF
 	}
 	out := make(map[string]*MetaFile, len(byTarget))
 	for target, p := range byTarget {
-		m, err := fetchOne(ctx, st, p)
+		m, err := fetchOne(ctx, active, p)
 		if err != nil {
 			continue
 		}

@@ -54,8 +54,19 @@ func (s *StorageScrubber) ensurePool() {
 }
 
 const (
+	// defaultScrubConcurrency caps the number of full-dump re-streams in
+	// flight across the WHOLE tick (not per source). Each scrubOne pulls a
+	// complete encrypted dump through sha256, so this is the egress/bandwidth
+	// throttle — keep it small.
 	defaultScrubConcurrency = 2
-	defaultScrubInterval    = 24 * time.Hour
+	// defaultScrubSourceWorkers caps how many sources are walked concurrently
+	// per tick. Sources used to be processed strictly serially, so one source
+	// with a slow/large destination blocked every source behind it and a tick
+	// on a big fleet could exceed the 24h interval. Walking sources
+	// concurrently (while the stream throttle above still bounds actual
+	// egress) keeps the tick bounded by the slowest single dump, not the sum.
+	defaultScrubSourceWorkers = 8
+	defaultScrubInterval      = 24 * time.Hour
 )
 
 // Start runs the scrub loop until ctx is cancelled. Satisfies manager.Runnable.
@@ -99,29 +110,45 @@ func (s *StorageScrubber) scrub(ctx context.Context) {
 	}
 	s.Logger.V(1).Info("scrub tick", "sources", len(res.Sources), "destinations", len(res.Dests))
 
+	// One stream semaphore shared across all sources bounds total concurrent
+	// dump re-streams (egress); a separate worker pool bounds how many sources
+	// are walked at once so the tick doesn't serialise into a multi-hour run.
+	streamSlots := make(chan struct{}, defaultScrubConcurrency)
+	workers := make(chan struct{}, defaultScrubSourceWorkers)
+	var wg sync.WaitGroup
 	for i := range res.Sources {
 		src, err := secrets.ParseSource(&res.Sources[i], "")
 		if err != nil {
 			continue
 		}
-		s.scrubSource(ctx, src, res.Dests)
+		wg.Add(1)
+		go func(src *secrets.Source) {
+			defer wg.Done()
+			defer safe.Goroutine(s.Logger, "storage-scrub-source", src.TargetName)
+			workers <- struct{}{}
+			defer func() { <-workers }()
+			s.scrubSource(ctx, src, res.Dests, streamSlots)
+		}(src)
 	}
+	wg.Wait()
 }
 
-func (s *StorageScrubber) scrubSource(ctx context.Context, src *secrets.Source, all []*secrets.Destination) {
+func (s *StorageScrubber) scrubSource(ctx context.Context, src *secrets.Source, all []*secrets.Destination, streamSlots chan struct{}) {
 	allowed := secrets.FilterDestinations(src, all)
 	if len(allowed) == 0 {
 		return
 	}
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, defaultScrubConcurrency)
 	for _, d := range allowed {
 		wg.Add(1)
 		go func(d *secrets.Destination) {
 			defer wg.Done()
 			defer safe.Goroutine(s.Logger, "storage-scrub", d.Name)
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			// Gate on the shared stream semaphore so total in-flight dump
+			// re-streams stay bounded regardless of how many sources are
+			// being walked concurrently.
+			streamSlots <- struct{}{}
+			defer func() { <-streamSlots }()
 			s.scrubOne(ctx, src.TargetName, d)
 		}(d)
 	}

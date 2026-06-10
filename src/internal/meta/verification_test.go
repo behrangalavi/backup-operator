@@ -70,6 +70,20 @@ func TestBuildVerification_NilPreStats(t *testing.T) {
 	}
 }
 
+// Without a pre-dump stats baseline the size heuristic cannot judge a
+// mongo/redis dump as empty — it returns "" regardless of how tiny the
+// encrypted size is. This is the gap the pipeline's BackupEmptyCheckDegraded
+// warning compensates for (an absolute byte floor is unsafe because the age
+// header size scales with recipient count). If this ever starts returning a
+// reason on nil preStats, revisit that warning.
+func TestLooksEmptyByHeuristic_NilPreStatsIsNeverEmpty(t *testing.T) {
+	for _, dbType := range []string{"redis", "mongo"} {
+		if reason := looksEmptyByHeuristic(dbType, nil, 1); reason != "" {
+			t.Errorf("%s: expected no verdict without preStats baseline, got %q", dbType, reason)
+		}
+	}
+}
+
 func TestBuildVerification_MongoPrePost(t *testing.T) {
 	pre := &dumper.Stats{
 		Tables: []dumper.TableStats{

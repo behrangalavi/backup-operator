@@ -57,7 +57,7 @@ func (s *Server) handleAPITargets(w http.ResponseWriter, r *http.Request) {
 	targets, err := s.data.listTargets(r.Context())
 	if err != nil {
 		s.cfg.Logger.Error(err, "list targets (API)")
-		renderError(w, http.StatusInternalServerError, "internal error")
+		writeError(w, http.StatusInternalServerError, codeInternal, "internal error")
 		return
 	}
 	if hasPaginationParams(r) {
@@ -91,7 +91,7 @@ func (s *Server) handleAPITargetRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	detail, err := s.data.target(r.Context(), parts[0])
 	if err != nil {
-		renderError(w, http.StatusNotFound, "target not found")
+		writeError(w, http.StatusNotFound, codeNotFound, "target not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, detail.Runs)

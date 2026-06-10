@@ -232,6 +232,58 @@ func TestUploadMeta_RetriesTransientFailure(t *testing.T) {
 	}
 }
 
+// TestUploadMeta_CountsAllSucceeded: every eligible destination receives the
+// sidecar → (attempted, succeeded) both equal the count of successful dumps.
+func TestUploadMeta_CountsAllSucceeded(t *testing.T) {
+	a := &fakeUploadStorage{name: "hetzner"}
+	b := &fakeUploadStorage{name: "aws-s3"}
+	p := newTestPipeline(t, map[string]storage.Storage{"hetzner": a, "aws-s3": b})
+	dests := []*secrets.Destination{dest("hetzner", "sftp"), dest("aws-s3", "s3")}
+	results := []meta.DestinationResult{
+		{Name: "hetzner", Status: meta.StatusSuccess},
+		{Name: "aws-s3", Status: meta.StatusSuccess},
+	}
+	attempted, succeeded := p.uploadMeta(context.Background(), dests, results, "p/dump.meta.json", []byte("{}"), logr.Discard())
+	if attempted != 2 || succeeded != 2 {
+		t.Fatalf("expected (2,2), got (%d,%d)", attempted, succeeded)
+	}
+}
+
+// TestUploadMeta_OnlyCountsSuccessfulDumps: a destination whose DUMP failed is
+// not eligible for meta upload, so it counts toward neither attempted nor
+// succeeded.
+func TestUploadMeta_OnlyCountsSuccessfulDumps(t *testing.T) {
+	good := &fakeUploadStorage{name: "hetzner"}
+	bad := &fakeUploadStorage{name: "aws-s3"}
+	p := newTestPipeline(t, map[string]storage.Storage{"hetzner": good, "aws-s3": bad})
+	dests := []*secrets.Destination{dest("hetzner", "sftp"), dest("aws-s3", "s3")}
+	results := []meta.DestinationResult{
+		{Name: "hetzner", Status: meta.StatusSuccess},
+		{Name: "aws-s3", Status: meta.StatusFailed, Error: "dump upload failed"},
+	}
+	attempted, succeeded := p.uploadMeta(context.Background(), dests, results, "p/dump.meta.json", []byte("{}"), logr.Discard())
+	if attempted != 1 || succeeded != 1 {
+		t.Fatalf("expected (1,1) — only the successful-dump destination is eligible, got (%d,%d)", attempted, succeeded)
+	}
+}
+
+// TestUploadMeta_PhantomBackupSignal: when every eligible destination fails the
+// meta upload, succeeded==0 while attempted>0 — the signal Run() turns into a
+// run failure so a dump-without-sidecar isn't silently reported as success.
+func TestUploadMeta_PhantomBackupSignal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("exercises the meta-upload retry backoff")
+	}
+	st := &fakeUploadStorage{name: "hetzner", alwaysFail: true} // never accepts the meta
+	p := newTestPipeline(t, map[string]storage.Storage{"hetzner": st})
+	dests := []*secrets.Destination{dest("hetzner", "sftp")}
+	results := []meta.DestinationResult{{Name: "hetzner", Status: meta.StatusSuccess}}
+	attempted, succeeded := p.uploadMeta(context.Background(), dests, results, "p/dump.meta.json", []byte("{}"), logr.Discard())
+	if attempted != 1 || succeeded != 0 {
+		t.Fatalf("expected (1,0) phantom signal, got (%d,%d)", attempted, succeeded)
+	}
+}
+
 // --- uploadDumpWithRetry tests ---
 
 func TestUploadDumpWithRetry_PermanentErrorNoRetry(t *testing.T) {

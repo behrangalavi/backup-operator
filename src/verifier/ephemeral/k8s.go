@@ -72,6 +72,14 @@ func (d *k8sDB) waitForPodIP(ctx context.Context) error {
 			if apierrors.IsNotFound(err) {
 				return fmt.Errorf("pod %s vanished before ready", d.name)
 			}
+			// An RBAC denial will never clear by retrying — fail immediately
+			// with the actual cause instead of spinning until readyTimeout
+			// (default 5 min) and then returning an opaque deadline error.
+			// The worker SA needs pods/get when restore-verification spawns
+			// ephemeral pods (restoreVerification.enableEphemeralPodSpawn).
+			if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
+				return fmt.Errorf("not permitted to read pod %s (worker ServiceAccount missing pods/get?): %w", d.name, err)
+			}
 			d.log.V(1).Info("pod get failed; retrying", "err", err.Error())
 		} else if pod.Status.Phase == corev1.PodFailed {
 			return fmt.Errorf("pod %s entered Failed phase", d.name)

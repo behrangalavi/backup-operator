@@ -59,7 +59,7 @@ func (r *RecipientReconciler) NeedLeaderElection() bool { return true }
 
 func (r *RecipientReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Logger.WithValues("trigger", req.NamespacedName)
-	if err := r.rebuildMerged(ctx, log); err != nil {
+	if err := r.rebuildMerged(ctx, r.Client, log); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
@@ -70,7 +70,12 @@ func (r *RecipientReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // merged Secret. Empty recipient list produces an empty merged Secret —
 // worker pods will then fail to start with "no age recipients
 // configured", which is the correct loud-failure behavior.
-func (r *RecipientReconciler) rebuildMerged(ctx context.Context, log logr.Logger) error {
+// The client is passed explicitly rather than always using r.Client: the
+// Reconcile path uses the manager-cached client, while Bootstrap (which runs
+// before the manager's cache has started) must use a direct API-server
+// client. Threading it as a parameter avoids mutating the shared r.Client
+// field, which was a latent data race if Bootstrap ever overlapped a reconcile.
+func (r *RecipientReconciler) rebuildMerged(ctx context.Context, c client.Client, log logr.Logger) error {
 	var list corev1.SecretList
 	opts := []client.ListOption{
 		client.MatchingLabels{labels.LabelRole: labels.RoleAgeRecipient},
@@ -78,7 +83,7 @@ func (r *RecipientReconciler) rebuildMerged(ctx context.Context, log logr.Logger
 	if r.Namespace != "" {
 		opts = append(opts, client.InNamespace(r.Namespace))
 	}
-	if err := r.Client.List(ctx, &list, opts...); err != nil {
+	if err := c.List(ctx, &list, opts...); err != nil {
 		return fmt.Errorf("list recipient secrets: %w", err)
 	}
 
@@ -105,7 +110,7 @@ func (r *RecipientReconciler) rebuildMerged(ctx context.Context, log logr.Logger
 			Namespace: r.Namespace,
 		},
 	}
-	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, merged, func() error {
+	op, err := controllerutil.CreateOrUpdate(ctx, c, merged, func() error {
 		if merged.Labels == nil {
 			merged.Labels = map[string]string{}
 		}
@@ -159,7 +164,7 @@ func (r *RecipientReconciler) Bootstrap(ctx context.Context, bootstrapClient cli
 	if err := r.migrateLegacy(ctx, bootstrapClient, log); err != nil {
 		log.Error(err, "legacy age-secret migration failed; continuing")
 	}
-	if err := r.rebuildMergedWith(ctx, bootstrapClient, log); err != nil {
+	if err := r.rebuildMerged(ctx, bootstrapClient, log); err != nil {
 		log.Error(err, "initial merged-secret rebuild failed; continuing")
 	}
 }
@@ -246,16 +251,6 @@ func (r *RecipientReconciler) migrateLegacy(ctx context.Context, c client.Client
 			"from_secret", r.MergedSecretName)
 	}
 	return nil
-}
-
-// rebuildMergedWith is the rebuildMerged variant that uses an explicitly
-// passed client. The Reconcile path uses r.Client (manager-cached);
-// Bootstrap passes a direct client because the cache isn't started yet.
-func (r *RecipientReconciler) rebuildMergedWith(ctx context.Context, c client.Client, log logr.Logger) error {
-	prevClient := r.Client
-	r.Client = c
-	defer func() { r.Client = prevClient }()
-	return r.rebuildMerged(ctx, log)
 }
 
 // splitRecipients normalises a newline-separated recipient blob into a

@@ -171,6 +171,27 @@ func (r *MetricsRefresher) destSlot(name string) chan struct{} {
 	return slot
 }
 
+// retainDestSlots prunes per-destination semaphore entries for destinations
+// that no longer exist, mirroring Pool.Retain. Without it the map grows
+// unbounded under destination churn — every distinct name ever seen leaks one
+// channel + map entry for the operator's lifetime. Safe to delete mid-tick:
+// the refresh only fans out to destinations present in `dests`, so a name
+// absent here has no in-flight goroutine holding its slot, and deleting the
+// map entry never closes the channel a live goroutine may still own.
+func (r *MetricsRefresher) retainDestSlots(dests []*secrets.Destination) {
+	keep := make(map[string]struct{}, len(dests))
+	for _, d := range dests {
+		keep[d.Name] = struct{}{}
+	}
+	r.destMu.Lock()
+	defer r.destMu.Unlock()
+	for name := range r.perDestSlots {
+		if _, ok := keep[name]; !ok {
+			delete(r.perDestSlots, name)
+		}
+	}
+}
+
 // Start runs the refresh loop until ctx is cancelled. It satisfies
 // manager.Runnable so the controller-runtime Manager owns its lifecycle.
 func (r *MetricsRefresher) Start(ctx context.Context) error {
@@ -233,6 +254,7 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 
 	sources, dests := res.Sources, res.Dests
 	r.Pool.Retain(dests)
+	r.retainDestSlots(dests)
 	r.Logger.V(1).Info("refresh tick", "sources", len(sources), "destinations", len(dests), "pooled_clients", r.Pool.Size())
 
 	// Sources flow through a fixed-size global worker pool. The

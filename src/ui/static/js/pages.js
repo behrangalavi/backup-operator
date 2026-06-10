@@ -1900,7 +1900,7 @@ async function renderTargetDetail(name, loading = true) {
     ${runningJob ? `
     <div class="detail-card running-banner" data-job-name="${escAttr(runningJob.name)}" style="margin-bottom:16px;border-left:3px solid var(--accent,#3b82f6)">
       <h3 style="display:flex;align-items:center;gap:8px">
-        <span class="badge badge-running">${tr('badge.running') || 'running'}</span>
+        <span class="badge badge-running">${tr('badge.running')}</span>
         ${tr('target.runningTitle') || 'Backup läuft gerade'}
       </h3>
       <div class="job-progress-host">${renderProgressCell(runningJob)}</div>
@@ -1912,7 +1912,7 @@ async function renderTargetDetail(name, loading = true) {
       <div class="detail-card">
         <h3>${tr('target.configuration')}</h3>
         <div class="detail-row"><span class="key">${tr('table.schedule')}</span><code class="val">${escHTML(target.Schedule)}</code></div>
-        <div class="detail-row"><span class="key">${tr('target.nextRun') || 'Nächster Lauf'}</span><span class="val">${target.Suspended ? `<span style="color:var(--text-muted)">${tr('badge.suspended') || 'pausiert'}</span>` : escHTML(fmtNextRun(target.nextRun)) || '—'}</span></div>
+        <div class="detail-row"><span class="key">${tr('target.nextRun')}</span><span class="val">${target.Suspended ? `<span style="color:var(--text-muted)">${tr('badge.paused')}</span>` : escHTML(fmtNextRun(target.nextRun)) || '—'}</span></div>
         <div class="detail-row"><span class="key">${tr('table.destinations')}</span><span class="val">${(target.Destinations||[]).join(', ') || tr('common.all').toLowerCase()}</span></div>
         <div class="detail-row"><span class="key">${tr('table.status')}</span>
           ${target.Latest ? (target.Latest.status === 'failed'

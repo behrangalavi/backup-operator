@@ -649,6 +649,7 @@
   },
   "badge": {
     "ok": "OK",
+    "running": "running",
     "noRuns": "No runs",
     "paused": "Paused",
     "noData": "No data",

@@ -649,6 +649,7 @@
   },
   "badge": {
     "ok": "OK",
+    "running": "en cours",
     "noRuns": "Aucune exécution",
     "paused": "Suspendu",
     "noData": "Aucune donnée",

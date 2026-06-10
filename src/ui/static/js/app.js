@@ -77,10 +77,16 @@ function handleSSEEvent(eventType) {
 
 let eventSource = null;
 let _sseBackoff = 0;
+let _sseReconnectTimer = null;
 const _sseBaseDelay = 1000;
 const _sseMaxDelay = 30000;
 function connectSSE() {
-  if (eventSource) eventSource.close();
+  // A reconnect supersedes any pending one; cancel the timer so we don't
+  // end up with two reconnect chains running in parallel.
+  if (_sseReconnectTimer) { clearTimeout(_sseReconnectTimer); _sseReconnectTimer = null; }
+  // Detach the old source's onerror before closing so a late error event
+  // from the connection we're discarding can't schedule another reconnect.
+  if (eventSource) { eventSource.onerror = null; eventSource.close(); }
   eventSource = new EventSource('/api/events');
   const dot = $('.status-dot');
   const txt = $('.status-text');
@@ -104,10 +110,15 @@ function connectSSE() {
   eventSource.onerror = () => {
     dot.className = 'status-dot error';
     txt.textContent = tr('status.disconnected');
+    // EventSource can fire onerror repeatedly, and its own internal
+    // auto-reconnect can race ours. Schedule at most one reconnect at a
+    // time — otherwise a flapping server spawns overlapping EventSources,
+    // each pinning one of the browser's ~6 HTTP/1.1 connection slots.
+    if (_sseReconnectTimer) return;
     const delay = Math.min(_sseBaseDelay * Math.pow(2, _sseBackoff), _sseMaxDelay);
     const jitter = delay * (0.5 + Math.random() * 0.5);
     _sseBackoff++;
-    setTimeout(connectSSE, jitter);
+    _sseReconnectTimer = setTimeout(() => { _sseReconnectTimer = null; connectSSE(); }, jitter);
   };
 }
 

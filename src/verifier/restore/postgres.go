@@ -143,7 +143,6 @@ func (postgresEngine) SmokeQueries(ctx context.Context, endpoint string, preTabl
 func filterPostgresSchemaOnly(r io.Reader) io.Reader {
 	pr, pw := io.Pipe()
 	go func() {
-		defer func() { _ = pw.Close() }()
 		s := bufio.NewScanner(r)
 		s.Buffer(make([]byte, 256*1024), 32*1024*1024)
 		inCopy := false
@@ -153,6 +152,7 @@ func filterPostgresSchemaOnly(r io.Reader) io.Reader {
 				// Replace the body with an immediate `\.` so the COPY
 				// statement parses but writes zero rows.
 				if _, err := pw.Write([]byte(line + "\n\\.\n")); err != nil {
+					pw.CloseWithError(err)
 					return
 				}
 				inCopy = true
@@ -165,9 +165,16 @@ func filterPostgresSchemaOnly(r io.Reader) io.Reader {
 				continue
 			}
 			if _, err := pw.Write([]byte(line + "\n")); err != nil {
+				pw.CloseWithError(err)
 				return
 			}
 		}
+		// Propagate a scan failure (bufio.ErrTooLong on a >32 MB line, or a
+		// truncated/corrupt decrypted stream that never yields a newline) to
+		// psql as an error rather than a clean EOF. Without this, psql reads
+		// the partial DDL, exits 0, and a truncated dump verifies as "match".
+		// CloseWithError(nil) is equivalent to Close() (signals EOF).
+		pw.CloseWithError(s.Err())
 	}()
 	return pr
 }

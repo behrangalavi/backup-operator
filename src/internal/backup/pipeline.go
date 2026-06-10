@@ -363,6 +363,24 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		return emptyErr
 	}
 
+	// Empty-dump detection needs a pre-dump stats baseline: SQL engines
+	// compare stream row counts against preStats, mongo/redis compare the
+	// encrypted size against preStats total. When stats are unavailable
+	// (analyzer disabled, or CollectStats failed — e.g. redis AUTH on INFO),
+	// BuildVerification returns "skipped" and the check silently can't fire,
+	// so a header-only dump (server exited 0 but emitted nothing) would pass.
+	// We do NOT hard-fail on an absolute byte floor: encryptedSize includes
+	// the age header, whose size scales with recipient count, so any fixed
+	// floor would either miss real failures or false-fail legitimate tiny
+	// dumps — and a noisy false-positive is worse than a rare miss here.
+	// Instead surface the degraded check loudly so the gap is visible.
+	if src.EmptyDumpCheck && preStats == nil {
+		log.Info("empty-dump check degraded: no pre-dump stats baseline; cannot verify the dump is non-empty",
+			"target", src.TargetName, "dbType", src.DBType)
+		p.events.Emit("Warning", "BackupEmptyCheckDegraded",
+			fmt.Sprintf("Backup for target %s: empty-dump check could not run (no pre-dump stats baseline); confirm the dump is non-empty or set backup.mogenius.io/analyzer-enabled=true", src.TargetName))
+	}
+
 	if len(dests) == 0 {
 		metrics.SetLastRunStatus(src.TargetName, false)
 		return errors.New("no destinations configured")
@@ -524,7 +542,29 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		log.Error(marshalErr, "meta marshal failed; uploading fallback meta", "target", src.TargetName)
 		metaBytes = fallbackMetaJSON(src.TargetName, timestamp, src.DBType, "meta-marshal", marshalErr)
 	}
-	p.uploadMeta(ctx, dests, destResults, metaPath, metaBytes, log)
+	metaAttempted, metaSucceeded := p.uploadMeta(ctx, dests, destResults, metaPath, metaBytes, log)
+	if metaAttempted > 0 && metaSucceeded == 0 {
+		// Every destination that received the dump failed to receive its
+		// meta.json sidecar. The dumps physically exist but are invisible to
+		// the metrics refresher, the UI, and the restore listing (all key off
+		// meta.json), and un-analyzable (no baseline for the next run). Report
+		// this as a failure so the Job is marked failed and K8s retries with a
+		// fresh timestamp, rather than silently claiming success — a phantom
+		// backup. The orphan dumps are pruned by retention on a later run.
+		metrics.SetLastRunStatus(src.TargetName, false)
+		p.events.Emit("Warning", "BackupFailed",
+			fmt.Sprintf("Backup for target %s uploaded the dump but meta.json failed on all %d destination(s); run is not discoverable", src.TargetName, metaAttempted))
+		log.Error(errors.New("meta upload failed on all destinations"), "phantom backup avoided: failing run so it retries",
+			"target", src.TargetName, "destinations", metaAttempted)
+		return fmt.Errorf("meta.json upload failed on all %d destination(s)", metaAttempted)
+	}
+	if metaSucceeded < metaAttempted {
+		// Partial: at least one destination has the sidecar, so the run is
+		// still discoverable. Surface the gap as a warning Event so the
+		// per-destination divergence is auditable, but don't fail the run.
+		p.events.Emit("Warning", "BackupMetaPartial",
+			fmt.Sprintf("Backup for target %s: meta.json reached %d of %d destination(s)", src.TargetName, metaSucceeded, metaAttempted))
+	}
 
 	metrics.SetLastRunStatus(src.TargetName, true)
 	p.events.Emit("Normal", "BackupCompleted",

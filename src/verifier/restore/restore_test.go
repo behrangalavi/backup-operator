@@ -1,6 +1,7 @@
 package restore
 
 import (
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -333,6 +334,45 @@ func TestFilterMySQLSchemaOnly(t *testing.T) {
 	}
 	if strings.Contains(result, "INSERT INTO") {
 		t.Error("filtered output should not contain INSERT INTO")
+	}
+}
+
+// errAfterReader yields its data then fails — simulating a truncated /
+// corrupt decrypted stream (or a scanner buffer overflow) mid-dump.
+type errAfterReader struct {
+	data []byte
+	err  error
+	off  int
+}
+
+func (r *errAfterReader) Read(p []byte) (int, error) {
+	if r.off < len(r.data) {
+		n := copy(p, r.data[r.off:])
+		r.off += n
+		return n, nil
+	}
+	return 0, r.err
+}
+
+// A scan failure mid-stream must surface as an error on the filtered reader,
+// NOT a clean EOF — otherwise psql/mysql read the partial DDL, exit 0, and a
+// truncated dump verifies as "match" (silent data loss). Regression for the
+// pw.Close()-vs-CloseWithError bug.
+func TestFilterPostgresSchemaOnly_PropagatesScanError(t *testing.T) {
+	boom := errors.New("stream truncated")
+	src := &errAfterReader{data: []byte("CREATE TABLE users (id int);\n"), err: boom}
+	_, err := io.ReadAll(filterPostgresSchemaOnly(src))
+	if !errors.Is(err, boom) {
+		t.Fatalf("expected truncation error to propagate, got %v", err)
+	}
+}
+
+func TestFilterMySQLSchemaOnly_PropagatesScanError(t *testing.T) {
+	boom := errors.New("stream truncated")
+	src := &errAfterReader{data: []byte("CREATE TABLE `users` (`id` int);\n"), err: boom}
+	_, err := io.ReadAll(filterMySQLSchemaOnly(src))
+	if !errors.Is(err, boom) {
+		t.Fatalf("expected truncation error to propagate, got %v", err)
 	}
 }
 

@@ -153,7 +153,6 @@ func quoteMySQLIdent(name string) string {
 func filterMySQLSchemaOnly(r io.Reader) io.Reader {
 	pr, pw := io.Pipe()
 	go func() {
-		defer func() { _ = pw.Close() }()
 		s := bufio.NewScanner(r)
 		s.Buffer(make([]byte, 256*1024), 32*1024*1024)
 		for s.Scan() {
@@ -162,9 +161,16 @@ func filterMySQLSchemaOnly(r io.Reader) io.Reader {
 				continue
 			}
 			if _, err := pw.Write([]byte(line + "\n")); err != nil {
+				pw.CloseWithError(err)
 				return
 			}
 		}
+		// Propagate a scan failure (bufio.ErrTooLong on a >32 MB extended-
+		// insert line, or a truncated/corrupt decrypted stream that never
+		// yields a newline) to the mysql client as an error rather than a
+		// clean EOF — otherwise it exits 0 and a truncated dump verifies as
+		// "match". CloseWithError(nil) is equivalent to Close() (signals EOF).
+		pw.CloseWithError(s.Err())
 	}()
 	return pr
 }

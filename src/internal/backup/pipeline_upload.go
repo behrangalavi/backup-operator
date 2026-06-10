@@ -66,6 +66,13 @@ func (p *Pipeline) fanOutDumps(
 // uploadMeta uploads the meta.json sidecar to all destinations that had a
 // successful dump upload. Retries up to 3 times with exponential backoff
 // to avoid "phantom backups" (dump exists but meta.json is missing).
+//
+// Returns (attempted, succeeded): how many destinations were eligible (had a
+// successful dump) and how many actually received the meta. The caller treats
+// succeeded==0 with attempted>0 as a run failure — a dump with no sidecar is
+// invisible to the metrics refresher, the UI, and the restore listing, so
+// reporting it as success would be a silent phantom backup. A meta-upload
+// failure now logs at Error (was Info) so it surfaces in the worker log.
 func (p *Pipeline) uploadMeta(
 	ctx context.Context,
 	dests []*secrets.Destination,
@@ -73,27 +80,29 @@ func (p *Pipeline) uploadMeta(
 	metaPath string,
 	metaBytes []byte,
 	log logr.Logger,
-) {
+) (attempted, succeeded int) {
 	var wg sync.WaitGroup
+	var mu sync.Mutex
 	for i, dest := range dests {
 		if results[i].Status != meta.StatusSuccess {
 			continue
 		}
+		attempted++
 		wg.Add(1)
 		go func(d *secrets.Destination) {
 			defer wg.Done()
 			defer safe.Goroutine(log, "meta-upload", d.Name)
 			st, err := p.getStorage(d)
 			if err != nil {
-				log.Info("meta upload: init storage failed", "destination", d.Name, "err", err.Error())
+				log.Error(err, "meta upload: init storage failed", "destination", d.Name)
 				return
 			}
 			const maxRetries = 3
 			backoff := 2 * time.Second
 			for attempt := 1; attempt <= maxRetries; attempt++ {
 				if err := st.Upload(ctx, metaPath, bytes.NewReader(metaBytes)); err != nil {
-					log.Info("meta upload failed", "destination", d.Name, "attempt", attempt, "err", err.Error())
 					if attempt < maxRetries {
+						log.Info("meta upload failed, retrying", "destination", d.Name, "attempt", attempt, "err", err.Error())
 						select {
 						case <-ctx.Done():
 							return
@@ -102,13 +111,18 @@ func (p *Pipeline) uploadMeta(
 						}
 						continue
 					}
+					log.Error(err, "meta upload failed after retries; dump has no sidecar on this destination", "destination", d.Name, "attempts", maxRetries)
 					return
 				}
+				mu.Lock()
+				succeeded++
+				mu.Unlock()
 				break
 			}
 		}(dest)
 	}
 	wg.Wait()
+	return attempted, succeeded
 }
 
 // uploadDumpWithRetry wraps uploadDumpOne with exponential backoff for

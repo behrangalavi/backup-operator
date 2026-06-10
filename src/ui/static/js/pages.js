@@ -1703,6 +1703,30 @@ const RUN_HISTORY_TTL_MS = 30000;
 let _targetRuns = { name: '', runs: null, lastFetch: 0, failed: false };
 const _targetRunsInFlight = new Set(); // keyed by target name; dedups SSE-tick storms
 
+// Run-history pagination + chart bound. A high-frequency schedule with long
+// retention can accumulate tens of thousands of runs; rendering one table row
+// AND one size-chart point per run froze the browser (the table is the worst
+// offender — ~11 cells per row). We page the table client-side over the
+// already-fetched array (no extra requests) and cap the size-chart to its most
+// recent points. The status heatmap is day-bucketed (≤91 cells) so it stays
+// full. _runHistoryPage resets when the viewed target changes.
+const RUN_HISTORY_PAGE_SIZE = 50;
+const MAX_TREND_POINTS = 365; // newest-N points fed to the size-trend chart
+let _runHistoryTarget = '';
+let _runHistoryPage = 0;
+
+// gotoRunHistoryPage repaints ONLY the runs region with a new page, from the
+// already-cached runs — never refetches. Clamped to valid range by the
+// renderer.
+window.gotoRunHistoryPage = function(name, page) {
+  _runHistoryPage = page < 0 ? 0 : page;
+  const region = document.getElementById('target-runs-region');
+  if (region) {
+    const target = (_fastDataCache['/api/targets'] || []).find(t => t.Name === name);
+    region.innerHTML = targetRunsRegionHTML(name, target);
+  }
+};
+
 // fetchTargetRuns refreshes the run-history cache for `name` in the
 // background and repaints ONLY the runs region when done — never the whole
 // page, so an in-flight probe can't yank the summary away. Per-name
@@ -1781,11 +1805,33 @@ function targetRunsRegionHTML(name, target) {
     return runHistoryShell(`<div class="empty-state"><p>${tr('target.noRuns')}</p></div>`);
   }
 
+  // Reset to the first page whenever the viewed target changes, so a fresh
+  // detail view never lands on a stale page index from a previous target.
+  if (_runHistoryTarget !== name) { _runHistoryTarget = name; _runHistoryPage = 0; }
+
+  // Table: page the (sorted) runs client-side. Charts: cap the size-trend to
+  // its most recent points (the status heatmap aggregates by day and is safe).
+  const sorted = sortRuns(runs);
+  const total = sorted.length;
+  const pageCount = Math.max(1, Math.ceil(total / RUN_HISTORY_PAGE_SIZE));
+  if (_runHistoryPage > pageCount - 1) _runHistoryPage = pageCount - 1;
+  const startIdx = _runHistoryPage * RUN_HISTORY_PAGE_SIZE;
+  const pageRuns = sorted.slice(startIdx, startIdx + RUN_HISTORY_PAGE_SIZE);
+  const trendRuns = runs.length > MAX_TREND_POINTS ? runs.slice(0, MAX_TREND_POINTS) : runs;
+
+  const pager = total > RUN_HISTORY_PAGE_SIZE ? `
+      <div class="table-pager" style="display:flex;align-items:center;gap:8px;padding:8px 12px;justify-content:flex-end">
+        <span style="font-size:12px;color:var(--text-muted)">${tr('pager.range', {from: startIdx + 1, to: startIdx + pageRuns.length, total})}</span>
+        <button class="btn btn-ghost btn-sm" ${_runHistoryPage <= 0 ? 'disabled' : ''} onclick="gotoRunHistoryPage('${escJS(name)}', ${_runHistoryPage - 1})" title="${tr('pager.prev')}">‹</button>
+        <span style="font-size:12px">${tr('pager.page', {page: _runHistoryPage + 1, pages: pageCount})}</span>
+        <button class="btn btn-ghost btn-sm" ${_runHistoryPage >= pageCount - 1 ? 'disabled' : ''} onclick="gotoRunHistoryPage('${escJS(name)}', ${_runHistoryPage + 1})" title="${tr('pager.next')}">›</button>
+      </div>` : '';
+
   return `
     <div class="chart-grid-2">
       <div class="chart-card">
-        <h3>${tr('target.dumpSizeTrend')}</h3>
-        ${renderSizeChart(runs)}
+        <h3>${tr('target.dumpSizeTrend')}${runs.length > MAX_TREND_POINTS ? ` <span class="chart-card-sub">${tr('chart.recentN', {n: MAX_TREND_POINTS})}</span>` : ''}</h3>
+        ${renderSizeChart(trendRuns)}
       </div>
       <div class="chart-card">
         <h3>${tr('target.runStatusHeatmap')}</h3>
@@ -1794,7 +1840,7 @@ function targetRunsRegionHTML(name, target) {
     </div>
     ${renderTablesCard(runs)}
     <div class="table-card">
-      <div class="table-card-header"><h2>${tr('target.runHistory')}</h2></div>
+      <div class="table-card-header"><h2>${tr('target.runHistory')} <span class="chart-card-sub">${tr('pager.totalRuns', {total})}</span></h2></div>
       <table>
         <thead><tr>
           <th class="num row-num">#</th>
@@ -1809,8 +1855,8 @@ function targetRunsRegionHTML(name, target) {
           <th class="sortable" onclick="toggleSort('runs','anomalies')">${tr('table.anomalies')} / ${tr('table.error')}${sortIndicator('runs','anomalies')}</th>
           <th>${tr('row.download')}</th>
         </tr></thead>
-        <tbody>${sortRuns(runs).map((r, i) => `<tr>
-          <td class="num row-num">${i + 1}</td>
+        <tbody>${pageRuns.map((r, i) => `<tr>
+          <td class="num row-num">${startIdx + i + 1}</td>
           <td style="font-size:12px">${r.timestamp ? new Date(r.timestamp.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/,'$1-$2-$3T$4:$5:$6Z')).toLocaleString() : '—'}</td>
           <td>${r.status === 'failed' ? failedBadge(r) : `<span class="badge badge-ok">${tr('badge.ok')}</span>`}</td>
           <td class="num" style="font-size:12px">${r.status !== 'failed' ? humanBytes(r.encryptedSizeBytes) : '—'}</td>
@@ -1830,7 +1876,7 @@ function targetRunsRegionHTML(name, target) {
             : (r.report && r.report.anomalies ? `<span class="num" style="color:var(--danger)">${r.report.anomalies.length}</span>` : '<span class="num">0</span>')}</td>
           <td>${r.status !== 'failed' ? renderDownloadLinks(name, r, target && target.Destinations) : '—'}</td>
         </tr>`).join('')}</tbody>
-      </table>
+      </table>${pager}
     </div>`;
 }
 

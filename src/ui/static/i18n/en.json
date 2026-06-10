@@ -464,8 +464,16 @@
       "title": "Last 7 days"
     }
   },
+  "pager": {
+    "range": "{from}–{to} of {total}",
+    "page": "Page {page} of {pages}",
+    "prev": "Previous page",
+    "next": "Next page",
+    "totalRuns": "{total} runs total"
+  },
   "chart": {
     "loading": "loading…",
+    "recentN": "most recent {n}",
     "storageDonut": {
       "title": "Storage Usage",
       "sub": "actual bytes on each destination",

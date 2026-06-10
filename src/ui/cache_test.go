@@ -96,6 +96,42 @@ func TestGetOrRefreshAsync_DedupsConcurrentRefreshes(t *testing.T) {
 	}
 }
 
+// A panic in the load() closure must be recovered inside the background
+// goroutine, not crash the operator pod — load() does storage I/O and
+// meta.json parsing that can panic on malformed input. The key must also
+// be freed from the loading set so subsequent refreshes still run.
+func TestGetOrRefreshAsync_RecoversLoaderPanic(t *testing.T) {
+	c := newCache[int](time.Minute)
+
+	panicked := make(chan struct{})
+	c.getOrRefreshAsync("k", func() (int, error) {
+		defer close(panicked)
+		panic("boom in load()")
+	}, nil)
+
+	select {
+	case <-panicked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("loader never ran")
+	}
+
+	// The loading flag must be cleared even after a panic, so a later
+	// refresh for the same key is not pinned forever. Poll until a fresh
+	// (non-panicking) load lands its value — proves both that the process
+	// survived and that the key is refreshable again.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		got, ok := c.getOrRefreshAsync("k", func() (int, error) { return 5, nil }, nil)
+		if ok && got == 5 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("key stuck after panic; never refreshed: got=%d fresh=%v", got, ok)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // onRefresh fires only after a successful background load, so the SSE
 // repaint that surfaces the freshly-loaded estimate isn't sent on error.
 func TestGetOrRefreshAsync_OnRefreshOnlyOnSuccess(t *testing.T) {

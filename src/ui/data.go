@@ -244,10 +244,15 @@ func newK8sData(c client.Client, namespace string, log logr.Logger) *k8sData {
 	// One semaphore shared by both caches so the bound is on total in-flight
 	// probes, not per-cache.
 	sem := make(chan struct{}, maxBackgroundRefreshes)
+	cacheLog := log.WithName("ui-cache")
 	latestCache := newCache[map[string]*meta.MetaFile](30 * time.Second)
 	latestCache.sem = sem
+	latestCache.log = cacheLog
+	latestCache.name = "latest"
 	runsCache := newCache[[]*meta.MetaFile](30 * time.Second)
 	runsCache.sem = sem
+	runsCache.log = cacheLog
+	runsCache.name = "runs"
 	return &k8sData{
 		client:      c,
 		namespace:   namespace,

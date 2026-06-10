@@ -3,6 +3,10 @@ package ui
 import (
 	"sync"
 	"time"
+
+	"github.com/go-logr/logr"
+
+	"backup-operator/internal/safe"
 )
 
 // cache is a tiny TTL key→value store with stale-while-revalidate semantics.
@@ -24,6 +28,15 @@ type cache[V any] struct {
 	// SSH/TLS handshake. That connection storm is exactly what got the operator
 	// IP-blocked by QNAP's bruteforce protection (see §18 ADR). nil = unbounded.
 	sem chan struct{}
+
+	// log + name identify this cache in panic-recovery logs. The background
+	// refresh goroutine runs a caller-supplied load() closure that does
+	// storage I/O and meta.json parsing — a panic there must not crash the
+	// operator pod, so the goroutine recovers via safe.Goroutine. A zero
+	// logr.Logger is a no-op sink (tests construct caches without one), so
+	// recovery still happens even when log is unset.
+	log  logr.Logger
+	name string
 }
 
 type cacheEntry[V any] struct {
@@ -85,18 +98,31 @@ func (c *cache[V]) getOrRefreshAsync(key string, load func() (V, error), onRefre
 	c.mu.Unlock()
 
 	go func() {
+		// Registered first so it runs last (LIFO): it recovers any panic
+		// from load() after the loading flag and semaphore slot have been
+		// released by the defers below. Without it a panic in the load()
+		// closure crashes the whole operator pod.
+		defer safe.Goroutine(c.log, "ui-cache-refresh", c.name+":"+key)
+		// Always clear the loading flag, even on panic — otherwise a
+		// recovered panic would pin this key as "loading" forever and it
+		// would never refresh again (silent stale-forever).
+		defer func() {
+			c.mu.Lock()
+			delete(c.loading, key)
+			c.mu.Unlock()
+		}()
 		if c.sem != nil {
 			c.sem <- struct{}{}
 			defer func() { <-c.sem }()
 		}
 		v, err := load()
-		c.mu.Lock()
-		delete(c.loading, key)
-		if err == nil {
-			c.m[key] = cacheEntry[V]{v: v, exp: time.Now().Add(c.ttl)}
+		if err != nil {
+			return
 		}
+		c.mu.Lock()
+		c.m[key] = cacheEntry[V]{v: v, exp: time.Now().Add(c.ttl)}
 		c.mu.Unlock()
-		if err == nil && onRefresh != nil {
+		if onRefresh != nil {
 			onRefresh()
 		}
 	}()

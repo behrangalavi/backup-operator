@@ -88,8 +88,13 @@ func TestSpawn_CreatesHardenedPod(t *testing.T) {
 		*c.SecurityContext.AllowPrivilegeEscalation {
 		t.Error("AllowPrivilegeEscalation must be false")
 	}
-	if c.SecurityContext.ReadOnlyRootFilesystem == nil || !*c.SecurityContext.ReadOnlyRootFilesystem {
-		t.Error("ReadOnlyRootFilesystem must be true")
+	// Verifier pods run with a writable root fs on purpose: stock DB images
+	// write sockets/locks to /var/run/postgresql, /run/mysqld, /tmp at
+	// startup and crash under a read-only root fs. Throwaway pod, still
+	// PSA-restricted-compliant (readOnlyRootFilesystem is not part of that
+	// standard). See buildPodSpec for the rationale.
+	if c.SecurityContext.ReadOnlyRootFilesystem == nil || *c.SecurityContext.ReadOnlyRootFilesystem {
+		t.Error("ReadOnlyRootFilesystem must be false for verifier DB pods")
 	}
 	if c.SecurityContext.Capabilities == nil ||
 		len(c.SecurityContext.Capabilities.Drop) != 1 ||

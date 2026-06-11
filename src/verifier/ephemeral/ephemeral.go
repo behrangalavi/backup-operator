@@ -130,7 +130,16 @@ func buildPodName(prefix string) string {
 func (s *k8sSpawner) buildPodSpec(name string, spec Spec) *corev1.Pod {
 	runAsNonRoot := true
 	allowPrivEsc := false
-	readOnlyRootFs := true
+	// Stock DB images write runtime state to root-fs paths outside the data
+	// volume at startup — postgres needs /var/run/postgresql (socket+lock),
+	// mysql /run/mysqld, mongo /tmp. With readOnlyRootFilesystem=true the
+	// entrypoint can't create those and the container crashes into Failed.
+	// This is a throwaway verifier pod (seconds-lived, OwnerRef-GC'd, only
+	// holds a copy of data the cluster already has), so we trade root-fs
+	// hardening for a working restore. Still PSA-restricted-compliant:
+	// readOnlyRootFilesystem is not part of the restricted standard
+	// (runAsNonRoot / seccomp / drop-ALL / no-privesc all stay on).
+	readOnlyRootFs := false
 	uid := int64(999) // matches the official postgres / mysql / mongo / redis non-root uids loosely
 	fsGroup := int64(999)
 

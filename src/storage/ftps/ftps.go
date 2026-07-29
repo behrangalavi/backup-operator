@@ -191,16 +191,34 @@ func (s *ftpsStorage) stripPrefix(full string) string {
 	return strings.TrimPrefix(rel, "/")
 }
 
+// ftpDirClient is the subset of *ftp.ServerConn mkdirAll needs. Narrowing to
+// an interface keeps the CWD-restore logic unit-testable without a live FTP
+// server.
+type ftpDirClient interface {
+	MakeDir(path string) error
+	ChangeDir(path string) error
+	CurrentDir() (string, error)
+}
+
 // mkdirAll creates each segment in turn. jlaffaye/ftp's MakeDir is
 // single-level only — the protocol has no mkdir -p equivalent. We can't
 // reliably distinguish "already exists" from "permission denied" at the
-// MakeDir level (both come back as 550), so the create error is recorded
-// but a follow-up CWD probes whether the directory is actually usable.
-// CWD success means the path is fine regardless of why MakeDir failed
-// (probably already exists); CWD failure surfaces the real reason —
-// missing parent, no permission, chroot violation, etc. — instead of
-// letting Stor fail later with a misleading "no such file" message.
-func mkdirAll(c *ftp.ServerConn, dir string) error {
+// MakeDir level (both come back as 550), so on failure a ChangeDir probes
+// whether the directory is actually usable: success means it exists (probably
+// why MakeDir failed); failure surfaces the real reason — missing parent, no
+// permission, chroot violation — instead of letting Stor fail later with a
+// misleading "no such file".
+//
+// ChangeDir MUTATES the session CWD, and every path here is a full path
+// resolved against the login directory. So the probe MUST restore the CWD
+// immediately: a probe that left the CWD inside the tree would make the next
+// MakeDir target <cwd>/<full-path> (a doubled prefix) and fail — which is
+// exactly what broke meta uploads on every FTPS destination whenever the
+// path-prefix was relative or empty (an absolute prefix masked it, since
+// absolute paths don't depend on CWD). If the server doesn't support PWD we
+// cannot restore, so we skip the probe and treat 550 as "probably exists",
+// letting Stor surface any real problem later.
+func mkdirAll(c ftpDirClient, dir string) error {
 	if dir == "" || dir == "/" || dir == "." {
 		return nil
 	}
@@ -214,10 +232,15 @@ func mkdirAll(c *ftp.ServerConn, dir string) error {
 	if mkErr == nil {
 		return nil
 	}
-	// MakeDir failed — could be "already exists" (which is fine) or a
-	// real permission/path problem. CWD distinguishes the two: if we
-	// can change into the directory it exists and is usable.
-	if cdErr := c.ChangeDir(dir); cdErr != nil {
+	cwd, cwdErr := c.CurrentDir()
+	if cwdErr != nil {
+		// Can't safely restore the CWD without knowing it — skip the probe
+		// rather than risk corrupting the session for subsequent operations.
+		return nil
+	}
+	cdErr := c.ChangeDir(dir)
+	_ = c.ChangeDir(cwd) // restore regardless of probe outcome
+	if cdErr != nil {
 		return fmt.Errorf("mkdir %s: %w (cwd probe: %v)", dir, mkErr, cdErr)
 	}
 	return nil

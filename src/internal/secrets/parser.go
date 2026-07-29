@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +12,44 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 )
+
+// validName is the conservative allow-list for logical identifiers (source
+// target name, destination name) that flow into object-storage paths, metric
+// labels, and CronJob names. It forbids the path separator and any leading
+// dot, so a value like "../other-tenant" or "a/b" cannot escape a
+// destination's path-prefix once path.Join'd into an object key. Without a
+// '/' a literal ".." is inert (path.Clean leaves it in place), so barring the
+// separator is sufficient to close the traversal class.
+//
+// Feature-flag annotations get forgiving fallbacks (see the parseXAnnotation
+// helpers), but a structural identifier that decides *where* data is written
+// and deleted must fail loudly rather than be silently rewritten — same
+// contract as the required host/username/port keys.
+var validName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// validateName rejects identifiers that could escape the storage prefix or
+// break path/label construction.
+func validateName(kind, v string) error {
+	if len(v) > 253 {
+		return fmt.Errorf("%s %q is too long (max 253 characters)", kind, v)
+	}
+	if !validName.MatchString(v) {
+		return fmt.Errorf("%s %q is invalid: must match [A-Za-z0-9][A-Za-z0-9._-]* (no '/', no leading '.')", kind, v)
+	}
+	return nil
+}
+
+// validatePathPrefix allows the '/' separator (a prefix like "/cluster-prod"
+// is the documented isolation root) but rejects any ".." segment, which would
+// otherwise let one destination's prefix climb into another's namespace.
+func validatePathPrefix(v string) error {
+	for _, seg := range strings.Split(v, "/") {
+		if seg == ".." {
+			return fmt.Errorf("path-prefix %q must not contain a %q segment", v, "..")
+		}
+	}
+	return nil
+}
 
 // DefaultRestoreVerificationInterval is used when restore-verification-mode is
 // active but no interval annotation is set. Weekly cadence balances signal
@@ -139,6 +178,9 @@ func ParseSource(s *corev1.Secret, defaultSchedule string) (*Source, error) {
 	if target == "" {
 		target = s.Name
 	}
+	if err := validateName("target name", target); err != nil {
+		return nil, fmt.Errorf("secret %s/%s: %w", s.Namespace, s.Name, err)
+	}
 	schedule := s.Annotations[labels.AnnotationSchedule]
 	if schedule == "" {
 		schedule = defaultSchedule
@@ -188,6 +230,9 @@ func ParseDestination(s *corev1.Secret) (*Destination, error) {
 	if name == "" {
 		name = s.Name
 	}
+	if err := validateName("destination name", name); err != nil {
+		return nil, fmt.Errorf("secret %s/%s: %w", s.Namespace, s.Name, err)
+	}
 
 	// Surface path-prefix from annotation through into Data so storage impls
 	// see one consistent input shape.
@@ -196,6 +241,9 @@ func ParseDestination(s *corev1.Secret) (*Destination, error) {
 		data[k] = v
 	}
 	if prefix := s.Annotations[labels.AnnotationPathPrefix]; prefix != "" {
+		if err := validatePathPrefix(prefix); err != nil {
+			return nil, fmt.Errorf("secret %s/%s: %w", s.Namespace, s.Name, err)
+		}
 		data["path-prefix"] = []byte(prefix)
 	}
 

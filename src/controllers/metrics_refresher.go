@@ -351,8 +351,20 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 				metrics.SetDestinationFailed(src.TargetName, d.Name, true)
 				return
 			}
-			m, ts, found := loadLatestMeta(ctx, st, src.TargetName)
-			if !found {
+			m, ts, outcome := loadLatestMeta(ctx, st, src.TargetName)
+			switch outcome {
+			case metaError:
+				// Storage unreachable / unreadable (offline host, rotated
+				// credentials, corrupt payload). Raise the gauge so
+				// BackupDestinationFailing can fire — this is the failure mode
+				// the alert is documented to catch. Pool.Get succeeding only
+				// builds the client; the connect/auth happens here.
+				metrics.SetDestinationFailed(src.TargetName, d.Name, true)
+				return
+			case metaEmpty:
+				// Reachable but nothing uploaded yet (legitimate first run) —
+				// explicitly not failed, and no run data to fold in.
+				metrics.SetDestinationFailed(src.TargetName, d.Name, false)
 				return
 			}
 			metrics.SetDestinationFailed(src.TargetName, d.Name, false)
@@ -469,10 +481,36 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 	}
 }
 
+// metaOutcome distinguishes the three states a meta lookup can end in, which
+// the boolean "found" used to conflate. The distinction is load-bearing for
+// destination_failed: a storage I/O error (unreachable host, rotated
+// credentials, unreadable/corrupt payload) must raise the gauge so
+// BackupDestinationFailing can fire, whereas a reachable-but-empty destination
+// (no run uploaded yet) must NOT — that is the legitimate first-run case.
+type metaOutcome int
+
+const (
+	metaOK    metaOutcome = iota // meta found, read, and parsed
+	metaEmpty                    // storage reachable, but no parseable meta present
+	metaError                    // storage could not be reached / read
+)
+
+func (o metaOutcome) String() string {
+	switch o {
+	case metaOK:
+		return "ok"
+	case metaEmpty:
+		return "empty"
+	case metaError:
+		return "error"
+	}
+	return "unknown"
+}
+
 // loadLatestMeta fetches and parses the most recent *.meta.json under the
-// given target prefix. Returns (nil, zero-time, false) if storage cannot be
-// listed, no meta exists, or the latest one cannot be parsed.
-func loadLatestMeta(ctx context.Context, st storage.Storage, target string) (*meta.MetaFile, time.Time, bool) {
+// given target prefix. The metaOutcome tells callers whether a nil result
+// means "nothing there" (metaEmpty) or "storage is broken" (metaError).
+func loadLatestMeta(ctx context.Context, st storage.Storage, target string) (*meta.MetaFile, time.Time, metaOutcome) {
 	// Reuse one connection for the List + Get when the backend supports it
 	// (SFTP/FTPS). This runs once per (source × destination) every tick on the
 	// refresher and scrubber hot path; without the shared session each call
@@ -482,32 +520,39 @@ func loadLatestMeta(ctx context.Context, st storage.Storage, target string) (*me
 	if bs, ok := st.(storage.BatchStorage); ok {
 		sess, closer, err := bs.WithSession(ctx)
 		if err != nil {
-			return nil, time.Time{}, false
+			return nil, time.Time{}, metaError
 		}
 		defer func() { _ = closer() }()
 		active = sess
 	}
 
 	objs, err := active.List(ctx, target+"/")
-	if err != nil || len(objs) == 0 {
-		return nil, time.Time{}, false
+	if err != nil {
+		return nil, time.Time{}, metaError
+	}
+	if len(objs) == 0 {
+		return nil, time.Time{}, metaEmpty
 	}
 	latest := mostRecentMeta(objs)
 	if latest.Path == "" {
-		return nil, time.Time{}, false
+		// Objects exist (dumps) but no meta.json — storage is reachable, there
+		// is just nothing parseable to read. Not a destination failure.
+		return nil, time.Time{}, metaEmpty
 	}
 	rc, err := active.Get(ctx, latest.Path)
 	if err != nil {
-		return nil, time.Time{}, false
+		return nil, time.Time{}, metaError
 	}
 	defer func() { _ = rc.Close() }()
 	raw, err := io.ReadAll(rc)
 	if err != nil {
-		return nil, time.Time{}, false
+		return nil, time.Time{}, metaError
 	}
 	var m meta.MetaFile
 	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil, time.Time{}, false
+		// A meta object exists but is unreadable — the destination is not
+		// serving good data, so it counts as failed rather than empty.
+		return nil, time.Time{}, metaError
 	}
 	m.Path = latest.Path
 	ts := latest.LastModified
@@ -517,7 +562,7 @@ func loadLatestMeta(ctx context.Context, st storage.Storage, target string) (*me
 		// replicate with skewed clocks.
 		ts = parsed
 	}
-	return &m, ts, true
+	return &m, ts, metaOK
 }
 
 func mostRecentMeta(objs []storage.Object) storage.Object {

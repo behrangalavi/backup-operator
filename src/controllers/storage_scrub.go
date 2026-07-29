@@ -166,9 +166,9 @@ func (s *StorageScrubber) scrubOne(ctx context.Context, target string, d *secret
 		log.V(1).Info("scrub skipped: storage init failed", "err", err.Error())
 		return
 	}
-	m, _, found := loadLatestMeta(ctx, st, target)
-	if !found || m == nil {
-		log.V(1).Info("scrub skipped: no meta available")
+	m, _, outcome := loadLatestMeta(ctx, st, target)
+	if outcome != metaOK || m == nil {
+		log.V(1).Info("scrub skipped: no meta available", "outcome", outcome)
 		return
 	}
 	if m.IsFailure() {

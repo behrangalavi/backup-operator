@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"path"
 	"strings"
 
 	"backup-operator/storage"
@@ -66,20 +65,30 @@ func New(name string, data storage.SecretData, logger logr.Logger) (storage.Stor
 
 func (a *azureStorage) Name() string { return a.name }
 
+// full joins the path-prefix to a caller path by plain concatenation, NOT
+// path.Join. path.Join runs path.Clean, which strips the trailing slash a
+// List prefix carries for target isolation ("db/" → "db"): with a non-empty
+// path-prefix that turns List("db/") into the string prefix "prefix/db",
+// which also matches sibling targets like "prefix/db-archive/..." — bleeding
+// one target's listing (and therefore its retention deletes) into another.
+// Concatenation preserves the caller's trailing slash exactly. pathPrefix has
+// its trailing slash trimmed at construction, so we add exactly one separator.
 func (a *azureStorage) full(p string) string {
 	p = strings.TrimLeft(p, "/")
 	if a.pathPrefix == "" {
 		return p
 	}
-	return strings.TrimLeft(path.Join(a.pathPrefix, p), "/")
+	return a.pathPrefix + "/" + p
 }
 
+// stripPrefix trims the full "pathPrefix/" (including the separator), not just
+// pathPrefix. Trimming the bare prefix would turn a sibling key like
+// "prod-eu/db/..." under prefix "prod" into a mangled "-eu/db/...".
 func (a *azureStorage) stripPrefix(key string) string {
 	if a.pathPrefix == "" {
 		return key
 	}
-	rel := strings.TrimPrefix(key, a.pathPrefix)
-	return strings.TrimLeft(rel, "/")
+	return strings.TrimPrefix(key, a.pathPrefix+"/")
 }
 
 func (a *azureStorage) Upload(ctx context.Context, p string, r io.Reader) error {

@@ -386,6 +386,8 @@
         "insecureSkipHostVerify": "Accepts ANY host key — vulnerable to MITM. Use only for initial testing; populate Known Hosts for production.",
         "tlsMode": "Most NAS firmware (QNAP, Synology) labels this 'FTP with SSL/TLS (explicit)' — pick Explicit. Implicit is the older port-990 variant.",
         "insecureSkipCertVerify": "Skips TLS certificate validation. Accept any server cert — vulnerable to MITM. Use only when the NAS ships a self-signed cert you cannot replace.",
+        "endpoint": "Leave blank for AWS S3 (inferred from the region). Set this for S3-compatible providers: MinIO, Cloudflare R2, Backblaze B2, Hetzner Object Storage, Wasabi.",
+        "pathStyle": "Enable for providers that require path-style addressing (e.g. MinIO). Leave off for AWS S3 and providers that use virtual-hosted-style buckets.",
         "serviceAccountJson": "Paste the full JSON key file downloaded from the GCP console (IAM → Service Accounts → Keys → Add Key)."
       }
     }

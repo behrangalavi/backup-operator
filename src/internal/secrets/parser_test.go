@@ -31,6 +31,63 @@ func newSourceSecret(annotations map[string]string) *corev1.Secret {
 	}
 }
 
+func TestParseSource_RejectsTraversalTargetName(t *testing.T) {
+	bad := []string{
+		"../other-tenant",
+		"../../etc",
+		"a/b",
+		"foo/../bar",
+		".hidden",
+		"has space",
+	}
+	for _, name := range bad {
+		s := newSourceSecret(map[string]string{labels.AnnotationName: name})
+		if _, err := ParseSource(s, "0 2 * * *"); err == nil {
+			t.Errorf("ParseSource must reject unsafe target name %q", name)
+		}
+	}
+}
+
+func TestParseSource_AcceptsNormalTargetNames(t *testing.T) {
+	good := []string{"prod-users", "prod_users", "mydb.staging", "db2"}
+	for _, name := range good {
+		s := newSourceSecret(map[string]string{labels.AnnotationName: name})
+		if _, err := ParseSource(s, "0 2 * * *"); err != nil {
+			t.Errorf("ParseSource rejected valid target name %q: %v", name, err)
+		}
+	}
+}
+
+func TestParseDestination_RejectsTraversalPathPrefix(t *testing.T) {
+	s := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "dest",
+			Namespace: "default",
+			Labels:    map[string]string{labels.LabelStorageType: "s3"},
+			Annotations: map[string]string{
+				labels.AnnotationPathPrefix: "/cluster-prod/../other",
+			},
+		},
+	}
+	if _, err := ParseDestination(s); err == nil {
+		t.Error("ParseDestination must reject a path-prefix with a '..' segment")
+	}
+}
+
+func TestParseDestination_AllowsSlashedPathPrefix(t *testing.T) {
+	s := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "dest",
+			Namespace:   "default",
+			Labels:      map[string]string{labels.LabelStorageType: "s3"},
+			Annotations: map[string]string{labels.AnnotationPathPrefix: "/cluster-prod/eu"},
+		},
+	}
+	if _, err := ParseDestination(s); err != nil {
+		t.Errorf("ParseDestination rejected a valid slashed path-prefix: %v", err)
+	}
+}
+
 func TestParseSource_AnalyzerEnabled_DefaultTrue(t *testing.T) {
 	src, err := ParseSource(newSourceSecret(nil), "0 2 * * *")
 	if err != nil {

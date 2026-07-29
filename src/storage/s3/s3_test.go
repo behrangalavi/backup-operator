@@ -124,6 +124,39 @@ func TestStripPrefix_WithPrefix(t *testing.T) {
 	}
 }
 
+// TestFull_ListPrefixKeepsTrailingSlash is the regression guard for the
+// prefix-bleed bug: a List prefix of "db/" must stay "prefix/db/" and not
+// collapse to "prefix/db", which would also match the sibling target
+// "prefix/db-archive/..." and let one target's retention delete another's.
+func TestFull_ListPrefixKeepsTrailingSlash(t *testing.T) {
+	s := &s3Storage{pathPrefix: "cluster-prod"}
+	got := s.full("db/")
+	if got != "cluster-prod/db/" {
+		t.Fatalf("full(%q) = %q, want %q (trailing slash must survive)", "db/", got, "cluster-prod/db/")
+	}
+	// The bleed check: the produced List prefix must NOT be a string prefix of
+	// a sibling target's key.
+	siblingKey := "cluster-prod/db-archive/2026/01/01/dump-x.sql.gz.age"
+	if len(siblingKey) >= len(got) && siblingKey[:len(got)] == got {
+		t.Fatalf("List prefix %q still matches sibling target key %q", got, siblingKey)
+	}
+}
+
+// TestFull_RootListKeepsSeparator guards the empty-prefix (root) listing used
+// by LatestPerTarget: "prefix/" must not match a sibling destination prefix
+// like "prefix-eu/...".
+func TestFull_RootListKeepsSeparator(t *testing.T) {
+	s := &s3Storage{pathPrefix: "prod"}
+	if got := s.full(""); got != "prod/" {
+		t.Fatalf("full(%q) = %q, want %q", "", got, "prod/")
+	}
+	// stripPrefix must not mangle a sibling key it should never see, but if it
+	// does encounter "prod-eu/..." it must not turn it into "-eu/...".
+	if got := s.stripPrefix("prod-eu/db/x"); got != "prod-eu/db/x" {
+		t.Fatalf("stripPrefix must only strip the exact %q boundary, got %q", "prod/", got)
+	}
+}
+
 func TestNew_WithPathPrefix(t *testing.T) {
 	s, err := New("test", storage.SecretData{
 		keyBucket:    []byte("b"),

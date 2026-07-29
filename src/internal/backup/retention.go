@@ -184,7 +184,12 @@ func (p *Pipeline) retainForDestination(
 // Algorithm:
 //   1. Group objects by timestamp (one dump file + one meta file per timestamp).
 //   2. Sort timestamps newest-first.
-//   3. Always keep the MinKeep newest timestamps (safety floor).
+//   3. Always keep the MinKeep newest timestamps that contain a real dump
+//      (safety floor). Failure runs write only a dump-<ts>.meta.json sidecar
+//      with no dump file; those must NOT consume a floor slot, otherwise a
+//      streak of failed runs at the top of the list would push every real
+//      dump below the floor and let the age sweep delete all recoverable
+//      backups — precisely during the outage when they are needed most.
 //   4. From the rest, mark for deletion any timestamp older than Days.
 //   5. Return the list of paths to delete (dump + meta together).
 func selectForDeletion(objs []storage.Object, policy RetentionPolicy, now time.Time) []string {
@@ -206,19 +211,36 @@ func selectForDeletion(objs []storage.Object, policy RetentionPolicy, now time.T
 	cutoff := now.Add(-time.Duration(policy.Days) * 24 * time.Hour)
 
 	var victims []string
-	for i, ts := range stamps {
-		if i < policy.MinKeep {
-			continue // safety floor — never delete the N most recent
+	keptDumps := 0
+	for _, ts := range stamps {
+		paths := groups[ts]
+		// The safety floor counts real dumps, not timestamps: a failure-only
+		// group (meta sidecar, no dump) is never protected by MinKeep.
+		if groupHasDump(paths) && keptDumps < policy.MinKeep {
+			keptDumps++
+			continue
 		}
 		t, err := time.Parse(timestampLayout, ts)
 		if err != nil {
 			continue // unparseable name; leave it alone
 		}
 		if t.Before(cutoff) {
-			victims = append(victims, groups[ts]...)
+			victims = append(victims, paths...)
 		}
 	}
 	return victims
+}
+
+// groupHasDump reports whether a timestamp group contains an actual dump
+// artifact (as opposed to only a meta.json sidecar, which is all a failed run
+// leaves behind).
+func groupHasDump(paths []string) bool {
+	for _, p := range paths {
+		if classifyKind(p) == "dump" {
+			return true
+		}
+	}
+	return false
 }
 
 // timestampLayout matches the suffix written by buildObjectPath in pipeline.go

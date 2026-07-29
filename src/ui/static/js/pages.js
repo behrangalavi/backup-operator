@@ -925,12 +925,30 @@ window.openDestForm = function(secretName) {
       <div class="hint hint-warn">${tr('form.destination.hint.insecureSkipHostVerify')}</div>
     </div>`;
 
+  // Data-key names MUST match the storage backend schema (storage/s3/s3.go):
+  // access-key-id / secret-access-key, NOT access-key / secret-key. The old
+  // names produced a Secret the backend rejected at first use, so every
+  // UI-created S3 destination failed. Endpoint is optional — AWS is inferred
+  // from the region when it's blank; only non-AWS providers (MinIO, R2, B2,
+  // Hetzner) need it. Sensitive fields carry a "*" label but no `required`
+  // attribute so edit-mode (where they come back masked and blank) can save
+  // and preserve the stored value — same convention as the SFTP creds above.
   const s3Fields = `
-    <div class="form-group"><label>${tr('form.destination.label.endpoint')} *</label><input name="data_endpoint" required placeholder="s3.amazonaws.com"></div>
+    <div class="form-group"><label>${tr('form.destination.label.endpoint')}</label>
+      <input name="data_endpoint" placeholder="${tr('form.destination.placeholder.endpoint')}">
+      <div class="hint">${tr('form.destination.hint.endpoint')}</div>
+    </div>
     <div class="form-row"><div class="form-group"><label>${tr('form.destination.label.bucket')} *</label><input name="data_bucket" required></div>
       <div class="form-group"><label>${tr('form.destination.label.region')}</label><input name="data_region" placeholder="${tr('form.destination.placeholder.region')}"></div></div>
-    <div class="form-row"><div class="form-group"><label>${tr('form.destination.label.accessKey')}</label><input name="data_access-key"></div>
-      <div class="form-group"><label>${tr('form.destination.label.secretKey')}</label><input name="data_secret-key" type="password"></div></div>`;
+    <div class="form-row"><div class="form-group"><label>${tr('form.destination.label.accessKey')} *</label><input name="data_access-key-id"></div>
+      <div class="form-group"><label>${tr('form.destination.label.secretKey')} *</label><input name="data_secret-access-key" type="password"></div></div>
+    <div class="form-group">
+      <label style="font-weight:normal;cursor:pointer">
+        <input type="checkbox" name="data_path-style" value="true">
+        ${tr('form.destination.label.pathStyle')}
+      </label>
+      <div class="hint">${tr('form.destination.hint.pathStyle')}</div>
+    </div>`;
 
   const ftpsFields = `
     <div class="form-row"><div class="form-group"><label>${tr('form.destination.label.host')} *</label><input name="data_host" required></div>
@@ -954,13 +972,13 @@ window.openDestForm = function(secretName) {
 
   const azureFields = `
     <div class="form-group"><label>${tr('form.destination.label.accountName')} *</label><input name="data_account-name" required></div>
-    <div class="form-group"><label>${tr('form.destination.label.accountKey')} *</label><input name="data_account-key" type="password" required></div>
+    <div class="form-group"><label>${tr('form.destination.label.accountKey')} *</label><input name="data_account-key" type="password"></div>
     <div class="form-group"><label>${tr('form.destination.label.container')} *</label><input name="data_container" required></div>`;
 
   const gcsFields = `
     <div class="form-group"><label>${tr('form.destination.label.bucket')} *</label><input name="data_bucket" required></div>
     <div class="form-group"><label>${tr('form.destination.label.serviceAccountJson')} *</label>
-      <textarea name="data_service-account-json" rows="4" required placeholder='{"type":"service_account",...}'></textarea>
+      <textarea name="data_service-account-json" rows="4" placeholder='{"type":"service_account",...}'></textarea>
       <div class="hint">${tr('form.destination.hint.serviceAccountJson')}</div>
     </div>`;
 
@@ -1053,8 +1071,14 @@ window.toggleSFTPAuth = function(method) {
 // emptied it, remove the field from the Secret" — otherwise the form
 // silently ignores clears and the user wonders why the old value is
 // stuck. Mirror of the backend's sensitiveKeys set in handlers_api.go.
+// Mirror of the backend sensitiveKeys mask (ui/handlers_api.go): every key the
+// API returns as "***" must be here, so that on edit an intentionally-blank
+// (masked) field is PRESERVED via PUT-merge rather than pushed to removeKeys
+// and deleted. 'access-key' / 'secret-key' are legacy aliases kept for old
+// Secrets; new S3 destinations use access-key-id / secret-access-key.
 const DEST_SENSITIVE_KEYS = new Set([
   'password', 'ssh-private-key', 'secret-key', 'access-key', 'secret-access-key',
+  'access-key-id', 'account-key', 'service-account-json',
 ]);
 
 window.submitDestForm = async function(e, secretName) {
@@ -2001,31 +2025,40 @@ async function renderTargetDetail(name, loading = true) {
 }
 
 function renderDownloadLinks(targetName, run, destNames) {
-  const ts = escHTML(run.timestamp);
+  // Two contexts for the same values, two escapers: escJS for the JS-string
+  // arguments inside onclick="...", encodeURIComponent for URL path segments,
+  // escAttr for the download="" filename attribute. targetName and dest names
+  // are free-form annotation values, so a single wrong escaper here is XSS
+  // (see the viewMeta Copy-button note above).
+  const tsJS  = escJS(run.timestamp);
+  const tsUrl = encodeURIComponent(run.timestamp);
+  const tName = escJS(targetName);
+  const tUrl  = encodeURIComponent(targetName);
+  const tAttr = escAttr(targetName);
   const successDests = run.destinations ? run.destinations.filter(d => d.status === 'success') : [];
   if (successDests.length <= 1) {
     const destName = successDests.length === 1 ? successDests[0].name : '';
     const destParam = destName ? '?destination=' + encodeURIComponent(destName) : '';
-    const destArg  = destName ? `'${escHTML(destName)}'` : 'null';
-    return `<button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="viewMeta('${escJS(targetName)}','${ts}',${destArg})" title="View the unencrypted meta.json sidecar (table stats, schema fingerprint, SHA256) in the browser">&#128065;</button>
-      <a href="/download/${escAttr(targetName)}/${ts}/meta${destParam}" download="${escAttr(targetName)}-${ts}.meta.json" class="btn btn-ghost btn-sm" style="font-size:11px" title="Download the unencrypted meta.json sidecar">.json</a>
-      <a href="/download/${escAttr(targetName)}/${ts}/dump${destParam}" class="btn btn-ghost btn-sm" style="font-size:11px" title="Download the age-encrypted dump (.sql.gz.age). Decrypt locally with backup-restore + your offline private key.">.age</a>`;
+    const destArg  = destName ? `'${escJS(destName)}'` : 'null';
+    return `<button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="viewMeta('${tName}','${tsJS}',${destArg})" title="View the unencrypted meta.json sidecar (table stats, schema fingerprint, SHA256) in the browser">&#128065;</button>
+      <a href="/download/${tUrl}/${tsUrl}/meta${destParam}" download="${tAttr}-${escAttr(run.timestamp)}.meta.json" class="btn btn-ghost btn-sm" style="font-size:11px" title="Download the unencrypted meta.json sidecar">.json</a>
+      <a href="/download/${tUrl}/${tsUrl}/dump${destParam}" class="btn btn-ghost btn-sm" style="font-size:11px" title="Download the age-encrypted dump (.sql.gz.age). Decrypt locally with backup-restore + your offline private key.">.age</a>`;
   }
   return `<div class="dropdown" style="display:inline-block">
     <button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="this.nextElementSibling.classList.toggle('open')" title="This run was uploaded to multiple destinations — pick one to download or view from">Download &#9662;</button>
     <div class="dropdown-menu">${successDests.map(d =>
-      `<a href="/download/${escAttr(targetName)}/${ts}/dump?destination=${encodeURIComponent(d.name)}" class="dropdown-item" style="font-size:12px" title="Download the age-encrypted dump from ${escAttr(d.name)}">
-        ${escHTML(d.name)} <span style="opacity:0.6;font-size:10px">(${d.storageType})</span>
+      `<a href="/download/${tUrl}/${tsUrl}/dump?destination=${encodeURIComponent(d.name)}" class="dropdown-item" style="font-size:12px" title="Download the age-encrypted dump from ${escAttr(d.name)}">
+        ${escHTML(d.name)} <span style="opacity:0.6;font-size:10px">(${escHTML(d.storageType)})</span>
       </a>`
     ).join('')}
     <hr style="margin:4px 0;border:none;border-top:1px solid var(--border)">
     ${successDests.map(d =>
-      `<button class="dropdown-item" style="font-size:11px;text-align:left;background:none;border:none;width:100%;cursor:pointer" onclick="viewMeta('${escJS(targetName)}','${ts}','${escJS(d.name)}')" title="View the meta.json sidecar from ${escAttr(d.name)} in the browser">
+      `<button class="dropdown-item" style="font-size:11px;text-align:left;background:none;border:none;width:100%;cursor:pointer" onclick="viewMeta('${tName}','${tsJS}','${escJS(d.name)}')" title="View the meta.json sidecar from ${escAttr(d.name)} in the browser">
         &#128065; view: ${escHTML(d.name)}
       </button>`
     ).join('')}
     ${successDests.map(d =>
-      `<a href="/download/${escAttr(targetName)}/${ts}/meta?destination=${encodeURIComponent(d.name)}" download="${escAttr(targetName)}-${ts}.meta.json" class="dropdown-item" style="font-size:11px;opacity:0.7" title="Download the meta.json sidecar from ${escAttr(d.name)}">
+      `<a href="/download/${tUrl}/${tsUrl}/meta?destination=${encodeURIComponent(d.name)}" download="${tAttr}-${escAttr(run.timestamp)}.meta.json" class="dropdown-item" style="font-size:11px;opacity:0.7" title="Download the meta.json sidecar from ${escAttr(d.name)}">
         meta: ${escHTML(d.name)}
       </a>`
     ).join('')}
@@ -2048,11 +2081,18 @@ window.viewMeta = async function(targetName, timestamp, destination) {
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:12px;flex-wrap:wrap">
         <span style="color:var(--text-muted);font-size:12px">${destination ? 'destination: <code>' + escHTML(destination) + '</code>' : ''}</span>
         <div style="display:flex;gap:6px">
-          <button class="btn btn-ghost btn-sm" onclick="copyToClipboard(this, ${JSON.stringify(JSON.stringify(data, null, 2))})" title="Copy the full pretty-printed JSON to clipboard">Copy</button>
-          <a href="${url}" download="${escAttr(fname)}" class="btn btn-secondary btn-sm" title="Save this meta.json as a file">↓ Download</a>
+          <button class="btn btn-ghost btn-sm" data-action="copy-meta" title="Copy the full pretty-printed JSON to clipboard">Copy</button>
+          <a href="${escAttr(url)}" download="${escAttr(fname)}" class="btn btn-secondary btn-sm" title="Save this meta.json as a file">↓ Download</a>
         </div>
       </div>
       <pre class="json-viewer">${jsonHighlight(pretty)}</pre>`;
+    // Bind the Copy handler in JS rather than inlining the JSON into an
+    // onclick attribute: embedding JSON.stringify output (which contains
+    // unescaped `"` and `<`) in a quoted HTML attribute both breaks the
+    // markup and lets attacker-controlled meta content (e.g. a table named
+    // `"><img onerror=...>`) execute as stored XSS in the operator's browser.
+    const copyBtn = $('#modal-body').querySelector('[data-action="copy-meta"]');
+    if (copyBtn) copyBtn.onclick = () => copyToClipboard(copyBtn, pretty);
   } catch(e) {
     $('#modal-body').innerHTML = `<div class="empty-state"><h3>${tr('card.failedToLoad')}</h3><p style="color:var(--danger)">${escHTML(e.message)}</p></div>`;
   }

@@ -381,17 +381,51 @@ func latencyMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, code: 200}
 		next.ServeHTTP(rec, r)
-		// Normalize path: strip the trailing resource name for CRUD routes
-		// so /api/sources/foo and /api/sources/bar collapse into one label.
-		p := r.URL.Path
-		for _, prefix := range []string{"/api/sources/", "/api/destinations/", "/api/targets/", "/api/trigger/", "/api/age-keys/", "/download/"} {
-			if strings.HasPrefix(p, prefix) {
-				p = prefix
-				break
-			}
-		}
+		p := normalizeMetricPath(r.URL.Path)
 		metrics.HTTPRequestDuration.WithLabelValues(r.Method, p, strconv.Itoa(rec.code)).Observe(time.Since(start).Seconds())
 	})
+}
+
+// metricPathPrefixes are parametric routes whose trailing resource id must be
+// stripped so /api/sources/foo and /api/sources/bar collapse to one label.
+var metricPathPrefixes = []string{
+	"/api/sources/", "/api/destinations/", "/api/targets/", "/api/trigger/",
+	"/api/age-keys/", "/download/", "/legacy/target/",
+}
+
+// metricKnownPaths is the closed set of fixed routes the mux registers. Only
+// these pass through as a `path` label verbatim; see normalizeMetricPath.
+var metricKnownPaths = map[string]bool{
+	"/": true, "/legacy": true, "/healthz": true,
+	"/api/targets": true, "/api/destinations": true, "/api/jobs": true,
+	"/api/sources": true, "/api/settings": true, "/api/settings/export": true,
+	"/api/age-keys": true, "/api/audit-log": true,
+	"/api/destination-health": true, "/api/destination-stats": true,
+	"/api/consistency-check": true, "/api/dashboard/heatmap": true,
+	"/api/alerts": true, "/api/alerts/status": true, "/api/alerts/test": true,
+	"/api/cluster/capabilities": true,
+}
+
+// normalizeMetricPath bounds the cardinality of the `path` label on the
+// request-duration histogram. Parametric routes collapse to their prefix;
+// the fixed route set passes through; EVERYTHING else becomes "other".
+//
+// Without the "other" fallback the SPA catch-all ("/" handler serves any
+// path) and unknown /api/* 404s would each mint a fresh histogram series —
+// 11 buckets apiece, retained for the pod's lifetime — so an unauthenticated
+// scanner walking /wp-admin, /.env, /a/b/<random> is an unbounded-memory /
+// scrape-bloat DoS on the operator's registry. The UI has no auth by design
+// (§3.1), so this must be closed at the metric layer.
+func normalizeMetricPath(path string) string {
+	for _, prefix := range metricPathPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			return prefix
+		}
+	}
+	if metricKnownPaths[path] {
+		return path
+	}
+	return "other"
 }
 
 func (s *Server) routeSourceByMethod(w http.ResponseWriter, r *http.Request) {

@@ -195,6 +195,44 @@ func TestSelectForDeletion_OrphanMeta(t *testing.T) {
 	}
 }
 
+// failureMeta produces the sidecar-only artifact a failed run leaves behind:
+// a dump-<ts>.meta.json with no dump file.
+func failureMeta(target string, t time.Time) []storage.Object {
+	ts := t.Format(timestampLayout)
+	return []storage.Object{
+		{Path: target + "/" + ts[:4] + "/" + ts[4:6] + "/" + ts[6:8] + "/dump-" + ts + ".meta.json", Size: 1},
+	}
+}
+
+// TestSelectForDeletion_FailureMetasDoNotConsumeFloor is the regression guard
+// for the MinKeep bug: a streak of failed runs at the top of the list must not
+// push the real dumps below the safety floor and get them age-deleted.
+func TestSelectForDeletion_FailureMetasDoNotConsumeFloor(t *testing.T) {
+	var objs []storage.Object
+	// The 3 newest timestamps are failure-meta-only (DB was down), and recent.
+	for i := 0; i < 3; i++ {
+		objs = append(objs, failureMeta("x", fakeNow.AddDate(0, 0, -i))...)
+	}
+	// The only 3 real dumps are all older than the 7-day retention window.
+	for _, age := range []int{20, 30, 40} {
+		objs = append(objs, dump("x", fakeNow.AddDate(0, 0, -age))...)
+	}
+
+	got := selectForDeletion(objs, RetentionPolicy{Days: 7, MinKeep: 3}, fakeNow)
+
+	// All 3 real dumps must be floor-protected. The only thing eligible for
+	// deletion is a failure meta past cutoff — and none of the failure metas
+	// here are older than 7 days, so nothing should be deleted at all.
+	for _, v := range got {
+		if classifyKind(v) == "dump" {
+			t.Fatalf("a real dump was selected for deletion despite MinKeep=3: %s", v)
+		}
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected 0 victims (dumps floor-protected, failure metas recent), got %v", got)
+	}
+}
+
 func TestClassifyKind(t *testing.T) {
 	cases := []struct {
 		path string

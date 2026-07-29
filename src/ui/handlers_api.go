@@ -936,12 +936,15 @@ func (s *Server) handleAPIGetDestination(w http.ResponseWriter, r *http.Request)
 	safeData := make(map[string]string)
 	// Mask every credential-bearing data key. Names must match the actual
 	// destination Secret schema (§6.5): S3 uses access-key-id /
-	// secret-access-key, SFTP uses ssh-private-key / password. access-key-id
-	// was previously absent here, so an S3 access key id leaked in plaintext
-	// on GET. The extra legacy aliases (access-key, secret-key) are harmless.
+	// secret-access-key, SFTP uses ssh-private-key / password, Azure uses
+	// account-key, GCS uses service-account-json. access-key-id, account-key
+	// and service-account-json were previously absent here, so those secrets
+	// leaked in plaintext on GET. The extra legacy aliases (access-key,
+	// secret-key) are harmless.
 	sensitiveKeys := map[string]bool{
 		"password": true, "ssh-private-key": true, "secret-key": true,
 		"access-key": true, "secret-access-key": true, "access-key-id": true,
+		"account-key": true, "service-account-json": true,
 	}
 	for k, v := range sec.Data {
 		if sensitiveKeys[k] {

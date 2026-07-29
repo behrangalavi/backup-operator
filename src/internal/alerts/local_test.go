@@ -2,6 +2,7 @@ package alerts
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,27 +15,32 @@ func fixedRegistry(t *testing.T) (prometheus.Gatherer, *metricSet) {
 	t.Helper()
 	reg := prometheus.NewRegistry()
 	ms := newMetricSet()
-	reg.MustRegister(ms.lastSuccess, ms.destFailed, ms.sizeRatio, ms.schemaChanged, ms.lastStatus, ms.anomalies)
+	reg.MustRegister(ms.lastSuccess, ms.destFailed, ms.sizeRatio, ms.schemaChanged, ms.lastStatus, ms.anomalies,
+		ms.restoreVerifPassed, ms.restoreVerifLastTs)
 	return reg, ms
 }
 
 type metricSet struct {
-	lastSuccess   *prometheus.GaugeVec
-	destFailed    *prometheus.GaugeVec
-	sizeRatio     *prometheus.GaugeVec
-	schemaChanged *prometheus.GaugeVec
-	lastStatus    *prometheus.GaugeVec
-	anomalies     *prometheus.GaugeVec
+	lastSuccess        *prometheus.GaugeVec
+	destFailed         *prometheus.GaugeVec
+	sizeRatio          *prometheus.GaugeVec
+	schemaChanged      *prometheus.GaugeVec
+	lastStatus         *prometheus.GaugeVec
+	anomalies          *prometheus.GaugeVec
+	restoreVerifPassed *prometheus.GaugeVec
+	restoreVerifLastTs *prometheus.GaugeVec
 }
 
 func newMetricSet() *metricSet {
 	return &metricSet{
-		lastSuccess:   prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "backup_operator_last_success_timestamp_seconds"}, []string{"target", "destination"}),
-		destFailed:    prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "backup_operator_destination_failed"}, []string{"target", "destination"}),
-		sizeRatio:     prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "backup_operator_dump_size_change_ratio"}, []string{"target"}),
-		schemaChanged: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "backup_operator_schema_changed"}, []string{"target"}),
-		lastStatus:    prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "backup_operator_last_run_status"}, []string{"target"}),
-		anomalies:     prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "backup_operator_last_run_anomalies"}, []string{"target"}),
+		lastSuccess:        prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "backup_operator_last_success_timestamp_seconds"}, []string{"target", "destination"}),
+		destFailed:         prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "backup_operator_destination_failed"}, []string{"target", "destination"}),
+		sizeRatio:          prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "backup_operator_dump_size_change_ratio"}, []string{"target"}),
+		schemaChanged:      prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "backup_operator_schema_changed"}, []string{"target"}),
+		lastStatus:         prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "backup_operator_last_run_status"}, []string{"target"}),
+		anomalies:          prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "backup_operator_last_run_anomalies"}, []string{"target"}),
+		restoreVerifPassed: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "backup_operator_restore_verification_passed"}, []string{"target", "mode"}),
+		restoreVerifLastTs: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "backup_operator_restore_verification_last_timestamp_seconds"}, []string{"target", "mode"}),
 	}
 }
 
@@ -134,5 +140,67 @@ func TestLocalProvider_NilGathererReturnsError(t *testing.T) {
 	p := &LocalProvider{}
 	if _, err := p.List(context.Background()); err == nil {
 		t.Error("expected error when gatherer not set")
+	}
+}
+
+func findAlert(alerts []Alert, name string) *Alert {
+	for i := range alerts {
+		if alerts[i].Alertname == name {
+			return &alerts[i]
+		}
+	}
+	return nil
+}
+
+func TestLocalProvider_RestoreVerificationFailed(t *testing.T) {
+	reg, ms := fixedRegistry(t)
+	// present-with-zero = the most recent verifier run was not a match.
+	ms.restoreVerifPassed.WithLabelValues("prod-users", "stream-validate").Set(0)
+	// A passing verifier for another target must NOT fire.
+	ms.restoreVerifPassed.WithLabelValues("orders", "full").Set(1)
+
+	got, err := NewLocalProvider(reg).List(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	a := findAlert(got, "BackupRestoreVerificationFailed")
+	if a == nil {
+		t.Fatal("expected BackupRestoreVerificationFailed to fire")
+	}
+	if a.Target != "prod-users" || a.Severity != "critical" {
+		t.Errorf("unexpected alert fields: %+v", a)
+	}
+	if !strings.Contains(a.Summary, "mode=stream-validate") {
+		t.Errorf("summary should carry the mode, got: %q", a.Summary)
+	}
+	for _, x := range got {
+		if x.Alertname == "BackupRestoreVerificationFailed" && x.Target == "orders" {
+			t.Error("passing verifier (value 1) must not fire")
+		}
+	}
+}
+
+func TestLocalProvider_RestoreVerificationStale(t *testing.T) {
+	reg, ms := fixedRegistry(t)
+	old := time.Now().Add(-15 * 24 * time.Hour).Unix()
+	fresh := time.Now().Add(-2 * 24 * time.Hour).Unix()
+	ms.restoreVerifLastTs.WithLabelValues("prod-users", "full").Set(float64(old))
+	ms.restoreVerifLastTs.WithLabelValues("orders", "full").Set(float64(fresh))
+
+	got, err := NewLocalProvider(reg).List(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	a := findAlert(got, "BackupRestoreVerificationStale")
+	if a == nil {
+		t.Fatal("expected BackupRestoreVerificationStale to fire for the 15-day-old verification")
+	}
+	if a.Target != "prod-users" || a.Severity != "warning" {
+		t.Errorf("unexpected alert fields: %+v", a)
+	}
+	for _, x := range got {
+		if x.Alertname == "BackupRestoreVerificationStale" && x.Target == "orders" {
+			t.Error("a 2-day-old verification must not be stale")
+		}
 	}
 }

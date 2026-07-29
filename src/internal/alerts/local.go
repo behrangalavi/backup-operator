@@ -19,7 +19,12 @@ import (
 // Conditions kept in sync with charts/backup-operator/values.yaml. When that
 // file changes, this evaluator must change too — there is no shared source
 // of truth because we deliberately want both paths independent (this one
-// serves users who never deploy Prometheus at all).
+// serves users who never deploy Prometheus at all). Every problem-signalling
+// rule is mirrored here; only BackupSucceeded is intentionally omitted — it is
+// a positive heartbeat, not a condition the UI should surface as "firing". The
+// two restore-verification rules carry their `mode` label in the summary text
+// (the Alert schema has no mode field), matching how the PrometheusProvider
+// surfaces the rule's annotation.
 type LocalProvider struct {
 	Gatherer prometheus.Gatherer
 	Now      func() time.Time // override in tests
@@ -36,6 +41,8 @@ type targetState struct {
 	destinationFailed   map[string]float64 // dest → 0/1
 	storageScrubPassed  map[string]float64 // dest → 0/1 (only present after a scrub ran)
 	retentionPassed     map[string]float64 // dest → 0/1 (only present after a sweep ran)
+	restoreVerifPassed  map[string]float64 // mode → 0/1 (only present after a verifier ran)
+	restoreVerifLastTs  map[string]float64 // mode → unix ts (only present after a verifier ran)
 	dumpSizeChangeRatio float64
 	dumpSizeChangeKnown bool
 	schemaChanged       float64
@@ -66,6 +73,8 @@ func (p *LocalProvider) List(ctx context.Context) ([]Alert, error) {
 				destinationFailed:  map[string]float64{},
 				storageScrubPassed: map[string]float64{},
 				retentionPassed:    map[string]float64{},
+				restoreVerifPassed: map[string]float64{},
+				restoreVerifLastTs: map[string]float64{},
 			}
 			states[target] = s
 		}
@@ -89,6 +98,10 @@ func (p *LocalProvider) List(ctx context.Context) ([]Alert, error) {
 				getState(target).storageScrubPassed[labels["destination"]] = val
 			case "backup_operator_retention_last_status":
 				getState(target).retentionPassed[labels["destination"]] = val
+			case "backup_operator_restore_verification_passed":
+				getState(target).restoreVerifPassed[labels["mode"]] = val
+			case "backup_operator_restore_verification_last_timestamp_seconds":
+				getState(target).restoreVerifLastTs[labels["mode"]] = val
 			case "backup_operator_dump_size_change_ratio":
 				s := getState(target)
 				s.dumpSizeChangeRatio = val
@@ -262,6 +275,44 @@ func (p *LocalProvider) List(ctx context.Context) ([]Alert, error) {
 				Summary:     fmt.Sprintf("Most recent backup run for %s did not produce a usable artifact", target),
 				Source:      "local",
 			})
+		}
+
+		// 7. BackupRestoreVerificationFailed — per mode. The metric is absent
+		// until a verifier has run at least once, so a present value of 0
+		// unambiguously means "the most recent verifier run did not produce a
+		// `match` verdict" (mismatch or skipped). Critical: the encrypted
+		// artifact could not be proven decryptable+parseable. mode is folded
+		// into the summary (matching the PrometheusRule annotation) since the
+		// Alert schema carries no mode field.
+		for mode, passed := range s.restoreVerifPassed {
+			if passed == 0 {
+				out = append(out, Alert{
+					Alertname:   "BackupRestoreVerificationFailed",
+					Target:      target,
+					Severity:    "critical",
+					State:       "firing",
+					ActiveSince: now,
+					Summary:     fmt.Sprintf("Restore-verification failed for %s (mode=%s) — encrypted dump did not decrypt+parse cleanly", target, mode),
+					Source:      "local",
+				})
+			}
+		}
+
+		// 8. BackupRestoreVerificationStale — per mode. Verification is
+		// configured but the most recent completion is older than 14 days, so
+		// the "a backup nobody has proven restorable" window has opened.
+		for mode, ts := range s.restoreVerifLastTs {
+			if ts > 0 && now.Unix()-int64(ts) > int64(86400*14) {
+				out = append(out, Alert{
+					Alertname:   "BackupRestoreVerificationStale",
+					Target:      target,
+					Severity:    "warning",
+					State:       "firing",
+					ActiveSince: time.Unix(int64(ts), 0).Add(14 * 24 * time.Hour),
+					Summary:     fmt.Sprintf("Restore-verification for %s (mode=%s) hasn't run in over 14 days", target, mode),
+					Source:      "local",
+				})
+			}
 		}
 	}
 

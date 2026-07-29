@@ -105,6 +105,54 @@ func TestBuildDumpArgs_Defaults(t *testing.T) {
 	}
 }
 
+func TestTLSDumpArgs(t *testing.T) {
+	cases := []struct {
+		name      string
+		tlsVal    string
+		sslCA     string
+		isMariaDB bool
+		want      []string
+	}{
+		{"unset leaves default", "", "", false, nil},
+		{"preferred leaves default", "preferred", "", false, nil},
+		{"oracle disabled", "false", "", false, []string{"--ssl-mode=DISABLED"}},
+		{"mariadb disabled", "false", "", true, []string{"--skip-ssl"}},
+		{"oracle require no-ca", "true", "", false, []string{"--ssl-mode=REQUIRED"}},
+		{"oracle skip-verify require", "skip-verify", "", false, []string{"--ssl-mode=REQUIRED"}},
+		{"oracle verify-ca needs ca -> require without ca", "verify-ca", "", false, []string{"--ssl-mode=REQUIRED"}},
+		{"oracle verify-identity with ca", "verify-full", "/etc/ca.pem", false, []string{"--ssl-mode=VERIFY_IDENTITY", "--ssl-ca=/etc/ca.pem"}},
+		{"oracle verify-ca with ca", "verify-ca", "/etc/ca.pem", false, []string{"--ssl-mode=VERIFY_CA", "--ssl-ca=/etc/ca.pem"}},
+		{"mariadb require no-ca", "true", "", true, []string{"--ssl"}},
+		{"mariadb require with ca", "true", "/etc/ca.pem", true, []string{"--ssl", "--ssl-verify-server-cert", "--ssl-ca=/etc/ca.pem"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := tlsDumpArgs(c.tlsVal, c.sslCA, c.isMariaDB)
+			if strings.Join(got, " ") != strings.Join(c.want, " ") {
+				t.Errorf("tlsDumpArgs(%q,%q,%v) = %v, want %v", c.tlsVal, c.sslCA, c.isMariaDB, got, c.want)
+			}
+		})
+	}
+}
+
+// TestBuildDumpArgs_EnforcesTLS proves the dump path picks up an explicit
+// TLS setting (the bug: it used to ignore extra-tls entirely).
+func TestBuildDumpArgs_EnforcesTLS(t *testing.T) {
+	d := &mysqlDumper{cfg: dumper.Config{
+		Host: "h", Port: 3306, Username: "u", Database: "mydb",
+		Extra: map[string]string{"tls": "true"},
+	}}
+	joined := argList(d.buildDumpArgs("mariadb-dump")) // probe fails -> Oracle-style
+	if !strings.Contains(joined, "--ssl-mode=REQUIRED") {
+		t.Errorf("expected --ssl-mode=REQUIRED for extra-tls=true, got: %s", joined)
+	}
+	// Database still last.
+	args := d.buildDumpArgs("mariadb-dump")
+	if args[len(args)-1] != "mydb" {
+		t.Errorf("database must remain the final arg, got %q", args[len(args)-1])
+	}
+}
+
 func TestBuildDumpArgs_MaxAllowedPacketOverride(t *testing.T) {
 	d := &mysqlDumper{cfg: dumper.Config{
 		Host: "h", Port: 3306, Username: "u", Database: "mydb",

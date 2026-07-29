@@ -18,17 +18,19 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-const redisVerifierPassword = "verifier-ephemeral"
+type redisEngine struct {
+	// password is the per-run credential for the ephemeral pod.
+	password string
+}
 
-type redisEngine struct{}
+func (*redisEngine) DBType() string { return "redis" }
 
-func (redisEngine) DBType() string { return "redis" }
-
-func (redisEngine) PodSpec(volumeBytes int64, imageOverride string) ephemeral.Spec {
+func (e *redisEngine) PodSpec(volumeBytes int64, imageOverride string) ephemeral.Spec {
 	image := imageOverride
 	if image == "" {
 		image = DefaultImage("redis")
 	}
+	pw := e.password
 	return ephemeral.Spec{
 		Image: image,
 		Port:  6379,
@@ -38,7 +40,7 @@ func (redisEngine) PodSpec(volumeBytes int64, imageOverride string) ephemeral.Sp
 		// boots empty and we restore into the live process.
 		Command: []string{"redis-server"},
 		Args: []string{
-			"--requirepass", redisVerifierPassword,
+			"--requirepass", pw,
 			"--save", "",
 			"--appendonly", "no",
 			"--dir", "/data",
@@ -47,11 +49,13 @@ func (redisEngine) PodSpec(volumeBytes int64, imageOverride string) ephemeral.Sp
 		VolumeMountPath: "/data",
 		VolumeSizeBytes: volumeBytes,
 		ReadyTimeout:    3 * time.Minute,
-		Probe:           probeRedis,
+		Probe: func(ctx context.Context, endpoint string) error {
+			return probeRedis(ctx, endpoint, pw)
+		},
 	}
 }
 
-func probeRedis(ctx context.Context, endpoint string) error {
+func probeRedis(ctx context.Context, endpoint, password string) error {
 	host, port, err := splitEndpoint(endpoint)
 	if err != nil {
 		return err
@@ -61,7 +65,7 @@ func probeRedis(ctx context.Context, endpoint string) error {
 		"-p", port,
 		"PING",
 	)
-	cmd.Env = append(cmd.Env, "REDISCLI_AUTH="+redisVerifierPassword,
+	cmd.Env = append(cmd.Env, "REDISCLI_AUTH="+password,
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	out, err := cmd.Output()
 	if err != nil {
@@ -88,7 +92,7 @@ func probeRedis(ctx context.Context, endpoint string) error {
 // "skipped — redis full restore not implemented", full mode does the
 // minimal "DBSIZE > 0 confirmation" via direct redis-cli SET/GET roundtrip
 // to prove the empty target is reachable.
-func (redisEngine) Restore(ctx context.Context, endpoint string, plaintext io.Reader, mode Mode, log logr.Logger) error {
+func (e *redisEngine) Restore(ctx context.Context, endpoint string, plaintext io.Reader, mode Mode, log logr.Logger) error {
 	// Drain the stream to avoid backpressure on the upstream age/gunzip.
 	if _, err := io.Copy(io.Discard, plaintext); err != nil {
 		return fmt.Errorf("drain redis dump stream: %w", err)
@@ -104,7 +108,7 @@ func (redisEngine) Restore(ctx context.Context, endpoint string, plaintext io.Re
 		"-p", port,
 		"SET", "verifier:probe", "ok",
 	)
-	cmd.Env = append(cmd.Env, "REDISCLI_AUTH="+redisVerifierPassword,
+	cmd.Env = append(cmd.Env, "REDISCLI_AUTH="+e.password,
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -115,7 +119,7 @@ func (redisEngine) Restore(ctx context.Context, endpoint string, plaintext io.Re
 	return nil
 }
 
-func (redisEngine) SmokeQueries(ctx context.Context, endpoint string, preTables map[string]int64, mode Mode, log logr.Logger) (*SmokeResult, error) {
+func (e *redisEngine) SmokeQueries(ctx context.Context, endpoint string, preTables map[string]int64, mode Mode, log logr.Logger) (*SmokeResult, error) {
 	host, port, err := splitEndpoint(endpoint)
 	if err != nil {
 		return nil, err
@@ -125,7 +129,7 @@ func (redisEngine) SmokeQueries(ctx context.Context, endpoint string, preTables 
 		"-p", port,
 		"DBSIZE",
 	)
-	cmd.Env = append(cmd.Env, "REDISCLI_AUTH="+redisVerifierPassword,
+	cmd.Env = append(cmd.Env, "REDISCLI_AUTH="+e.password,
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	out, err := cmd.Output()
 	if err != nil {

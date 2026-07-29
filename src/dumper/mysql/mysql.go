@@ -41,6 +41,28 @@ import (
 // one-shot so this is "once per backup run".
 var binaryProbeCache sync.Map // key: binary path, value: bool
 
+// mariadbProbeCache mirrors binaryProbeCache for the "is this MariaDB?"
+// question, which decides TLS flag syntax (see tlsDumpArgs).
+var mariadbProbeCache sync.Map // key: binary path, value: bool
+
+// binaryIsMariaDB reports whether the dump binary self-identifies as MariaDB
+// in its --version banner. Oracle's mysqldump and MariaDB's mariadb-dump
+// diverge on TLS flags (--ssl-mode vs --ssl), so we must know which we drive.
+// Probe failure defaults to false (Oracle-style), matching
+// supportsColumnStatistics's fail-safe — the subsequent dump surfaces the
+// real error if the binary is genuinely unreachable.
+func binaryIsMariaDB(binary string) bool {
+	if v, ok := mariadbProbeCache.Load(binary); ok {
+		return v.(bool)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, binary, "--version").CombinedOutput()
+	isMaria := err == nil && strings.Contains(strings.ToLower(string(out)), "mariadb")
+	mariadbProbeCache.Store(binary, isMaria)
+	return isMaria
+}
+
 func supportsColumnStatistics(binary string) bool {
 	if v, ok := binaryProbeCache.Load(binary); ok {
 		return v.(bool)
@@ -147,6 +169,9 @@ func (d *mysqlDumper) buildDumpArgs(bin string) []string {
 	if maxPacket == "" {
 		maxPacket = defaultMaxAllowedPacket
 	}
+	// Build the flag list first, then append the database as the final
+	// positional argument — keeps the "database is last" invariant simple
+	// as more conditional flags (column-statistics, TLS) are added.
 	args := []string{
 		"-h", d.cfg.Host,
 		"-P", strconv.Itoa(d.cfg.Port),
@@ -158,13 +183,60 @@ func (d *mysqlDumper) buildDumpArgs(bin string) []string {
 		"--triggers",
 		"--events",
 		"--default-character-set=utf8mb4",
-		d.cfg.Database,
 	}
 	if supportsColumnStatistics(bin) {
-		// Insert before the trailing database arg.
-		args = append(args[:len(args)-1], append([]string{"--column-statistics=0"}, args[len(args)-1])...)
+		args = append(args, "--column-statistics=0")
 	}
+	args = append(args, tlsDumpArgs(d.cfg.Extra["tls"], d.cfg.Extra["ssl-ca"], binaryIsMariaDB(bin))...)
+	args = append(args, d.cfg.Database)
 	return args
+}
+
+// tlsDumpArgs maps the extra-tls knob (the same one dsn() uses for
+// CollectStats) to the equivalent dump-client CLI flags, so the bulk data
+// path is held to the same transport policy as the stats path. Without this
+// a user who sets extra-tls=true gets a TLS-verified stats connection but a
+// silently-downgradable plaintext dump.
+//
+// Empty / "preferred" adds nothing (leave the client default) so existing
+// deployments are unchanged. Oracle's mysqldump speaks --ssl-mode; MariaDB's
+// mariadb-dump speaks --ssl / --skip-ssl and rejects --ssl-mode. Full
+// certificate verification (VERIFY_CA / VERIFY_IDENTITY, or MariaDB's
+// --ssl-verify-server-cert) additionally needs a CA the client can read, so
+// it is only enabled when extra-ssl-ca points at a CA file mounted into the
+// worker pod; without one, an enabled TLS value still enforces an encrypted
+// channel (--ssl-mode=REQUIRED / --ssl), which closes the plaintext-downgrade
+// hole even if it can't verify identity.
+func tlsDumpArgs(tlsVal, sslCA string, isMariaDB bool) []string {
+	v := strings.ToLower(strings.TrimSpace(tlsVal))
+	switch v {
+	case "", "preferred":
+		return nil
+	case "false", "0", "off", "disabled", "skip":
+		if isMariaDB {
+			return []string{"--skip-ssl"}
+		}
+		return []string{"--ssl-mode=DISABLED"}
+	}
+	// Any other recognised value means "require TLS".
+	if isMariaDB {
+		args := []string{"--ssl"}
+		if sslCA != "" {
+			args = append(args, "--ssl-verify-server-cert", "--ssl-ca="+sslCA)
+		}
+		return args
+	}
+	mode := "REQUIRED"
+	if sslCA != "" {
+		switch v {
+		case "verify-ca":
+			mode = "VERIFY_CA"
+		case "true", "verify-identity", "verify-full":
+			mode = "VERIFY_IDENTITY"
+		}
+		return []string{"--ssl-mode=" + mode, "--ssl-ca=" + sslCA}
+	}
+	return []string{"--ssl-mode=" + mode}
 }
 
 func (d *mysqlDumper) Dump(ctx context.Context, w io.Writer) error {

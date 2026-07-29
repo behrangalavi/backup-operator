@@ -38,6 +38,20 @@ func TestConnString_Defaults(t *testing.T) {
 	}
 }
 
+func TestSSLMode_SharedByStatsAndDump(t *testing.T) {
+	// sslMode is the single source of truth the pg_dump env (PGSSLMODE) and
+	// connString both read, so the dump path can't silently downgrade while
+	// stats stays verified.
+	def := New(dumper.Config{}, logr.Discard()).(*postgresDumper)
+	if got := def.sslMode(); got != "prefer" {
+		t.Errorf("default sslMode() = %q, want prefer", got)
+	}
+	strict := New(dumper.Config{Extra: map[string]string{"sslmode": "verify-full"}}, logr.Discard()).(*postgresDumper)
+	if got := strict.sslMode(); got != "verify-full" {
+		t.Errorf("sslMode() = %q, want verify-full", got)
+	}
+}
+
 func TestConnString_SSLModeOverride(t *testing.T) {
 	d := &postgresDumper{cfg: dumper.Config{
 		Host:     "localhost",

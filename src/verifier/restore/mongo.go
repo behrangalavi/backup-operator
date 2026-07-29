@@ -23,32 +23,38 @@ const (
 	mongoVerifierDB   = "admin"
 )
 
-type mongoEngine struct{}
+type mongoEngine struct {
+	// password is the per-run root credential for the ephemeral pod.
+	password string
+}
 
-func (mongoEngine) DBType() string { return "mongo" }
+func (*mongoEngine) DBType() string { return "mongo" }
 
-func (mongoEngine) PodSpec(volumeBytes int64, imageOverride string) ephemeral.Spec {
+func (e *mongoEngine) PodSpec(volumeBytes int64, imageOverride string) ephemeral.Spec {
 	image := imageOverride
 	if image == "" {
 		image = DefaultImage("mongo")
 	}
+	pw := e.password
 	return ephemeral.Spec{
 		Image: image,
 		Port:  27017,
 		EnvVars: []corev1.EnvVar{
 			{Name: "MONGO_INITDB_ROOT_USERNAME", Value: mongoVerifierUser},
-			{Name: "MONGO_INITDB_ROOT_PASSWORD", Value: verifierPassword},
+			{Name: "MONGO_INITDB_ROOT_PASSWORD", Value: pw},
 		},
 		VolumeMountPath: "/data/db",
 		VolumeSizeBytes: volumeBytes,
 		ReadyTimeout:    5 * time.Minute,
-		Probe:           probeMongo,
+		Probe: func(ctx context.Context, endpoint string) error {
+			return probeMongo(ctx, endpoint, pw)
+		},
 	}
 }
 
-func probeMongo(ctx context.Context, endpoint string) error {
+func probeMongo(ctx context.Context, endpoint, password string) error {
 	uri := fmt.Sprintf("mongodb://%s:%s@%s/?authSource=admin&serverSelectionTimeoutMS=3000",
-		mongoVerifierUser, verifierPassword, endpoint)
+		mongoVerifierUser, password, endpoint)
 	client, err := mongo.Connect(options.Client().ApplyURI(uri))
 	if err != nil {
 		return err
@@ -57,7 +63,7 @@ func probeMongo(ctx context.Context, endpoint string) error {
 	return client.Ping(ctx, nil)
 }
 
-func (mongoEngine) Restore(ctx context.Context, endpoint string, plaintext io.Reader, mode Mode, log logr.Logger) error {
+func (e *mongoEngine) Restore(ctx context.Context, endpoint string, plaintext io.Reader, mode Mode, log logr.Logger) error {
 	host, port, err := splitEndpoint(endpoint)
 	if err != nil {
 		return err
@@ -71,7 +77,7 @@ func (mongoEngine) Restore(ctx context.Context, endpoint string, plaintext io.Re
 		"--host", host,
 		"--port", port,
 		"--username", mongoVerifierUser,
-		"--password", verifierPassword,
+		"--password", e.password,
 		"--authenticationDatabase", "admin",
 		"--archive",
 		"--quiet",
@@ -93,14 +99,14 @@ func (mongoEngine) Restore(ctx context.Context, endpoint string, plaintext io.Re
 
 	log.V(1).Info("running mongorestore", "endpoint", endpoint, "mode", mode)
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("mongorestore: %w; stderr: %s", err, sanitiseMongoStderr(stderr.String()))
+		return fmt.Errorf("mongorestore: %w; stderr: %s", err, sanitiseStderr(stderr.String(), e.password))
 	}
 	return nil
 }
 
-func (mongoEngine) SmokeQueries(ctx context.Context, endpoint string, preTables map[string]int64, mode Mode, log logr.Logger) (*SmokeResult, error) {
+func (e *mongoEngine) SmokeQueries(ctx context.Context, endpoint string, preTables map[string]int64, mode Mode, log logr.Logger) (*SmokeResult, error) {
 	uri := fmt.Sprintf("mongodb://%s:%s@%s/?authSource=admin&serverSelectionTimeoutMS=10000",
-		mongoVerifierUser, verifierPassword, endpoint)
+		mongoVerifierUser, e.password, endpoint)
 	client, err := mongo.Connect(options.Client().ApplyURI(uri))
 	if err != nil {
 		return nil, fmt.Errorf("smoke connect: %w", err)
@@ -137,8 +143,4 @@ func splitMongoCollection(name string) (string, string) {
 		return "", ""
 	}
 	return name[:idx], name[idx+1:]
-}
-
-func sanitiseMongoStderr(s string) string {
-	return strings.ReplaceAll(s, verifierPassword, "***")
 }

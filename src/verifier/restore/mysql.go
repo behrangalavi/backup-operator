@@ -26,6 +26,8 @@ const (
 
 type mysqlEngine struct {
 	dbType string // "mysql" or "mariadb"
+	// password is the per-run root credential for the ephemeral pod.
+	password string
 }
 
 func (e *mysqlEngine) DBType() string { return e.dbType }
@@ -35,23 +37,26 @@ func (e *mysqlEngine) PodSpec(volumeBytes int64, imageOverride string) ephemeral
 	if image == "" {
 		image = DefaultImage(e.dbType)
 	}
+	pw := e.password
 	return ephemeral.Spec{
 		Image: image,
 		Port:  3306,
 		EnvVars: []corev1.EnvVar{
-			{Name: "MYSQL_ROOT_PASSWORD", Value: verifierPassword},
+			{Name: "MYSQL_ROOT_PASSWORD", Value: pw},
 			{Name: "MYSQL_DATABASE", Value: mysqlVerifierDB},
 		},
 		VolumeMountPath: "/var/lib/mysql",
 		VolumeSizeBytes: volumeBytes,
 		ReadyTimeout:    5 * time.Minute,
-		Probe:           probeMySQL,
+		Probe: func(ctx context.Context, endpoint string) error {
+			return probeMySQL(ctx, endpoint, pw)
+		},
 	}
 }
 
-func probeMySQL(ctx context.Context, endpoint string) error {
+func probeMySQL(ctx context.Context, endpoint, password string) error {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s)/%s?timeout=3s",
-		mysqlVerifierUser, verifierPassword, endpoint, mysqlVerifierDB)
+		mysqlVerifierUser, password, endpoint, mysqlVerifierDB)
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return err
@@ -80,21 +85,21 @@ func (e *mysqlEngine) Restore(ctx context.Context, endpoint string, plaintext io
 		"--default-character-set=utf8mb4",
 		mysqlVerifierDB,
 	)
-	cmd.Env = append(cmd.Env, "MYSQL_PWD="+verifierPassword, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	cmd.Env = append(cmd.Env, "MYSQL_PWD="+e.password, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	cmd.Stdin = in
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	log.V(1).Info("running mysql restore", "endpoint", endpoint, "mode", mode)
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("mysql restore: %w; stderr: %s", err, sanitiseStderr(stderr.String()))
+		return fmt.Errorf("mysql restore: %w; stderr: %s", err, sanitiseStderr(stderr.String(), e.password))
 	}
 	return nil
 }
 
 func (e *mysqlEngine) SmokeQueries(ctx context.Context, endpoint string, preTables map[string]int64, mode Mode, log logr.Logger) (*SmokeResult, error) {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s)/%s?timeout=10s",
-		mysqlVerifierUser, verifierPassword, endpoint, mysqlVerifierDB)
+		mysqlVerifierUser, e.password, endpoint, mysqlVerifierDB)
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("smoke open: %w", err)

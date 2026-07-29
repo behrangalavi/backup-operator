@@ -14,6 +14,8 @@ package restore
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 
@@ -77,17 +79,36 @@ type Engine interface {
 // unsupported types. Unknown types are NOT silently skipped — that
 // would mask a misconfigured source.
 func NewEngine(dbType string) (Engine, error) {
+	// Each engine gets a fresh random password, so the ephemeral verifier DB
+	// pod is never reachable with a compile-time-known credential. A leaked or
+	// observed password then grants access to a single short-lived pod holding
+	// one run's data — not the fleet.
+	pw, err := randomPassword()
+	if err != nil {
+		return nil, fmt.Errorf("restore engine: generate ephemeral password: %w", err)
+	}
 	switch dbType {
 	case "postgres":
-		return &postgresEngine{}, nil
+		return &postgresEngine{password: pw}, nil
 	case "mysql", "mariadb":
-		return &mysqlEngine{dbType: dbType}, nil
+		return &mysqlEngine{dbType: dbType, password: pw}, nil
 	case "mongo":
-		return &mongoEngine{}, nil
+		return &mongoEngine{password: pw}, nil
 	case "redis":
-		return &redisEngine{}, nil
+		return &redisEngine{password: pw}, nil
 	}
 	return nil, fmt.Errorf("restore engine: unsupported db-type %q", dbType)
+}
+
+// randomPassword returns a 32-hex-char (16-byte) credential for the ephemeral
+// verifier DB pod. Hex avoids any character that would need escaping in a DSN,
+// URI, or CLI argument across the four engines.
+func randomPassword() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // DefaultImage returns the default container image for an engine when

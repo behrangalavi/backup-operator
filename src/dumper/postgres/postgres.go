@@ -40,7 +40,21 @@ func (d *postgresDumper) Dump(ctx context.Context, w io.Writer) error {
 		"--no-privileges",
 	}
 	cmd := exec.CommandContext(ctx, "pg_dump", args...)
-	cmd.Env = append(os.Environ(), "PGPASSWORD="+d.cfg.Password)
+	// pg_dump goes through libpq, so the TLS knobs must be handed to it via
+	// the PG* environment — passing them only to the CollectStats connection
+	// (see connString) left the bulk data path on libpq's default "prefer",
+	// which silently downgrades to plaintext against a MITM'd or misconfigured
+	// server even when the user asked for verify-full.
+	cmd.Env = append(os.Environ(), "PGPASSWORD="+d.cfg.Password, "PGSSLMODE="+d.sslMode())
+	for _, m := range []struct{ extra, env string }{
+		{"sslrootcert", "PGSSLROOTCERT"},
+		{"sslcert", "PGSSLCERT"},
+		{"sslkey", "PGSSLKEY"},
+	} {
+		if v := d.cfg.Extra[m.extra]; v != "" {
+			cmd.Env = append(cmd.Env, m.env+"="+v)
+		}
+	}
 	cmd.Stdout = w
 
 	var stderr bytes.Buffer
@@ -112,13 +126,20 @@ func (d *postgresDumper) connString() string {
 		Path:   "/" + d.cfg.Database,
 	}
 	q := u.Query()
-	sslmode := d.cfg.Extra["sslmode"]
-	if sslmode == "" {
-		sslmode = "prefer"
-	}
-	q.Set("sslmode", sslmode)
+	q.Set("sslmode", d.sslMode())
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+// sslMode is the single source of truth for the libpq sslmode, shared by
+// the CollectStats connection (connString) and the pg_dump env (Dump), so
+// both the metadata path and the bulk data path enforce the same TLS
+// policy. Default "prefer" preserves libpq's historical behaviour.
+func (d *postgresDumper) sslMode() string {
+	if m := d.cfg.Extra["sslmode"]; m != "" {
+		return m
+	}
+	return "prefer"
 }
 
 // queryTables uses pg_stat_user_tables for fast row estimates and

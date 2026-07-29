@@ -19,25 +19,29 @@ import (
 )
 
 const (
-	verifierUser     = "postgres"
-	verifierDB       = "verify"
-	verifierPassword = "verifier-ephemeral" // ephemeral pod, never persisted
+	verifierUser = "postgres"
+	verifierDB   = "verify"
 )
 
-type postgresEngine struct{}
+type postgresEngine struct {
+	// password is the per-run root credential for the ephemeral pod,
+	// generated in NewEngine. Never a compile-time constant.
+	password string
+}
 
-func (postgresEngine) DBType() string { return "postgres" }
+func (*postgresEngine) DBType() string { return "postgres" }
 
-func (postgresEngine) PodSpec(volumeBytes int64, imageOverride string) ephemeral.Spec {
+func (e *postgresEngine) PodSpec(volumeBytes int64, imageOverride string) ephemeral.Spec {
 	image := imageOverride
 	if image == "" {
 		image = DefaultImage("postgres")
 	}
+	pw := e.password
 	return ephemeral.Spec{
 		Image: image,
 		Port:  5432,
 		EnvVars: []corev1.EnvVar{
-			{Name: "POSTGRES_PASSWORD", Value: verifierPassword},
+			{Name: "POSTGRES_PASSWORD", Value: pw},
 			{Name: "POSTGRES_DB", Value: verifierDB},
 			// Postgres image refuses to run if PGDATA is on a mount with
 			// existing files; pin it to a subdir of our emptyDir.
@@ -46,16 +50,18 @@ func (postgresEngine) PodSpec(volumeBytes int64, imageOverride string) ephemeral
 		VolumeMountPath: "/data",
 		VolumeSizeBytes: volumeBytes,
 		ReadyTimeout:    5 * time.Minute,
-		Probe:           probePostgres,
+		Probe: func(ctx context.Context, endpoint string) error {
+			return probePostgres(ctx, endpoint, pw)
+		},
 	}
 }
 
 // probePostgres opens a pgx connection and runs SELECT 1. The default
 // postgres image's healthcheck is shell-based and we can't rely on its
 // readinessProbe being configured — so we own the readiness signal.
-func probePostgres(ctx context.Context, endpoint string) error {
+func probePostgres(ctx context.Context, endpoint, password string) error {
 	dsn := fmt.Sprintf("postgres://%s:%s@%s/%s?sslmode=disable&connect_timeout=3",
-		verifierUser, verifierPassword, endpoint, verifierDB)
+		verifierUser, password, endpoint, verifierDB)
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
 		return err
@@ -65,7 +71,7 @@ func probePostgres(ctx context.Context, endpoint string) error {
 	return conn.QueryRow(ctx, "SELECT 1").Scan(&n)
 }
 
-func (postgresEngine) Restore(ctx context.Context, endpoint string, plaintext io.Reader, mode Mode, log logr.Logger) error {
+func (e *postgresEngine) Restore(ctx context.Context, endpoint string, plaintext io.Reader, mode Mode, log logr.Logger) error {
 	host, port, err := splitEndpoint(endpoint)
 	if err != nil {
 		return err
@@ -91,21 +97,21 @@ func (postgresEngine) Restore(ctx context.Context, endpoint string, plaintext io
 		"--quiet",
 		"--set", "ON_ERROR_STOP=on",
 	)
-	cmd.Env = append(cmd.Env, "PGPASSWORD="+verifierPassword, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	cmd.Env = append(cmd.Env, "PGPASSWORD="+e.password, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	cmd.Stdin = in
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	log.V(1).Info("running psql restore", "endpoint", endpoint, "mode", mode)
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("psql restore: %w; stderr: %s", err, sanitiseStderr(stderr.String()))
+		return fmt.Errorf("psql restore: %w; stderr: %s", err, sanitiseStderr(stderr.String(), e.password))
 	}
 	return nil
 }
 
-func (postgresEngine) SmokeQueries(ctx context.Context, endpoint string, preTables map[string]int64, mode Mode, log logr.Logger) (*SmokeResult, error) {
+func (e *postgresEngine) SmokeQueries(ctx context.Context, endpoint string, preTables map[string]int64, mode Mode, log logr.Logger) (*SmokeResult, error) {
 	dsn := fmt.Sprintf("postgres://%s:%s@%s/%s?sslmode=disable",
-		verifierUser, verifierPassword, endpoint, verifierDB)
+		verifierUser, e.password, endpoint, verifierDB)
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("smoke connect: %w", err)
@@ -218,9 +224,12 @@ func splitEndpoint(ep string) (string, string, error) {
 	return ep[:idx], ep[idx+1:], nil
 }
 
-// sanitiseStderr removes the verifierPassword from CLI error output
-// before it lands in logs / events. Not security-critical (the password
-// is ephemeral) but prevents accidental capture in incident reports.
-func sanitiseStderr(s string) string {
-	return strings.ReplaceAll(s, verifierPassword, "***")
+// sanitiseStderr removes the per-run verifier password from CLI error output
+// before it lands in logs / events. Not security-critical (the password is
+// ephemeral) but prevents accidental capture in incident reports.
+func sanitiseStderr(s, password string) string {
+	if password == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, password, "***")
 }

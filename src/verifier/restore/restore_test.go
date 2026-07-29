@@ -263,12 +263,51 @@ func TestTotalsByTable(t *testing.T) {
 // --- sanitiseStderr ---
 
 func TestSanitiseStderr(t *testing.T) {
-	got := sanitiseStderr("connection to verifier-ephemeral@db:5432 failed")
-	if strings.Contains(got, "verifier-ephemeral") {
+	pw := "a1b2c3d4e5f6a7b8"
+	got := sanitiseStderr("connection to "+pw+"@db:5432 failed", pw)
+	if strings.Contains(got, pw) {
 		t.Errorf("password should be masked, got: %s", got)
 	}
 	if !strings.Contains(got, "***") {
 		t.Errorf("masked output should contain ***, got: %s", got)
+	}
+	// Empty password must be a no-op, not mask the whole string.
+	if out := sanitiseStderr("some error", ""); out != "some error" {
+		t.Errorf("empty password should not alter output, got: %s", out)
+	}
+}
+
+func TestRandomPassword_UniqueAndHex(t *testing.T) {
+	a, err := randomPassword()
+	if err != nil {
+		t.Fatalf("randomPassword: %v", err)
+	}
+	b, _ := randomPassword()
+	if a == b {
+		t.Error("randomPassword returned identical values on consecutive calls")
+	}
+	if len(a) != 32 {
+		t.Errorf("randomPassword length = %d, want 32 hex chars", len(a))
+	}
+	for _, c := range a {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			t.Fatalf("randomPassword produced non-hex char %q in %q", c, a)
+		}
+	}
+}
+
+// TestNewEngine_UniquePasswords guards the core of the fix: two engines
+// built for the same db-type must not share a credential.
+func TestNewEngine_UniquePasswords(t *testing.T) {
+	e1, _ := NewEngine("postgres")
+	e2, _ := NewEngine("postgres")
+	p1 := e1.(*postgresEngine).password
+	p2 := e2.(*postgresEngine).password
+	if p1 == "" || p2 == "" {
+		t.Fatal("engine password must not be empty")
+	}
+	if p1 == p2 {
+		t.Error("two postgres engines share the same verifier password")
 	}
 }
 

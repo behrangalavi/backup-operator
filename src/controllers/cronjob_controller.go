@@ -93,8 +93,12 @@ func (r *CronJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	case labels.RoleSource:
 		return ctrl.Result{}, r.ensureCronJob(ctx, &sec, log)
 	case labels.RoleDestination:
-		// Destinations are discovered by workers at run time; no managed object.
-		return ctrl.Result{}, nil
+		// Destinations are discovered by workers at run time; no managed
+		// object. But a Secret relabelled source→destination previously WAS a
+		// source and still owns the CronJob the source branch created — leaving
+		// it would keep spawning worker Jobs against a Secret that is now a
+		// destination. Clean it up (only if we actually own it).
+		return ctrl.Result{}, r.deleteCronJobIfOwned(ctx, &sec, log)
 	default:
 		// Role label was removed — clean up any CronJob we previously owned.
 		return ctrl.Result{}, r.deleteCronJobIfOwned(ctx, &sec, log)
@@ -140,19 +144,57 @@ func (r *CronJobReconciler) ensureCronJob(ctx context.Context, sec *corev1.Secre
 	return nil
 }
 
+// deleteCronJobIfOwned deletes the managed CronJob for this Secret, but ONLY
+// after confirming the operator actually owns it. The name alone
+// (backup-<secretName>) is not proof of ownership: a user may run their own
+// unrelated CronJob that happens to collide with that name, and deleting it
+// would be destructive. We Get the object, verify it carries an
+// OwnerReference back to this Secret's UID, and delete under a UID
+// precondition so a same-named object created between Get and Delete is not
+// removed by mistake.
 func (r *CronJobReconciler) deleteCronJobIfOwned(ctx context.Context, sec *corev1.Secret, log logr.Logger) error {
-	cj := &batchv1.CronJob{
-		ObjectMeta: metav1.ObjectMeta{Name: cronJobNameFor(sec.Name), Namespace: sec.Namespace},
-	}
-	err := r.Client.Delete(ctx, cj)
+	name := cronJobNameFor(sec.Name)
+	var cj batchv1.CronJob
+	err := r.Client.Get(ctx, client.ObjectKey{Namespace: sec.Namespace, Name: name}, &cj)
 	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("get cronjob: %w", err)
+	}
+
+	if !ownedBySecret(&cj, sec) {
+		log.Info("cronjob with matching name exists but is not owned by this secret; leaving it untouched",
+			"cronjob", name)
+		return nil
+	}
+
+	// UID precondition: only delete THIS object. If it was deleted and a
+	// different one recreated with the same name in the meantime, the
+	// precondition makes the delete a no-op/conflict rather than clobbering it.
+	err = r.Client.Delete(ctx, &cj, client.Preconditions{UID: &cj.UID})
+	if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("delete cronjob: %w", err)
 	}
-	log.Info("cronjob deleted (role label removed)", "cronjob", cj.Name)
+	log.Info("cronjob deleted (source role removed or changed)", "cronjob", name)
 	return nil
+}
+
+// ownedBySecret reports whether the CronJob carries a controller
+// OwnerReference back to the given Secret's UID — the same reference
+// buildCronJob sets, and the one K8s GC uses for cascade delete. UID (not
+// name) is the authoritative signal: an unrelated user CronJob sharing the
+// name will not reference this Secret's UID.
+func ownedBySecret(cj *batchv1.CronJob, sec *corev1.Secret) bool {
+	for _, ref := range cj.OwnerReferences {
+		if ref.Kind == "Secret" && ref.UID == sec.UID {
+			return true
+		}
+	}
+	return false
 }
 
 // buildCronJob produces the desired CronJob spec for a parsed source. The

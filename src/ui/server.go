@@ -264,6 +264,14 @@ func (s *Server) storageFor(d *secrets.Destination, logName string) (storage.Sto
 // across handlers and avoids the per-request handshake storm that tripped
 // QNAP's NAP IP-block (§18 ADR).
 func storageForPool(pool StoragePool, d *secrets.Destination, log logr.Logger) (storage.Storage, error) {
+	// SSRF guard: refuse to build a client (and therefore refuse the dial that
+	// follows) for a destination whose user-supplied host points at a blocked
+	// range — cloud metadata / link-local / loopback. This is the single choke
+	// point every UI storage path routes through, and the UI has no auth, so
+	// the check belongs here rather than in each diagnostic handler.
+	if err := checkDestinationEgress(d); err != nil {
+		return nil, err
+	}
 	if pool != nil {
 		return pool.Get(d)
 	}

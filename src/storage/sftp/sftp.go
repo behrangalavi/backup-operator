@@ -2,6 +2,7 @@ package sftp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -290,13 +291,28 @@ func (s *sftpStorage) Upload(ctx context.Context, p string, r io.Reader) error {
 func walkList(ctx context.Context, sc *sftp.Client, root string, strip func(string) string) ([]storage.Object, error) {
 	walker := sc.Walk(root)
 	var out []storage.Object
+	first := true
 	for walker.Step() {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("walk cancelled: %w", err)
 		}
 		if err := walker.Err(); err != nil {
+			// The root is lstat'd on the first step. A brand-new backup
+			// target's directory does not exist until its first upload, so a
+			// missing root is a legitimate empty listing, not a failure —
+			// matching S3/Azure/GCS (empty prefix) and the FTPS root-550
+			// case. Reporting an error here made the metrics refresher set
+			// destination_failed=1 (false BackupDestinationFailing), the
+			// first run's baseline read log "every destination failed", and
+			// the pre-upload retention sweep emit a spurious RetentionFailed
+			// event. Below the root, ErrNotExist means a concurrent delete
+			// and is surfaced like any other walk error.
+			if first && errors.Is(err, os.ErrNotExist) {
+				return nil, nil
+			}
 			return nil, fmt.Errorf("walk: %w", err)
 		}
+		first = false
 		info := walker.Stat()
 		if info.IsDir() {
 			continue

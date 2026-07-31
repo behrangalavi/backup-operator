@@ -214,15 +214,22 @@ func selectForDeletion(objs []storage.Object, policy RetentionPolicy, now time.T
 	keptDumps := 0
 	for _, ts := range stamps {
 		paths := groups[ts]
+		// Parse before the floor check. A foreign dump-shaped file with an
+		// unparseable timestamp (e.g. a manually placed dump-manual.sql.gz.age)
+		// sorts lexically ABOVE real ISO timestamps (a letter outranks a digit),
+		// so if it could consume a floor slot it would push a real dump below
+		// the MinKeep floor and let the age sweep delete it — data loss exactly
+		// where the floor is meant to protect. We leave unparseable groups alone
+		// (never delete them) AND never let them count toward the floor.
+		t, err := time.Parse(timestampLayout, ts)
+		if err != nil {
+			continue
+		}
 		// The safety floor counts real dumps, not timestamps: a failure-only
 		// group (meta sidecar, no dump) is never protected by MinKeep.
 		if groupHasDump(paths) && keptDumps < policy.MinKeep {
 			keptDumps++
 			continue
-		}
-		t, err := time.Parse(timestampLayout, ts)
-		if err != nil {
-			continue // unparseable name; leave it alone
 		}
 		if t.Before(cutoff) {
 			victims = append(victims, paths...)

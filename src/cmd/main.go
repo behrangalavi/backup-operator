@@ -5,8 +5,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"net/http"
+	nethttppprof "net/http/pprof"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +30,7 @@ import (
 	"backup-operator/controllers"
 	"backup-operator/docs"
 	"backup-operator/internal/alerts"
+	"backup-operator/internal/safe"
 	"backup-operator/metrics"
 	"backup-operator/ui"
 )
@@ -152,6 +156,13 @@ func main() {
 		{Key: "DOCS_ENABLED", Optional: true, Default: "false"},
 		{Key: "DOCS_ADDR", Optional: true, Default: ":8083"},
 		{Key: "DOCS_DIR", Optional: true, Default: "/app/docs"},
+		// Debug-only Go pprof endpoint. Empty (default) = disabled. When set
+		// (e.g. ":6060") the operator serves net/http/pprof on a dedicated
+		// listener for heap/goroutine/CPU profiling. Off by default and never
+		// enabled by the chart — pprof can dump memory contents and a CPU
+		// profile is a cheap DoS, so it must only be turned on deliberately
+		// for diagnosis and scoped away from any public ingress.
+		{Key: "PPROF_ADDR", Optional: true},
 	})
 	assert.NoError(err, "failed to initialize config module")
 
@@ -349,9 +360,57 @@ func main() {
 		assert.NoError(mgr.Add(docsServer), "failed to register docs server")
 	}
 
+	if addr := strings.TrimSpace(config.GetValue("PPROF_ADDR")); addr != "" {
+		assert.NoError(mgr.Add(&pprofRunnable{addr: addr, log: ctrl.Log.WithName("pprof")}),
+			"failed to register pprof server")
+	}
+
 	ctx := ctrl.SetupSignalHandler()
 	if err := mgr.Start(ctx); err != nil {
 		assert.NoError(err, "manager exited with error")
+	}
+}
+
+// pprofRunnable serves net/http/pprof on a dedicated listener for live
+// heap/goroutine/CPU profiling. Registered as a manager.Runnable so it shares
+// the manager's context and shuts down with it. NeedLeaderElection=false so it
+// runs on every replica (you want to profile the specific pod that's misbehaving,
+// not only the leader). Gated entirely by PPROF_ADDR — see the config comment.
+type pprofRunnable struct {
+	addr string
+	log  logr.Logger
+}
+
+func (*pprofRunnable) NeedLeaderElection() bool { return false }
+
+func (p *pprofRunnable) Start(ctx context.Context) error {
+	// Dedicated mux (not DefaultServeMux) so importing net/http/pprof can't
+	// leak the profiling handlers onto any other server in this process.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", nethttppprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", nethttppprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", nethttppprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", nethttppprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", nethttppprof.Trace)
+	srv := &http.Server{Addr: p.addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+
+	p.log.Info("starting pprof debug server", "addr", p.addr)
+	errc := make(chan error, 1)
+	go func() {
+		defer safe.Goroutine(p.log, "pprof-listen", p.addr)
+		errc <- srv.ListenAndServe()
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutdownCtx)
+	case err := <-errc:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
 	}
 }
 

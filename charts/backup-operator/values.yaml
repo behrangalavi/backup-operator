@@ -157,6 +157,19 @@ docs:
   # The Dockerfile populates /app/docs at build time.
   dir: /app/docs
 
+# Go pprof debug endpoint (net/http/pprof) on its own listener, for live
+# heap/goroutine/CPU profiling of a misbehaving operator pod. OFF by default
+# and DANGEROUS to expose: pprof can dump process memory (potentially
+# credentials in flight) and a CPU/trace profile is a cheap DoS. The chart
+# binds it to 127.0.0.1 ONLY — a Kubernetes containerPort does NOT restrict
+# who can reach the process (any pod can dial <podIP>:port directly), so a
+# 0.0.0.0 bind would expose it cluster-wide regardless of Service/NetworkPolicy.
+# Reach it with `kubectl port-forward` (works against a loopback listener).
+# Even so, enable only transiently for diagnosis and turn it off again after.
+pprof:
+  enabled: false
+  port: 6060
+
 # Alerts integration. The UI's Alerts page calls Prometheus directly when
 # prometheusURL is set; otherwise it falls back to a local heuristic that
 # evaluates the same conditions on the operator's own metric registry —

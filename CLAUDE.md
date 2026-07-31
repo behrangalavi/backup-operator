@@ -529,6 +529,9 @@ The operator and the worker have separate (overlapping) config schemas. All valu
 | `DOCS_ENABLED` | no | `false` | Enable the read-only documentation portal on `DOCS_ADDR`. Off by default — flip on to expose CLAUDE.md / README.md / generated tech-stack page. The docs server holds no credentials and reads no Kubernetes state, so it is safe to expose to a wider audience than the management UI. |
 | `DOCS_ADDR` | no | `:8083` | Listen address for the docs portal. Distinct port so cluster admins can scope ingress separately from the mutating UI. |
 | `DOCS_DIR` | no | `/app/docs` | Directory holding `CLAUDE.md`, `README.md`, `go.mod`. Populated by the Dockerfile at image build time. Locally, point at the repo root via `DOCS_DIR=..` for `just run`. |
+| `UI_READ_ONLY` | no | `false` | `true` → every mutating UI endpoint (source/destination CRUD, trigger, suspend, test-connection, settings, age-key mutation) returns `403`. Enforced as a global middleware so new mutating endpoints inherit it. Use when exposing the dashboard to a read-only audience. Does not replace the auth proxy. |
+| `UI_ALLOW_KEY_MUTATION` | no | `false` | Gates the age-recipient add/remove endpoints specifically. `false` (default) → `/api/age-keys` POST/DELETE return `403` even when `UI_READ_ONLY=false`. Age keys are the encryption root of trust, so mutating them through the unauthenticated UI is opt-in. |
+| `PPROF_ADDR` | no | — (disabled) | When set (e.g. `127.0.0.1:6060`) the operator serves `net/http/pprof` on a dedicated listener for heap/goroutine/CPU profiling. Empty = disabled. **Bind to loopback only** — a `containerPort` does not restrict reachability, so a `0.0.0.0` bind exposes heap dumps (holding in-flight Secret data) to every pod in the cluster. The chart binds `127.0.0.1` when `pprof.enabled=true`; reach it via `kubectl port-forward`. A CPU/trace profile is also a cheap DoS, so enable only transiently for diagnosis. |
 
 ### Worker (`cmd/worker/main.go`)
 

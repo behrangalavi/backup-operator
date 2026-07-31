@@ -132,6 +132,18 @@ spec:
             - name: DOCS_DIR
               value: {{ .Values.docs.dir | default "/app/docs" | quote }}
             {{- end }}
+            {{- /* pprof: opt-in debug listener, gated exactly like docs. The
+                   (deref) form short-circuits to nil when `pprof:` is absent
+                   (helm upgrade --reuse-values from a pre-pprof release).
+                   Bound to loopback ONLY — a containerPort does not gate
+                   reachability (any pod can dial <podIP>:port), so a
+                   0.0.0.0 bind would expose heap dumps holding in-flight
+                   Secret data cluster-wide. `kubectl port-forward` still
+                   works against a loopback listener. */}}
+            {{- if (.Values.pprof).enabled }}
+            - name: PPROF_ADDR
+              value: "127.0.0.1:{{ .Values.pprof.port | default 6060 }}"
+            {{- end }}
           ports:
             - name: metrics
               containerPort: 8080
@@ -147,6 +159,15 @@ spec:
             {{- if (.Values.docs).enabled }}
             - name: docs
               containerPort: {{ .Values.docs.port | default 8083 }}
+              protocol: TCP
+            {{- end }}
+            {{- /* Declared for discoverability only. Safety comes from the
+                   loopback bind on PPROF_ADDR above (a containerPort does not
+                   restrict who can dial the pod), plus the absence of a
+                   Service. Reachable via `kubectl port-forward`. */}}
+            {{- if (.Values.pprof).enabled }}
+            - name: pprof
+              containerPort: {{ .Values.pprof.port | default 6060 }}
               protocol: TCP
             {{- end }}
           livenessProbe:

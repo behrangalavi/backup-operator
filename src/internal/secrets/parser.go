@@ -235,16 +235,23 @@ func ParseDestination(s *corev1.Secret) (*Destination, error) {
 	}
 
 	// Surface path-prefix from annotation through into Data so storage impls
-	// see one consistent input shape.
+	// see one consistent input shape. The annotation wins over a data key.
 	data := make(map[string][]byte, len(s.Data)+1)
 	for k, v := range s.Data {
 		data[k] = v
 	}
 	if prefix := s.Annotations[labels.AnnotationPathPrefix]; prefix != "" {
+		data["path-prefix"] = []byte(prefix)
+	}
+	// Validate the EFFECTIVE prefix regardless of whether it came from the
+	// annotation or directly from Secret data — every backend reads
+	// data["path-prefix"] and joins it into object paths, so a ".." there
+	// climbs out of the destination's isolation root just as an annotation
+	// ".." would. Validating only the annotation left the data-key path open.
+	if prefix := string(data["path-prefix"]); prefix != "" {
 		if err := validatePathPrefix(prefix); err != nil {
 			return nil, fmt.Errorf("secret %s/%s: %w", s.Namespace, s.Name, err)
 		}
-		data["path-prefix"] = []byte(prefix)
 	}
 
 	return &Destination{

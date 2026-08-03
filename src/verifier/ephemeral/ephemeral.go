@@ -39,6 +39,21 @@ type Spec struct {
 	VolumeMountPath string
 	ReadyTimeout   time.Duration
 
+	// RunAsUID is the UID the container runs as. It MUST match the non-root
+	// DB user baked into Image — postgres:*-alpine is UID 70, the Debian
+	// postgres/mysql/mariadb/mongo images and redis:*-alpine are 999. A
+	// mismatch makes the engine's entrypoint fail ("could not look up
+	// effective user ID") under runAsNonRoot, so the pod never becomes ready.
+	// 0 falls back to 999 (the common case).
+	RunAsUID int64
+
+	// ActiveDeadline bounds the pod's total lifetime as a safety net. The
+	// OwnerReference cascades only when the worker POD OBJECT is deleted — a
+	// SIGKILL/OOM'd worker lingers as a Failed object, so its owned verifier
+	// DB pod (holding a full data copy) would otherwise run until something
+	// else reaps the worker. 0 falls back to a sane default in Spawn.
+	ActiveDeadline time.Duration
+
 	// OwnerRef ties the spawned pod's lifetime to the worker pod. When
 	// the worker exits and is GC'd, the spawned pod cascades. nil means
 	// "no owner" — only acceptable in tests.
@@ -92,6 +107,11 @@ func (s *k8sSpawner) Spawn(ctx context.Context, spec Spec, log logr.Logger) (DB,
 	if spec.ReadyTimeout <= 0 {
 		spec.ReadyTimeout = 5 * time.Minute
 	}
+	if spec.ActiveDeadline <= 0 {
+		// Matches the operator's default RUN_TIMEOUT_SECONDS; a verifier pod
+		// should never outlive the worker run that drives it.
+		spec.ActiveDeadline = time.Hour
+	}
 
 	name := buildPodName(spec.NamePrefix)
 	pod := s.buildPodSpec(name, spec)
@@ -140,8 +160,13 @@ func (s *k8sSpawner) buildPodSpec(name string, spec Spec) *corev1.Pod {
 	// readOnlyRootFilesystem is not part of the restricted standard
 	// (runAsNonRoot / seccomp / drop-ALL / no-privesc all stay on).
 	readOnlyRootFs := false
-	uid := int64(999) // matches the official postgres / mysql / mongo / redis non-root uids loosely
-	fsGroup := int64(999)
+	uid := spec.RunAsUID
+	if uid <= 0 {
+		uid = 999
+	}
+	// FSGroup owns the emptyDir mount so the (non-root) DB user can write its
+	// data dir; keep it aligned with the run-as UID.
+	fsGroup := uid
 
 	cpuReq := resource.MustParse("100m")
 	memReq := resource.MustParse("256Mi")
@@ -168,12 +193,13 @@ func (s *k8sSpawner) buildPodSpec(name string, spec Spec) *corev1.Pod {
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by":             "backup-operator",
 				"backup.mogenius.io/role":                  "verifier-target",
-				"backup.mogenius.io/verifier-target-prefix": sanitiseDNS1123(spec.NamePrefix),
+				"backup.mogenius.io/verifier-target-prefix": dns1123Label(spec.NamePrefix),
 			},
 			OwnerReferences: owners,
 		},
 		Spec: corev1.PodSpec{
-			RestartPolicy: corev1.RestartPolicyNever,
+			RestartPolicy:         corev1.RestartPolicyNever,
+			ActiveDeadlineSeconds: ptrInt64(int64(spec.ActiveDeadline.Seconds())),
 			SecurityContext: &corev1.PodSecurityContext{
 				RunAsNonRoot: &runAsNonRoot,
 				RunAsUser:    &uid,
@@ -232,6 +258,19 @@ func (s *k8sSpawner) buildPodSpec(name string, spec Spec) *corev1.Pod {
 func ptrQuantity(bytes int64) *resource.Quantity {
 	q := resource.NewQuantity(bytes, resource.BinarySI)
 	return q
+}
+
+func ptrInt64(v int64) *int64 { return &v }
+
+// dns1123Label sanitises to a valid label VALUE and truncates to the 63-char
+// limit. NamePrefix is "verify-<targetName>" and target names may be up to 253
+// chars, so an untruncated label value would make the API reject the pod.
+func dns1123Label(in string) string {
+	s := sanitiseDNS1123(in)
+	if len(s) > 63 {
+		s = strings.Trim(s[:63], "-")
+	}
+	return s
 }
 
 // sanitiseDNS1123 lowercases and replaces invalid chars with '-' so

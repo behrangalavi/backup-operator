@@ -18,6 +18,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"strings"
 
 	"backup-operator/verifier/ephemeral"
 
@@ -129,4 +130,18 @@ func DefaultImage(dbType string) string {
 		return "redis:7-alpine"
 	}
 	return ""
+}
+
+// runAsUIDForImage returns the UID the non-root DB user is baked in as for the
+// (possibly overridden) image. The container must run as exactly this UID under
+// runAsNonRoot, or the entrypoint fails "could not look up effective user ID"
+// and the pod never becomes ready. Only postgres differs by variant: the alpine
+// image uses UID 70, the Debian image 999 — detected from the tag so a
+// verification-image override to a Debian postgres still gets the right UID.
+// mysql/mariadb/mongo (Debian) and redis (alpine) all use 999.
+func runAsUIDForImage(dbType, image string) int64 {
+	if dbType == "postgres" && strings.Contains(image, "alpine") {
+		return 70
+	}
+	return 999
 }

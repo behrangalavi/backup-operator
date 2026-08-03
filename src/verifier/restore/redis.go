@@ -49,6 +49,7 @@ func (e *redisEngine) PodSpec(volumeBytes int64, imageOverride string) ephemeral
 		VolumeMountPath: "/data",
 		VolumeSizeBytes: volumeBytes,
 		ReadyTimeout:    3 * time.Minute,
+		RunAsUID:        runAsUIDForImage("redis", image),
 		Probe: func(ctx context.Context, endpoint string) error {
 			return probeRedis(ctx, endpoint, pw)
 		},

@@ -50,6 +50,7 @@ func (e *postgresEngine) PodSpec(volumeBytes int64, imageOverride string) epheme
 		VolumeMountPath: "/data",
 		VolumeSizeBytes: volumeBytes,
 		ReadyTimeout:    5 * time.Minute,
+		RunAsUID:        runAsUIDForImage("postgres", image),
 		Probe: func(ctx context.Context, endpoint string) error {
 			return probePostgres(ctx, endpoint, pw)
 		},

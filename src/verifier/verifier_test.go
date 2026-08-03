@@ -94,6 +94,36 @@ func TestShouldVerify_IntervalElapsed(t *testing.T) {
 	}
 }
 
+// TestShouldVerify_CarryForwardKeepsIntervalHonored models the two-run
+// sequence the pipeline's RV carry-forward protects. Run N verifies at T.
+// Run N+1 is skipped (interval not elapsed) and — with the fix — writes a
+// meta that carries the SAME RestoreVerification block forward. Run N+2 must
+// still see "interval not elapsed" off that carried-forward meta. Before the
+// fix the skipped run wrote a nil RV block, so this meta would take the
+// "first verification" path and the verifier fired every other run.
+func TestShouldVerify_CarryForwardKeepsIntervalHonored(t *testing.T) {
+	now := time.Now()
+	src := &secrets.Source{
+		RestoreVerificationMode:     labels.RestoreVerificationStreamValidate,
+		RestoreVerificationInterval: 168 * time.Hour,
+	}
+	verifiedAt := now.Add(-2 * time.Hour)
+
+	// Meta produced by a skipped run that carried the last result forward.
+	carried := &meta.MetaFile{
+		RestoreVerification: &meta.RestoreVerificationResult{CompletedAt: verifiedAt},
+	}
+	if got, reason := ShouldVerify(src, carried, now); got {
+		t.Errorf("carried-forward meta must keep interval honored, got verify=true (%s)", reason)
+	}
+
+	// Sanity: the pre-fix meta (nil RV block) would wrongly re-verify.
+	nilRV := &meta.MetaFile{}
+	if got, _ := ShouldVerify(src, nilRV, now); !got {
+		t.Error("meta with nil RV block should take the first-verification path (documents the bug the carry-forward fixes)")
+	}
+}
+
 // Interval == 0 is treated as "use default", not "never verify". This
 // matches the parser convention (0 = annotation absent, fall back to
 // default at apply time).

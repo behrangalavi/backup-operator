@@ -73,6 +73,12 @@ func main() { os.Exit(run()) }
 func run() int {
 	sourceSecret := flag.String("source-secret", "", "name of the source Secret to back up")
 	namespace := flag.String("namespace", "", "namespace of the source Secret (defaults to POD_NAMESPACE)")
+	// Bind zap's flags BEFORE the single Parse. The previous code parsed once
+	// here (before zap flags were registered) and again after — so passing
+	// --zap-log-level aborted the first parse with "flag provided but not
+	// defined".
+	opts := zap.Options{}
+	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
 	if *sourceSecret == "" {
@@ -81,7 +87,7 @@ func run() int {
 
 	err := config.InitializeConfigModule([]config.ConfigItemDescription{
 		{Key: "AGE_PUBLIC_KEYS", Optional: false},
-		{Key: "RUN_TIMEOUT_SECONDS", Optional: true, Default: "3600", Validate: validateInt},
+		{Key: "RUN_TIMEOUT_SECONDS", Optional: true, Default: "3600", Validate: validatePositiveInt},
 		{Key: "TEMP_DIR", Optional: true, Default: "/tmp/backup-operator"},
 		{Key: "DEFAULT_RETENTION_DAYS", Optional: true, Default: "30", Validate: validateNonNegInt},
 		{Key: "DEFAULT_MIN_KEEP", Optional: true, Default: "3", Validate: validateNonNegInt},
@@ -96,9 +102,6 @@ func run() int {
 	})
 	assert.NoError(err, "failed to initialize config module")
 
-	opts := zap.Options{}
-	opts.BindFlags(flag.CommandLine)
-	flag.Parse()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 	log := ctrl.Log.WithName("worker")
 
@@ -217,9 +220,17 @@ func loadKubeConfig() (*rest.Config, error) {
 	).ClientConfig()
 }
 
-func validateInt(v string) error {
-	if _, err := strconv.Atoi(v); err != nil {
+// validatePositiveInt validates an integer with a > 0 floor, for values that
+// become timeouts/deadlines where 0 or negative is nonsensical (e.g.
+// RUN_TIMEOUT_SECONDS flows into the pipeline context deadline; <= 0 cancels
+// the run instantly).
+func validatePositiveInt(v string) error {
+	n, err := strconv.Atoi(v)
+	if err != nil {
 		return fmt.Errorf("must be integer: %w", err)
+	}
+	if n <= 0 {
+		return fmt.Errorf("must be > 0")
 	}
 	return nil
 }

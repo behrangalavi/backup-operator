@@ -169,7 +169,6 @@ func main() {
 	if err != nil {
 		die("open output: %v", err)
 	}
-	defer closer()
 
 	srcReader := plain
 	if *decompress {
@@ -179,6 +178,7 @@ func main() {
 		}
 		dc, err := meta.NewDecompressor(plain, algo)
 		if err != nil {
+			_ = closer()
 			die("decompress (%s): %v", algo, err)
 		}
 		defer func() { _ = dc.Close() }()
@@ -186,7 +186,14 @@ func main() {
 	}
 
 	if _, err := io.Copy(out, srcReader); err != nil {
+		_ = closer()
 		die("copy: %v", err)
+	}
+	// Check the output Close error explicitly rather than deferring-and-ignoring:
+	// a flush/close failure (NFS, quota) on the restored file must not exit 0
+	// leaving a truncated dump — this is a recovery tool.
+	if err := closer(); err != nil {
+		die("close output %s: %v", *output, err)
 	}
 }
 
@@ -215,16 +222,17 @@ func pickDumps(objs []storage.Object) []dumpEntry {
 	return out
 }
 
-// openOutput returns a writer plus a closer; "-" maps to stdout with a no-op closer.
-func openOutput(target string) (io.Writer, func(), error) {
+// openOutput returns a writer plus a closer that surfaces the Close error;
+// "-" maps to stdout with a no-op closer (never close os.Stdout).
+func openOutput(target string) (io.Writer, func() error, error) {
 	if target == "-" {
-		return os.Stdout, func() {}, nil
+		return os.Stdout, func() error { return nil }, nil
 	}
 	f, err := os.Create(target)
 	if err != nil {
 		return nil, nil, err
 	}
-	return f, func() { _ = f.Close() }, nil
+	return f, f.Close, nil
 }
 
 // loadClient resolves a kubeconfig the way kubectl does — $KUBECONFIG first,

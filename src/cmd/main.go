@@ -53,8 +53,14 @@ func main() {
 			Optional: true,
 			Default:  "3600",
 			Validate: func(v string) error {
-				if _, err := strconv.Atoi(v); err != nil {
+				n, err := strconv.Atoi(v)
+				if err != nil {
 					return fmt.Errorf("'RUN_TIMEOUT_SECONDS' must be integer: %w", err)
+				}
+				if n <= 0 {
+					// Flows straight into each Job's activeDeadlineSeconds; a
+					// value <= 0 makes every backup Job fail immediately.
+					return fmt.Errorf("'RUN_TIMEOUT_SECONDS' must be > 0, got %d", n)
 				}
 				return nil
 			},

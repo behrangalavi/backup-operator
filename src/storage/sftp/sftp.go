@@ -282,7 +282,13 @@ func (s *sftpStorage) Upload(ctx context.Context, p string, r io.Reader) error {
 		_ = sc.Remove(full) // remove partial file
 		return fmt.Errorf("write %s: %w", full, err)
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		// A Close (flush) error — disk full, quota — can leave a truncated
+		// file that would otherwise list as a valid dump. Remove it.
+		_ = sc.Remove(full)
+		return fmt.Errorf("close %s: %w", full, err)
+	}
+	return nil
 }
 
 // walkList traverses the directory tree and collects non-directory objects,
@@ -427,7 +433,11 @@ func (s *sftpSession) Upload(_ context.Context, p string, r io.Reader) error {
 		_ = s.sc.Remove(full) // remove partial file
 		return fmt.Errorf("write %s: %w", full, err)
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		_ = s.sc.Remove(full) // flush error can leave a truncated file
+		return fmt.Errorf("close %s: %w", full, err)
+	}
+	return nil
 }
 
 func (s *sftpSession) List(ctx context.Context, prefix string) ([]storage.Object, error) {

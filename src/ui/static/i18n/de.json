@@ -216,7 +216,8 @@
     "severity": "Schweregrad",
     "alert": "Alarm",
     "sinceFiring": "Aktiv seit",
-    "destination": "Ziel"
+    "destination": "Ziel",
+    "startTime": "Gestartet"
   },
   "target": {
     "configuration": "Konfiguration",
@@ -442,21 +443,22 @@
     "removed": "Empfänger entfernt",
     "removeFailed": "Entfernen fehlgeschlagen: {error}",
     "removeConfirm": "Empfänger {name} entfernen? Worker-Pods verschlüsseln nicht mehr für diesen Key. Vorhandene Dumps bleiben mit dem zugehörigen Private Key entschlüsselbar.",
-    "readOnly": "Nur-Lese-Modus — Änderung von Empfängern deaktiviert."
+    "readOnly": "Nur-Lese-Modus — Änderung von Empfängern deaktiviert.",
+    "subtitle": "Age-Empfänger-Public-Keys, für die der Operator Backups verschlüsselt."
   },
   "hero": {
     "status": {
-      "healthy":     "Alle Systeme gesund",
-      "healthySub":  "{sources} Quellen werden zu {dests} Zielen gesichert",
-      "failures":    "{count} Fehler in den letzten 24h",
+      "healthy": "Alle Systeme gesund",
+      "healthySub": "{sources} Quellen werden zu {dests} Zielen gesichert",
+      "failures": "{count} Fehler in den letzten 24h",
       "failuresSub": "In der Targets-Tabelle unten nachschauen",
-      "quiet":       "Flotte ist still — keine Runs in 24h",
-      "quietSub":    "Schedule, pausiert oder größerer Ausfall?"
+      "quiet": "Flotte ist still — keine Runs in 24h",
+      "quietSub": "Schedule, pausiert oder größerer Ausfall?"
     },
     "metric": {
-      "runs24h":      "Runs / 24h",
-      "failed24h":    "Fehler / 24h",
-      "running":      "Laufend",
+      "runs24h": "Runs / 24h",
+      "failed24h": "Fehler / 24h",
+      "running": "Laufend",
       "destinations": "Ziele"
     },
     "activity": {
@@ -602,6 +604,31 @@
     "_default": {
       "desc": "Eigene Alarm-Regel.",
       "action": "Prometheus-Regeln für Details prüfen."
+    },
+    "BackupCharsetChanged": {
+      "title": "Zeichensatz / Kollation geändert",
+      "desc": "Zeichensatz oder Kollation der Datenbank weicht vom vorherigen Lauf ab. Ein Wechsel utf8→utf8mb4 kann Mehrbyte-Daten beim Restore still abschneiden.",
+      "action": "Prüfen, ob die Änderung beabsichtigt war (Server-Upgrade/Migration) und ob Restores Mehrbyte-Zeichen weiterhin korrekt zurückliefern."
+    },
+    "BackupStorageCorrupted": {
+      "title": "Gespeicherter Dump beschädigt",
+      "desc": "Ein periodischer Re-Hash eines gespeicherten Dumps stimmt nicht mehr mit der in meta.json hinterlegten SHA256 überein — das Artefakt ist bit-rotted oder wurde verändert.",
+      "action": "Den betroffenen Dump als nicht wiederherstellbar behandeln; andere Läufe prüfen und ein neues Backup fahren. Storage-Backend auf Hardware-/Integritätsprobleme prüfen."
+    },
+    "BackupRetentionFailing": {
+      "title": "Retention fehlgeschlagen",
+      "desc": "Der Pre-Upload-Retention-Sweep schlägt seit über 24h fehl. Alte Dumps werden nicht gelöscht, der Storage läuft irgendwann voll und blockiert neue Backups.",
+      "action": "Zugangsdaten/Berechtigungen und freien Speicher der Destination prüfen; RetentionFailed-Events am Source-Secret ansehen."
+    },
+    "BackupRestoreVerificationFailed": {
+      "title": "Restore-Verifikation fehlgeschlagen",
+      "desc": "Der letzte Restore-Verifier-Lauf konnte das Backup nicht entschlüsseln+parsen (bzw. restaurieren) — der Dump ist möglicherweise nicht wiederherstellbar.",
+      "action": "Den restoreVerification-Block der meta.json prüfen; zur Bestätigung einen Offline-Restore mit dem age-Private-Key versuchen."
+    },
+    "BackupRestoreVerificationStale": {
+      "title": "Restore-Verifikation veraltet",
+      "desc": "Für dieses Ziel lief seit über 14 Tagen keine erfolgreiche Restore-Verifikation.",
+      "action": "Prüfen, ob die Verifikation noch aktiviert ist und der Verifier durchläuft; ein manueller Lauf verifiziert bei Überfälligkeit erneut."
     }
   },
   "analysis": {

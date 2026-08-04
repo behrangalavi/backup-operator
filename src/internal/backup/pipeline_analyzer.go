@@ -61,8 +61,16 @@ func looksAnonymized(s *dumper.Stats) bool {
 }
 
 func anonymizeStats(s *dumper.Stats) *dumper.Stats {
+	// Charset/Collation are database-level metadata, not table names, so they
+	// carry through anonymisation unchanged. Dropping them here (as this used
+	// to) left cmpStats with empty charset fields, so the analyzer's
+	// charset-drift comparison saw "no current charset" on every anonymised
+	// run — BackupCharsetChanged could never fire and the persisted baseline
+	// lost the fields too, blinding all future runs.
 	anon := &dumper.Stats{
 		SchemaHash:  s.SchemaHash,
+		Charset:     s.Charset,
+		Collation:   s.Collation,
 		GeneratedAt: s.GeneratedAt,
 		Tables:      make([]dumper.TableStats, len(s.Tables)),
 	}

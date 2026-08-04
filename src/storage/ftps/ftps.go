@@ -149,8 +149,14 @@ func (s *ftpsStorage) dial(ctx context.Context) (*ftp.ServerConn, error) {
 		}
 	}
 
+	// DialWithShutTimeout bounds the read of the 226 transfer-complete reply
+	// (checkDataShut). Without it that read has no deadline, so a NAS that
+	// hangs after the data transfer — or a prematurely-closed Get during a
+	// scrub/meta read — blocks Stor/Close/Quit indefinitely, pinning the
+	// refresher/scrubber goroutine (and its per-destination semaphore slot).
 	opts := []ftp.DialOption{
 		ftp.DialWithTimeout(timeout),
+		ftp.DialWithShutTimeout(timeout),
 		ftp.DialWithContext(ctx),
 		ftp.DialWithTLS(s.tlsConfig),
 	}
@@ -158,6 +164,7 @@ func (s *ftpsStorage) dial(ctx context.Context) (*ftp.ServerConn, error) {
 		// Explicit FTPS: connect plain, then AUTH TLS upgrade.
 		opts = []ftp.DialOption{
 			ftp.DialWithTimeout(timeout),
+			ftp.DialWithShutTimeout(timeout),
 			ftp.DialWithContext(ctx),
 			ftp.DialWithExplicitTLS(s.tlsConfig),
 		}
@@ -296,13 +303,16 @@ func walkList(ctx context.Context, c *ftp.ServerConn, root string, strip func(st
 		}
 		entries, err := c.List(dir)
 		if err != nil {
-			msg := err.Error()
-			// 550 covers both "no such file" and "permission denied" in
-			// the FTP spec — at the root we treat 550 as "target dir not
-			// created yet" (legitimate fresh state for a brand-new backup
-			// target). Below the root any 550 means a real problem worth
-			// surfacing instead of silently returning an empty listing.
-			if isRoot && (strings.Contains(msg, "550") || strings.Contains(msg, "No such") || strings.Contains(msg, "not found")) {
+			// 550 covers BOTH "no such file" and "permission denied" in the FTP
+			// spec. At the root, "no such file" is the legitimate first-run
+			// state for a fresh target and is swallowed as an empty listing.
+			// But we must NOT swallow "permission denied": that used to be
+			// reported as empty, so retention saw nothing to delete, reported
+			// success, and storage filled up silently — the exact failure the
+			// retention gauge is meant to surface. So swallow ONLY when the
+			// message clearly indicates non-existence; a permission error or a
+			// bare/ambiguous 550 is surfaced (fail loud, not silent).
+			if isRoot && isNotExistFTPError(err) {
 				return nil
 			}
 			return fmt.Errorf("list %s: %w", dir, err)
@@ -331,6 +341,28 @@ func walkList(ctx context.Context, c *ftp.ServerConn, root string, strip func(st
 		return nil, err
 	}
 	return out, nil
+}
+
+// isNotExistFTPError reports whether an FTP LIST error clearly means "the
+// directory does not exist" (as opposed to "permission denied" or some other
+// 550). Only clear non-existence phrasing is swallowed; a bare or
+// permission-flavoured 550 is treated as a real error so it surfaces.
+func isNotExistFTPError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	// Permission problems sometimes also read "550 ..."; never swallow those.
+	if strings.Contains(msg, "permission") || strings.Contains(msg, "denied") ||
+		strings.Contains(msg, "access") {
+		return false
+	}
+	for _, phrase := range []string{"no such", "not found", "cannot find", "does not exist", "not exist"} {
+		if strings.Contains(msg, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *ftpsStorage) Get(ctx context.Context, p string) (io.ReadCloser, error) {

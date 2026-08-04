@@ -48,6 +48,7 @@ func (e *mysqlEngine) PodSpec(volumeBytes int64, imageOverride string) ephemeral
 		VolumeMountPath: "/var/lib/mysql",
 		VolumeSizeBytes: volumeBytes,
 		ReadyTimeout:    5 * time.Minute,
+		RunAsUID:        runAsUIDForImage(e.dbType, image),
 		Probe: func(ctx context.Context, endpoint string) error {
 			return probeMySQL(ctx, endpoint, pw)
 		},

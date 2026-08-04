@@ -16,8 +16,12 @@ data:
   defaultMinKeep: {{ .Values.config.defaultMinKeep | quote }}
   tempDir: {{ .Values.config.tempDir | quote }}
   tempDirSize: {{ .Values.tempDirSize | quote }}
-  workerCpuLimit: {{ (.Values.workerResources).limits.cpu | default "" | quote }}
-  workerMemoryLimit: {{ (.Values.workerResources).limits.memory | default "" | quote }}
-  workerCpuRequest: {{ (.Values.workerResources).requests.cpu | default "" | quote }}
-  workerMemoryRequest: {{ (.Values.workerResources).requests.memory | default "" | quote }}
+  {{- /* dig is nil-safe at every level: workerResources.limits (or .requests)
+         set to null — which values.yaml invites via "empty means no limit" —
+         would nil-deref with the (.Values.x).y.z paren idiom, which only
+         guards the first level. */}}
+  workerCpuLimit: {{ dig "limits" "cpu" "" (.Values.workerResources | default dict) | quote }}
+  workerMemoryLimit: {{ dig "limits" "memory" "" (.Values.workerResources | default dict) | quote }}
+  workerCpuRequest: {{ dig "requests" "cpu" "" (.Values.workerResources | default dict) | quote }}
+  workerMemoryRequest: {{ dig "requests" "memory" "" (.Values.workerResources | default dict) | quote }}
 {{- end }}

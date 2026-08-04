@@ -2,6 +2,7 @@ package sftp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -281,7 +282,13 @@ func (s *sftpStorage) Upload(ctx context.Context, p string, r io.Reader) error {
 		_ = sc.Remove(full) // remove partial file
 		return fmt.Errorf("write %s: %w", full, err)
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		// A Close (flush) error — disk full, quota — can leave a truncated
+		// file that would otherwise list as a valid dump. Remove it.
+		_ = sc.Remove(full)
+		return fmt.Errorf("close %s: %w", full, err)
+	}
+	return nil
 }
 
 // walkList traverses the directory tree and collects non-directory objects,
@@ -290,13 +297,28 @@ func (s *sftpStorage) Upload(ctx context.Context, p string, r io.Reader) error {
 func walkList(ctx context.Context, sc *sftp.Client, root string, strip func(string) string) ([]storage.Object, error) {
 	walker := sc.Walk(root)
 	var out []storage.Object
+	first := true
 	for walker.Step() {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("walk cancelled: %w", err)
 		}
 		if err := walker.Err(); err != nil {
+			// The root is lstat'd on the first step. A brand-new backup
+			// target's directory does not exist until its first upload, so a
+			// missing root is a legitimate empty listing, not a failure —
+			// matching S3/Azure/GCS (empty prefix) and the FTPS root-550
+			// case. Reporting an error here made the metrics refresher set
+			// destination_failed=1 (false BackupDestinationFailing), the
+			// first run's baseline read log "every destination failed", and
+			// the pre-upload retention sweep emit a spurious RetentionFailed
+			// event. Below the root, ErrNotExist means a concurrent delete
+			// and is surfaced like any other walk error.
+			if first && errors.Is(err, os.ErrNotExist) {
+				return nil, nil
+			}
 			return nil, fmt.Errorf("walk: %w", err)
 		}
+		first = false
 		info := walker.Stat()
 		if info.IsDir() {
 			continue
@@ -411,7 +433,11 @@ func (s *sftpSession) Upload(_ context.Context, p string, r io.Reader) error {
 		_ = s.sc.Remove(full) // remove partial file
 		return fmt.Errorf("write %s: %w", full, err)
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		_ = s.sc.Remove(full) // flush error can leave a truncated file
+		return fmt.Errorf("close %s: %w", full, err)
+	}
+	return nil
 }
 
 func (s *sftpSession) List(ctx context.Context, prefix string) ([]storage.Object, error) {

@@ -5,8 +5,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"net/http"
+	nethttppprof "net/http/pprof"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +30,7 @@ import (
 	"backup-operator/controllers"
 	"backup-operator/docs"
 	"backup-operator/internal/alerts"
+	"backup-operator/internal/safe"
 	"backup-operator/metrics"
 	"backup-operator/ui"
 )
@@ -49,8 +53,14 @@ func main() {
 			Optional: true,
 			Default:  "3600",
 			Validate: func(v string) error {
-				if _, err := strconv.Atoi(v); err != nil {
+				n, err := strconv.Atoi(v)
+				if err != nil {
 					return fmt.Errorf("'RUN_TIMEOUT_SECONDS' must be integer: %w", err)
+				}
+				if n <= 0 {
+					// Flows straight into each Job's activeDeadlineSeconds; a
+					// value <= 0 makes every backup Job fail immediately.
+					return fmt.Errorf("'RUN_TIMEOUT_SECONDS' must be > 0, got %d", n)
 				}
 				return nil
 			},
@@ -91,6 +101,11 @@ func main() {
 		// produces. Set by Helm; required so CronJobs are runnable.
 		{Key: "WORKER_IMAGE", Optional: false},
 		{Key: "WORKER_IMAGE_PULL_POLICY", Optional: true, Default: "IfNotPresent"},
+		// Comma-separated pull-secret names, mirrored from the chart's
+		// imagePullSecrets so worker pods can pull the (fat) image from a
+		// private registry — without this a private-registry install fails
+		// with node-dependent ImagePullBackOff on worker pods only.
+		{Key: "WORKER_IMAGE_PULL_SECRETS", Optional: true},
 		{Key: "WORKER_SERVICE_ACCOUNT", Optional: false},
 		{Key: "AGE_SECRET_NAME", Optional: false},
 
@@ -152,6 +167,13 @@ func main() {
 		{Key: "DOCS_ENABLED", Optional: true, Default: "false"},
 		{Key: "DOCS_ADDR", Optional: true, Default: ":8083"},
 		{Key: "DOCS_DIR", Optional: true, Default: "/app/docs"},
+		// Debug-only Go pprof endpoint. Empty (default) = disabled. When set
+		// (e.g. ":6060") the operator serves net/http/pprof on a dedicated
+		// listener for heap/goroutine/CPU profiling. Off by default and never
+		// enabled by the chart — pprof can dump memory contents and a CPU
+		// profile is a cheap DoS, so it must only be turned on deliberately
+		// for diagnosis and scoped away from any public ingress.
+		{Key: "PPROF_ADDR", Optional: true},
 	})
 	assert.NoError(err, "failed to initialize config module")
 
@@ -187,6 +209,7 @@ func main() {
 	worker := controllers.WorkerSpec{
 		Image:              config.GetValue("WORKER_IMAGE"),
 		ImagePullPolicy:    corev1.PullPolicy(config.GetValue("WORKER_IMAGE_PULL_POLICY")),
+		ImagePullSecrets:   parsePullSecrets(config.GetValue("WORKER_IMAGE_PULL_SECRETS")),
 		ServiceAccountName: config.GetValue("WORKER_SERVICE_ACCOUNT"),
 		AgeSecretName:      config.GetValue("AGE_SECRET_NAME"),
 		TempDir:            config.GetValue("TEMP_DIR"),
@@ -349,9 +372,57 @@ func main() {
 		assert.NoError(mgr.Add(docsServer), "failed to register docs server")
 	}
 
+	if addr := strings.TrimSpace(config.GetValue("PPROF_ADDR")); addr != "" {
+		assert.NoError(mgr.Add(&pprofRunnable{addr: addr, log: ctrl.Log.WithName("pprof")}),
+			"failed to register pprof server")
+	}
+
 	ctx := ctrl.SetupSignalHandler()
 	if err := mgr.Start(ctx); err != nil {
 		assert.NoError(err, "manager exited with error")
+	}
+}
+
+// pprofRunnable serves net/http/pprof on a dedicated listener for live
+// heap/goroutine/CPU profiling. Registered as a manager.Runnable so it shares
+// the manager's context and shuts down with it. NeedLeaderElection=false so it
+// runs on every replica (you want to profile the specific pod that's misbehaving,
+// not only the leader). Gated entirely by PPROF_ADDR — see the config comment.
+type pprofRunnable struct {
+	addr string
+	log  logr.Logger
+}
+
+func (*pprofRunnable) NeedLeaderElection() bool { return false }
+
+func (p *pprofRunnable) Start(ctx context.Context) error {
+	// Dedicated mux (not DefaultServeMux) so importing net/http/pprof can't
+	// leak the profiling handlers onto any other server in this process.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", nethttppprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", nethttppprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", nethttppprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", nethttppprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", nethttppprof.Trace)
+	srv := &http.Server{Addr: p.addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+
+	p.log.Info("starting pprof debug server", "addr", p.addr)
+	errc := make(chan error, 1)
+	go func() {
+		defer safe.Goroutine(p.log, "pprof-listen", p.addr)
+		errc <- srv.ListenAndServe()
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutdownCtx)
+	case err := <-errc:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
 	}
 }
 
@@ -370,6 +441,19 @@ func namespaceForUI(watchNs string) string {
 
 // buildWorkerResources constructs ResourceRequirements from env vars.
 // Empty values are silently skipped, so resource limits are optional.
+// parsePullSecrets turns a comma-separated list of Secret names into the
+// LocalObjectReference slice the worker pod spec needs. Blank entries are
+// skipped; empty input yields nil (no pull secrets).
+func parsePullSecrets(csv string) []corev1.LocalObjectReference {
+	var out []corev1.LocalObjectReference
+	for _, name := range strings.Split(csv, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			out = append(out, corev1.LocalObjectReference{Name: name})
+		}
+	}
+	return out
+}
+
 func buildWorkerResources() corev1.ResourceRequirements {
 	reqs := corev1.ResourceRequirements{}
 	if v := config.GetValue("WORKER_CPU_LIMIT"); v != "" {

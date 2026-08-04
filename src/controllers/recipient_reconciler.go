@@ -47,7 +47,7 @@ type RecipientReconciler struct {
 func (r *RecipientReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("backup-recipient-controller").
-		For(&corev1.Secret{}, builder.WithPredicates(recipientLabelPredicate())).
+		For(&corev1.Secret{}, builder.WithPredicates(r.watchPredicate())).
 		Complete(r)
 }
 
@@ -281,20 +281,26 @@ func recipientHash(key string) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
-// recipientLabelPredicate fires only on Secrets whose label transitions
-// involve role=age-recipient. Mirrors the structure of
-// roleLabelTransitionPredicate so a Secret losing the label still
-// triggers a rebuild (so we drop it from the merged output).
-func recipientLabelPredicate() predicate.Predicate {
-	has := func(l map[string]string) bool {
-		return l[labels.LabelRole] == labels.RoleAgeRecipient
+// watchPredicate fires on (a) Secrets carrying role=age-recipient — so a
+// recipient added, edited, or losing its label triggers a rebuild — AND (b)
+// the operator-managed merged Secret itself, so an out-of-band delete or edit
+// (kubectl delete, GitOps drift) is repaired on the next event instead of
+// silently leaving worker pods unable to mount AGE_PUBLIC_KEYS until the next
+// recipient change or an operator restart. Rebuilding the merged Secret writes
+// it once, which fires one more event that converges to no-op (CreateOrUpdate
+// finds no diff), so there is no reconcile loop.
+func (r *RecipientReconciler) watchPredicate() predicate.Predicate {
+	relevant := func(o client.Object) bool {
+		if o.GetLabels()[labels.LabelRole] == labels.RoleAgeRecipient {
+			return true
+		}
+		return o.GetName() == r.MergedSecretName &&
+			(r.Namespace == "" || o.GetNamespace() == r.Namespace)
 	}
 	return predicate.Funcs{
-		CreateFunc: func(e event.CreateEvent) bool { return has(e.Object.GetLabels()) },
-		DeleteFunc: func(e event.DeleteEvent) bool { return has(e.Object.GetLabels()) },
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			return has(e.ObjectOld.GetLabels()) || has(e.ObjectNew.GetLabels())
-		},
-		GenericFunc: func(e event.GenericEvent) bool { return has(e.Object.GetLabels()) },
+		CreateFunc:  func(e event.CreateEvent) bool { return relevant(e.Object) },
+		DeleteFunc:  func(e event.DeleteEvent) bool { return relevant(e.Object) },
+		UpdateFunc:  func(e event.UpdateEvent) bool { return relevant(e.ObjectOld) || relevant(e.ObjectNew) },
+		GenericFunc: func(e event.GenericEvent) bool { return relevant(e.Object) },
 	}
 }

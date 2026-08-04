@@ -226,7 +226,7 @@ func (s *Server) Start(ctx context.Context) error {
 		// accept large uploads — the worst case is a few KiB of JSON or an
 		// SSH key blob. Without this an unauthenticated POST of a multi-GB
 		// body OOMs the operator.
-		Handler:           latencyMiddleware(csrfMiddleware(limitBodyMiddleware(s.cfg.MaxBodyBytes, mux))),
+		Handler:           latencyMiddleware(readOnlyMiddleware(s.cfg.ReadOnly, csrfMiddleware(limitBodyMiddleware(s.cfg.MaxBodyBytes, mux)))),
 		ReadHeaderTimeout: 5 * time.Second,
 		// MaxHeaderBytes defaults to 1MB which is fine; lower would require
 		// careful audit of cookies/auth-proxy headers downstream users add.
@@ -342,6 +342,29 @@ func originMatchesHost(originHost string, r *http.Request) bool {
 		return true
 	}
 	return false
+}
+
+// readOnlyMiddleware enforces UI_READ_ONLY globally: when enabled, every
+// non-safe method (anything but GET/HEAD/OPTIONS) is rejected with 403 before
+// it reaches a handler. Applied globally rather than per-route — like CSRF and
+// the body cap — so a mutating endpoint added later cannot silently escape the
+// gate by forgetting an `if s.cfg.ReadOnly` check (the exact hole this closes:
+// only the age-key and alerts-test handlers checked the flag, so source/dest
+// CRUD, trigger, suspend, test-connection and settings were mutable despite
+// UI_READ_ONLY=true). Every mutation here uses POST/PUT/DELETE, so method-based
+// gating covers them all, matching csrfMiddleware's model.
+func readOnlyMiddleware(readOnly bool, next http.Handler) http.Handler {
+	if !readOnly {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			next.ServeHTTP(w, r)
+			return
+		}
+		writeError(w, http.StatusForbidden, codeForbidden, "read-only mode: mutations are disabled")
+	})
 }
 
 func noCacheMiddleware(next http.Handler) http.Handler {

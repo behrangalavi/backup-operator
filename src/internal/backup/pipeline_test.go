@@ -490,6 +490,36 @@ func TestAnonymizeTables_OffTransitionStillFlagsRealDrift(t *testing.T) {
 	}
 }
 
+// TestAnonymizeStats_PreservesCharset regresses the bug where anonymizeStats
+// dropped Charset/Collation. With anonymize-tables=true both prev and curr are
+// fed to Compare through anonymizeStats; if the charset fields are lost,
+// Compare sees currHasEnc=false and CharsetChanged can never fire — a
+// utf8->utf8mb4 migration (which silently truncates multibyte data on restore)
+// would go unalerted for anonymised sources.
+func TestAnonymizeStats_PreservesCharset(t *testing.T) {
+	prevReal := &dumper.Stats{
+		SchemaHash: "abc",
+		Charset:    "utf8",
+		Collation:  "utf8_general_ci",
+		Tables:     []dumper.TableStats{{Name: "public.users", RowCount: 100}},
+	}
+	currReal := &dumper.Stats{
+		SchemaHash: "abc",
+		Charset:    "utf8mb4",
+		Collation:  "utf8mb4_general_ci",
+		Tables:     []dumper.TableStats{{Name: "public.users", RowCount: 100}},
+	}
+	cmpPrev := anonymizeStats(prevReal)
+	cmpCurr := anonymizeStats(currReal)
+	if cmpPrev.Charset != "utf8" || cmpCurr.Charset != "utf8mb4" {
+		t.Fatalf("charset lost through anonymizeStats: prev=%q curr=%q", cmpPrev.Charset, cmpCurr.Charset)
+	}
+	report := analyzer.NewAnalyzer().Compare(cmpPrev, cmpCurr, 1000, 1000)
+	if !report.CharsetChanged {
+		t.Errorf("expected CharsetChanged=true for utf8->utf8mb4 drift on anonymised stats")
+	}
+}
+
 func TestLooksAnonymized(t *testing.T) {
 	cases := []struct {
 		name string

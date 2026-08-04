@@ -46,6 +46,7 @@ func (e *mongoEngine) PodSpec(volumeBytes int64, imageOverride string) ephemeral
 		VolumeMountPath: "/data/db",
 		VolumeSizeBytes: volumeBytes,
 		ReadyTimeout:    5 * time.Minute,
+		RunAsUID:        runAsUIDForImage("mongo", image),
 		Probe: func(ctx context.Context, endpoint string) error {
 			return probeMongo(ctx, endpoint, pw)
 		},

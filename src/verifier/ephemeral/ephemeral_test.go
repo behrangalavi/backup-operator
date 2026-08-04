@@ -128,6 +128,80 @@ func TestSpawn_CreatesHardenedPod(t *testing.T) {
 	}
 }
 
+// TestSpawn_AppliesRunAsUIDAndDeadline regresses two bugs: (1) RunAsUser was
+// hardcoded 999, which breaks postgres:16-alpine (UID 70) — Spec.RunAsUID must
+// now flow into both the pod and container SecurityContext; (2) no
+// ActiveDeadlineSeconds meant a verifier DB pod outlived a SIGKILL'd worker
+// (OwnerRef GC needs the owner OBJECT deleted, not the pod terminated).
+func TestSpawn_AppliesRunAsUIDAndDeadline(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	s := NewK8sSpawner(cs, "backup")
+
+	_, err := s.Spawn(context.Background(), Spec{
+		NamePrefix:      "verify-pg",
+		Image:           "postgres:16-alpine",
+		Port:            5432,
+		RunAsUID:        70,
+		ActiveDeadline:  30 * time.Minute,
+		VolumeSizeBytes: 1 << 30,
+	}, testr.New(t))
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	pods, _ := cs.CoreV1().Pods("backup").List(context.Background(), metav1.ListOptions{})
+	pod := pods.Items[0]
+
+	if pod.Spec.SecurityContext.RunAsUser == nil || *pod.Spec.SecurityContext.RunAsUser != 70 {
+		t.Errorf("pod RunAsUser = %v, want 70", pod.Spec.SecurityContext.RunAsUser)
+	}
+	if pod.Spec.SecurityContext.FSGroup == nil || *pod.Spec.SecurityContext.FSGroup != 70 {
+		t.Errorf("pod FSGroup = %v, want 70", pod.Spec.SecurityContext.FSGroup)
+	}
+	c := pod.Spec.Containers[0]
+	if c.SecurityContext.RunAsUser == nil || *c.SecurityContext.RunAsUser != 70 {
+		t.Errorf("container RunAsUser = %v, want 70", c.SecurityContext.RunAsUser)
+	}
+	if pod.Spec.ActiveDeadlineSeconds == nil || *pod.Spec.ActiveDeadlineSeconds != 1800 {
+		t.Errorf("ActiveDeadlineSeconds = %v, want 1800", pod.Spec.ActiveDeadlineSeconds)
+	}
+}
+
+// TestSpawn_DefaultsDeadlineAndUID confirms the zero-value fallbacks: UID 999
+// and a non-zero default deadline.
+func TestSpawn_DefaultsDeadlineAndUID(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	s := NewK8sSpawner(cs, "backup")
+	_, err := s.Spawn(context.Background(), Spec{NamePrefix: "x", Image: "mongo:7", Port: 27017}, testr.New(t))
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	pods, _ := cs.CoreV1().Pods("backup").List(context.Background(), metav1.ListOptions{})
+	pod := pods.Items[0]
+	if pod.Spec.SecurityContext.RunAsUser == nil || *pod.Spec.SecurityContext.RunAsUser != 999 {
+		t.Errorf("default RunAsUser = %v, want 999", pod.Spec.SecurityContext.RunAsUser)
+	}
+	if pod.Spec.ActiveDeadlineSeconds == nil || *pod.Spec.ActiveDeadlineSeconds <= 0 {
+		t.Errorf("ActiveDeadlineSeconds must default > 0, got %v", pod.Spec.ActiveDeadlineSeconds)
+	}
+}
+
+// TestSpawn_TruncatesLongLabel regresses the label-value >63 chars pod-reject:
+// NamePrefix is verify-<targetName> and target names may be long.
+func TestSpawn_TruncatesLongLabel(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	s := NewK8sSpawner(cs, "backup")
+	long := "verify-" + strings.Repeat("a", 120)
+	_, err := s.Spawn(context.Background(), Spec{NamePrefix: long, Image: "redis:7-alpine", Port: 6379}, testr.New(t))
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	pods, _ := cs.CoreV1().Pods("backup").List(context.Background(), metav1.ListOptions{})
+	v := pods.Items[0].Labels["backup.mogenius.io/verifier-target-prefix"]
+	if len(v) > 63 {
+		t.Errorf("label value length = %d, must be <= 63", len(v))
+	}
+}
+
 // Wait succeeds when the fake client reports the pod with a PodIP and Running phase.
 func TestWait_PodGetsIP(t *testing.T) {
 	cs := fake.NewSimpleClientset()

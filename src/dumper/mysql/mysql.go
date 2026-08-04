@@ -323,13 +323,42 @@ func (d *mysqlDumper) dsn() string {
 	cfg.DBName = d.cfg.Database
 	cfg.ParseTime = true
 
-	tls := d.cfg.Extra["tls"]
-	if tls == "" {
-		tls = "preferred"
-	}
-	cfg.TLSConfig = tls
+	cfg.TLSConfig = dsnTLSValue(d.cfg.Extra["tls"])
 
 	return cfg.FormatDSN()
+}
+
+// dsnTLSValue maps the shared extra-tls vocabulary (verify-ca, verify-full,
+// skip, off, …) onto a value go-sql-driver/mysql actually accepts for
+// cfg.TLSConfig ("true", "false", "skip-verify", "preferred", or a registered
+// name). Passing an unrecognised value like "verify-ca" verbatim made sql.Open
+// / the first query fail, so CollectStats errored on every run for any source
+// that set a verify-* TLS mode — silently degrading the analyzer, empty-dump
+// check, and verification even though the dump itself (which maps the same
+// vocabulary via tlsDumpArgs) succeeded.
+//
+// The stats connection carries only metadata (table names, row-count
+// estimates) and is best-effort, so identity-verifying modes map to system-root
+// verification ("true") and CA-file-backed verify-ca maps to "skip-verify"
+// (encrypted channel, no custom-CA registration here). The DUMP path still
+// fully verifies against extra-ssl-ca — an accepted asymmetry for a
+// metadata-only link.
+func dsnTLSValue(tlsVal string) string {
+	switch strings.ToLower(strings.TrimSpace(tlsVal)) {
+	case "", "preferred":
+		return "preferred"
+	case "false", "0", "off", "disabled", "skip":
+		return "false"
+	case "true", "verify-identity", "verify-full":
+		return "true"
+	case "skip-verify":
+		return "skip-verify"
+	default:
+		// Any other "require TLS" value (verify-ca, require, …): encrypted
+		// channel without identity verification, so the connection never fails
+		// on an untrusted-but-encrypting server.
+		return "skip-verify"
+	}
 }
 
 // scopeFilter returns the WHERE clause that excludes MySQL system schemas and

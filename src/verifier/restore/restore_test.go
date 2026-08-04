@@ -61,6 +61,43 @@ func TestDefaultImage(t *testing.T) {
 	}
 }
 
+// TestRunAsUIDForImage regresses the postgres:16-alpine UID-70 crash: the
+// container must run as the UID baked into its image or the entrypoint fails
+// under runAsNonRoot. Only postgres varies by variant.
+func TestRunAsUIDForImage(t *testing.T) {
+	cases := []struct {
+		dbType string
+		image  string
+		want   int64
+	}{
+		{"postgres", "postgres:16-alpine", 70},
+		{"postgres", "postgres:16", 999}, // Debian override
+		{"mysql", "mysql:8.0", 999},
+		{"mariadb", "mariadb:11", 999},
+		{"mongo", "mongo:7", 999},
+		{"redis", "redis:7-alpine", 999}, // alpine redis is 999, NOT 70
+	}
+	for _, c := range cases {
+		if got := runAsUIDForImage(c.dbType, c.image); got != c.want {
+			t.Errorf("runAsUIDForImage(%q, %q) = %d, want %d", c.dbType, c.image, got, c.want)
+		}
+	}
+}
+
+// TestPodSpec_SetsRunAsUID confirms each engine wires the right UID into its
+// ephemeral.Spec for the default image.
+func TestPodSpec_SetsRunAsUID(t *testing.T) {
+	if uid := (&postgresEngine{}).PodSpec(1<<30, "").RunAsUID; uid != 70 {
+		t.Errorf("postgres default RunAsUID = %d, want 70", uid)
+	}
+	if uid := (&redisEngine{}).PodSpec(1<<30, "").RunAsUID; uid != 999 {
+		t.Errorf("redis default RunAsUID = %d, want 999", uid)
+	}
+	if uid := (&postgresEngine{}).PodSpec(1<<30, "postgres:16").RunAsUID; uid != 999 {
+		t.Errorf("postgres debian-override RunAsUID = %d, want 999", uid)
+	}
+}
+
 // --- parseSizeBytes ---
 
 func TestParseSizeBytes(t *testing.T) {

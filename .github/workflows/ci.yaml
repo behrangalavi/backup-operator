@@ -76,14 +76,35 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v5
 
+      # --strict fails the lint on warnings, not just errors.
       - name: Lint chart
-        run: helm lint charts/backup-operator --set agePublicKeys="age1test"
+        run: helm lint --strict charts/backup-operator --set agePublicKeys="age1test"
 
       # Render the manifests so templating errors (bad indentation, missing
       # required values, invalid refs) fail the PR — helm lint alone does not
-      # catch every render-time break. --strict turns unknown fields into errors.
-      - name: Template chart
-        run: helm template backup-operator charts/backup-operator --set agePublicKeys="age1test" > /dev/null
+      # catch every render-time break. --api-versions monitoring.coreos.com/v1
+      # forces the ServiceMonitor and PrometheusRule (gated on that CRD) to
+      # actually render, so a template error in them fails CI instead of only
+      # surfacing in-cluster.
+      - name: Template chart (defaults)
+        run: >-
+          helm template backup-operator charts/backup-operator
+          --api-versions monitoring.coreos.com/v1
+          --set agePublicKeys="age1test" > /dev/null
+
+      # Render with the optional subsystems ON and replicaCount>1 so their
+      # templates (UI settings ConfigMap, docs, pprof, scrub, verifier RBAC,
+      # NetworkPolicy, PDB) are exercised too — the defaults-only render missed
+      # e.g. the settings-ConfigMap nil-deref on workerResources.
+      - name: Template chart (all features enabled)
+        run: >-
+          helm template backup-operator charts/backup-operator
+          --api-versions monitoring.coreos.com/v1
+          --set agePublicKeys="age1test"
+          --set ui.enabled=true --set docs.enabled=true --set pprof.enabled=true
+          --set storageScrub.enabled=true --set networkPolicy.enabled=true
+          --set restoreVerification.enableEphemeralPodSpawn=true
+          --set replicaCount=2 > /dev/null
 
   docker-build:
     runs-on: ubuntu-latest

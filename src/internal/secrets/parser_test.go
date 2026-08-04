@@ -74,6 +74,26 @@ func TestParseDestination_RejectsTraversalPathPrefix(t *testing.T) {
 	}
 }
 
+// TestParseDestination_RejectsTraversalPathPrefixFromData regresses the hole
+// where the '..' guard ran only over the annotation, so a path-prefix supplied
+// directly in Secret data (which every backend reads and joins into object
+// paths) escaped validation and could climb out of the isolation root.
+func TestParseDestination_RejectsTraversalPathPrefixFromData(t *testing.T) {
+	s := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "dest",
+			Namespace: "default",
+			Labels:    map[string]string{labels.LabelStorageType: "s3"},
+		},
+		Data: map[string][]byte{
+			"path-prefix": []byte("prod/../other-tenant"),
+		},
+	}
+	if _, err := ParseDestination(s); err == nil {
+		t.Error("ParseDestination must reject a '..' path-prefix supplied via Secret data")
+	}
+}
+
 func TestParseDestination_AllowsSlashedPathPrefix(t *testing.T) {
 	s := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{

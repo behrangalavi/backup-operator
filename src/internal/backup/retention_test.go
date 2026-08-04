@@ -233,6 +233,35 @@ func TestSelectForDeletion_FailureMetasDoNotConsumeFloor(t *testing.T) {
 	}
 }
 
+// TestSelectForDeletion_UnparseableDumpDoesNotConsumeFloor regresses the case
+// where a foreign dump-shaped file with an unparseable timestamp
+// (dump-manual.sql.gz.age) sorts lexically above all ISO timestamps (a letter
+// outranks a digit) and — before the fix — consumed a MinKeep floor slot,
+// pushing a real dump below the floor and letting the age sweep delete it.
+func TestSelectForDeletion_UnparseableDumpDoesNotConsumeFloor(t *testing.T) {
+	objs := []storage.Object{
+		// Junk dump with a non-ISO "timestamp"; sorts first under reverse sort.
+		{Path: "x/dump-manual.sql.gz.age", Size: 1},
+	}
+	// Exactly MinKeep real dumps, all older than the window.
+	for _, age := range []int{20, 30, 40} {
+		objs = append(objs, dump("x", fakeNow.AddDate(0, 0, -age))...)
+	}
+
+	got := selectForDeletion(objs, RetentionPolicy{Days: 7, MinKeep: 3}, fakeNow)
+
+	// The junk file must be left alone, and all 3 real dumps must stay
+	// floor-protected despite the junk sorting ahead of them.
+	for _, v := range got {
+		if classifyKind(v) == "dump" {
+			t.Fatalf("a real dump was deleted; the junk file stole a floor slot: %s", v)
+		}
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected 0 victims, got %v", got)
+	}
+}
+
 func TestClassifyKind(t *testing.T) {
 	cases := []struct {
 		path string

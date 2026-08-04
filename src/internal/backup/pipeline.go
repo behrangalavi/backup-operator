@@ -178,6 +178,14 @@ func (p *Pipeline) analyzerForSource(src *secrets.Source) analyzer.Analyzer {
 	return analyzer.NewAnalyzerWithThresholds(src.RowDropThreshold, src.SizeDropThreshold)
 }
 
+// restoreVerificationActive reports whether restore-verification is switched on
+// for a source (any mode other than off/empty). Used to decide whether to carry
+// a previous run's verification result forward into a run that didn't verify.
+func restoreVerificationActive(src *secrets.Source) bool {
+	m := src.RestoreVerificationMode
+	return m != "" && m != labels.RestoreVerificationOff
+}
+
 // Run executes a full backup. Errors during destination uploads are reported
 // per-destination via metrics; the function returns nil unless the dump itself
 // fails or no destination accepts the artifact.
@@ -530,6 +538,18 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	var restoreVerification *meta.RestoreVerificationResult
 	if ephID != nil && p.verifierFactory != nil {
 		restoreVerification = p.runRestoreVerifier(ctx, src, dumpFile, ephID, preStats, dumpCounts, log)
+	} else if restoreVerificationActive(src) && preloadedMeta != nil {
+		// This run did not verify (interval not yet elapsed). Carry the
+		// previous run's verification result forward so its CompletedAt clock
+		// persists in this meta.json. Without this, a skipped run writes a meta
+		// with no RestoreVerification block; the next run reads that meta, sees
+		// nil, takes ShouldVerify's "first verification" path, and verifies —
+		// so the verifier fires every OTHER run instead of once per interval
+		// (e.g. mode=full on an hourly schedule would spawn a full-restore pod
+		// every 2h instead of weekly). Same carry-forward pattern as
+		// schemaChangedAt. Gated on the mode being active so turning
+		// verification off lets the block (and its refresher gauge) lapse.
+		restoreVerification = preloadedMeta.RestoreVerification
 	}
 
 	// Phase 2: build meta with destination results, upload to successful destinations.

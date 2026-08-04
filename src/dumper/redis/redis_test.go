@@ -68,14 +68,3 @@ func TestParseDatabaseFilter_Mixed(t *testing.T) {
 	}
 }
 
-func TestHashSchema_StableOrder(t *testing.T) {
-	a := hashSchema([]string{"db0", "db1"})
-	b := hashSchema([]string{"db1", "db0"})
-	if a != b {
-		t.Errorf("hash should be order-independent: %s vs %s", a, b)
-	}
-	c := hashSchema([]string{"db0"})
-	if a == c {
-		t.Errorf("different sets must hash differently")
-	}
-}

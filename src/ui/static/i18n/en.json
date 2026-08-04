@@ -216,7 +216,8 @@
     "severity": "Severity",
     "alert": "Alert",
     "sinceFiring": "Firing since",
-    "destination": "Destination"
+    "destination": "Destination",
+    "startTime": "Started"
   },
   "target": {
     "configuration": "Configuration",
@@ -442,21 +443,22 @@
     "removed": "Recipient removed",
     "removeFailed": "Remove failed: {error}",
     "removeConfirm": "Remove recipient {name}? Worker pods will no longer encrypt to this key. Existing dumps remain decryptable with the corresponding private key.",
-    "readOnly": "Read-only mode — recipient mutation is disabled."
+    "readOnly": "Read-only mode — recipient mutation is disabled.",
+    "subtitle": "Age recipient public keys the operator encrypts backups to."
   },
   "hero": {
     "status": {
-      "healthy":     "All systems healthy",
-      "healthySub":  "{sources} sources backing up to {dests} destinations",
-      "failures":    "{count} failures in the last 24h",
+      "healthy": "All systems healthy",
+      "healthySub": "{sources} sources backing up to {dests} destinations",
+      "failures": "{count} failures in the last 24h",
       "failuresSub": "Drill into the Targets table below to investigate",
-      "quiet":       "Fleet has been quiet — no runs in 24h",
-      "quietSub":    "Schedule, suspension or a deeper outage?"
+      "quiet": "Fleet has been quiet — no runs in 24h",
+      "quietSub": "Schedule, suspension or a deeper outage?"
     },
     "metric": {
-      "runs24h":      "Runs / 24h",
-      "failed24h":    "Failed / 24h",
-      "running":      "Running",
+      "runs24h": "Runs / 24h",
+      "failed24h": "Failed / 24h",
+      "running": "Running",
       "destinations": "Destinations"
     },
     "activity": {
@@ -602,6 +604,31 @@
     "_default": {
       "desc": "Custom alert rule.",
       "action": "Check Prometheus rules for details."
+    },
+    "BackupCharsetChanged": {
+      "title": "Charset / Collation Changed",
+      "desc": "The database's character set or collation differs from the previous run. A utf8→utf8mb4 change can silently truncate multibyte data on restore.",
+      "action": "Confirm the change was intentional (server upgrade/migration) and that restores still round-trip multibyte characters."
+    },
+    "BackupStorageCorrupted": {
+      "title": "Stored Dump Corrupted",
+      "desc": "A periodic re-hash of a stored dump no longer matches the SHA256 recorded in its meta.json — the artifact has bit-rotted or was altered.",
+      "action": "Treat the affected dump as unrecoverable; verify other runs and re-run a backup. Check the storage backend for hardware/integrity issues."
+    },
+    "BackupRetentionFailing": {
+      "title": "Retention Failing",
+      "desc": "The pre-upload retention sweep has been failing for over 24h. Old dumps are not being pruned, so storage will eventually fill and block new backups.",
+      "action": "Check the destination credentials/permissions and free space; inspect RetentionFailed events on the source Secret."
+    },
+    "BackupRestoreVerificationFailed": {
+      "title": "Restore Verification Failed",
+      "desc": "The most recent restore-verifier run could not decrypt+parse (or restore) the backup — the dump may not be recoverable.",
+      "action": "Inspect the run’s meta.json restoreVerification block; try an offline restore with the age private key to confirm."
+    },
+    "BackupRestoreVerificationStale": {
+      "title": "Restore Verification Stale",
+      "desc": "No successful restore verification has run for this target in over 14 days.",
+      "action": "Check that verification is still armed and the verifier is completing; a manual run will re-verify if overdue."
     }
   },
   "analysis": {

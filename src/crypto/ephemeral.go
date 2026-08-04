@@ -16,14 +16,11 @@ import (
 // The public half is added to the encryptor's recipient list so the
 // resulting dump can be decrypted by either the long-lived DR recipient
 // (offline) OR this single ephemeral identity (in-memory). After the
-// verifier returns, callers MUST call Wipe() to zero the sensitive
-// in-memory representation as defence-in-depth — Go cannot guarantee no
-// copies of the string exist, but we minimise the window.
+// verifier returns, callers MUST call Wipe() to drop the identity reference
+// as defence-in-depth — Go cannot guarantee no copies remain in the heap,
+// but we release it promptly rather than holding it for the pod's lifetime.
 type EphemeralIdentity struct {
 	identity *age.X25519Identity
-	// privateString is a cached copy of the identity's secret form. It is
-	// nil until Recipient() / private form is needed and is cleared on Wipe.
-	privateString string
 }
 
 // GenerateEphemeralIdentity creates a fresh X25519 keypair in process memory.
@@ -70,19 +67,14 @@ func (e *EphemeralIdentity) Decryptor() (Decryptor, error) {
 	return &ageDecryptor{identities: []age.Identity{e.identity}}, nil
 }
 
-// Wipe drops references to the underlying identity so it becomes ineligible
-// for use and the GC can reclaim it. Best-effort defence-in-depth: Go does
-// not guarantee no copies of the secret material exist elsewhere in heap,
-// but holding the private key past the verifier-phase serves no purpose.
+// Wipe drops the reference to the underlying identity so it becomes
+// ineligible for use and the GC can reclaim it. Best-effort defence-in-depth:
+// Go does not guarantee no copies of the secret material exist elsewhere in
+// the heap (and age keeps the scalar internally), but holding the private key
+// past the verifier phase serves no purpose, so we release it promptly.
 func (e *EphemeralIdentity) Wipe() {
 	if e == nil {
 		return
-	}
-	// Overwrite the cached string slot with zeros, then drop the reference.
-	if e.privateString != "" {
-		// Strings are immutable; we cannot overwrite the underlying bytes
-		// from Go without unsafe. Drop the reference so the GC can reclaim.
-		e.privateString = ""
 	}
 	e.identity = nil
 }

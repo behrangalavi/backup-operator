@@ -103,6 +103,19 @@ func main() {
 	if err != nil {
 		die("list %s/: %v", *target, err)
 	}
+
+	// Purge operates on ALL objects, not just dumps — a right-to-erasure must
+	// still remove the unencrypted meta.json sidecars (schema fingerprints,
+	// table names, row counts) even after every dump has already been pruned.
+	// So handle it before the dumps==0 guard, which only makes sense for the
+	// download/list paths.
+	if *purge {
+		if failed := runPurge(ctx, st, objs, *target, *before, *dryRun, log); failed > 0 {
+			os.Exit(1)
+		}
+		return
+	}
+
 	dumps := pickDumps(objs)
 	if len(dumps) == 0 {
 		die("no dumps found for target %q", *target)
@@ -114,11 +127,6 @@ func main() {
 		for _, d := range dumps {
 			_, _ = fmt.Fprintf(os.Stdout, "%-20s\t%-10d\t%s\n", d.timestamp, d.size, d.path)
 		}
-		return
-	}
-
-	if *purge {
-		runPurge(ctx, st, objs, *target, *before, *dryRun, log)
 		return
 	}
 
@@ -161,7 +169,6 @@ func main() {
 	if err != nil {
 		die("open output: %v", err)
 	}
-	defer closer()
 
 	srcReader := plain
 	if *decompress {
@@ -171,6 +178,7 @@ func main() {
 		}
 		dc, err := meta.NewDecompressor(plain, algo)
 		if err != nil {
+			_ = closer()
 			die("decompress (%s): %v", algo, err)
 		}
 		defer func() { _ = dc.Close() }()
@@ -178,7 +186,14 @@ func main() {
 	}
 
 	if _, err := io.Copy(out, srcReader); err != nil {
+		_ = closer()
 		die("copy: %v", err)
+	}
+	// Check the output Close error explicitly rather than deferring-and-ignoring:
+	// a flush/close failure (NFS, quota) on the restored file must not exit 0
+	// leaving a truncated dump — this is a recovery tool.
+	if err := closer(); err != nil {
+		die("close output %s: %v", *output, err)
 	}
 }
 
@@ -207,16 +222,17 @@ func pickDumps(objs []storage.Object) []dumpEntry {
 	return out
 }
 
-// openOutput returns a writer plus a closer; "-" maps to stdout with a no-op closer.
-func openOutput(target string) (io.Writer, func(), error) {
+// openOutput returns a writer plus a closer that surfaces the Close error;
+// "-" maps to stdout with a no-op closer (never close os.Stdout).
+func openOutput(target string) (io.Writer, func() error, error) {
 	if target == "-" {
-		return os.Stdout, func() {}, nil
+		return os.Stdout, func() error { return nil }, nil
 	}
 	f, err := os.Create(target)
 	if err != nil {
 		return nil, nil, err
 	}
-	return f, func() { _ = f.Close() }, nil
+	return f, f.Close, nil
 }
 
 // loadClient resolves a kubeconfig the way kubectl does — $KUBECONFIG first,
@@ -246,7 +262,10 @@ func die(format string, args ...any) {
 
 // runPurge deletes all artifacts (dump + meta) for a target, optionally
 // filtered by --before. Supports DSGVO Art. 17 right-to-erasure workflows.
-func runPurge(ctx context.Context, st storage.Storage, objs []storage.Object, target, before string, dryRun bool, log logr.Logger) {
+// Returns the number of deletions that failed so the caller can exit non-zero:
+// a right-to-erasure that silently reports success while leaving data behind
+// is a compliance failure, not a warning.
+func runPurge(ctx context.Context, st storage.Storage, objs []storage.Object, target, before string, dryRun bool, log logr.Logger) int {
 	var cutoff time.Time
 	if before != "" {
 		var err error
@@ -270,7 +289,7 @@ func runPurge(ctx context.Context, st storage.Storage, objs []storage.Object, ta
 
 	if len(toDelete) == 0 {
 		fmt.Fprintln(os.Stderr, "no matching artifacts to purge")
-		return
+		return 0
 	}
 
 	verb := "deleting"
@@ -278,19 +297,29 @@ func runPurge(ctx context.Context, st storage.Storage, objs []storage.Object, ta
 		verb = "would delete (dry-run)"
 	}
 
+	deleted, failed := 0, 0
 	for _, o := range toDelete {
 		fmt.Fprintf(os.Stderr, "%s: %s (%d bytes)\n", verb, o.Path, o.Size)
 		if !dryRun {
 			if err := st.Delete(ctx, o.Path); err != nil {
 				log.Error(err, "delete failed", "path", o.Path)
+				failed++
+				continue
 			}
+			deleted++
 		}
 	}
 	if dryRun {
 		fmt.Fprintf(os.Stderr, "\ndry-run: %d artifact(s) would be deleted\n", len(toDelete))
-	} else {
-		fmt.Fprintf(os.Stderr, "\npurged %d artifact(s) for target %q\n", len(toDelete), target)
+		return 0
 	}
+	if failed > 0 {
+		// Loud, non-zero: the caller must not believe the erasure completed.
+		fmt.Fprintf(os.Stderr, "\npurged %d artifact(s) for target %q, %d FAILED — data remains in storage\n", deleted, target, failed)
+	} else {
+		fmt.Fprintf(os.Stderr, "\npurged %d artifact(s) for target %q\n", deleted, target)
+	}
+	return failed
 }
 
 func parseCutoff(s string) (time.Time, error) {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"path"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +15,7 @@ import (
 	"backup-operator/storage"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -83,6 +84,14 @@ type MetricsRefresher struct {
 	mu             sync.Mutex
 	trackedTargets map[string]bool
 	trackedSeries  map[string]*targetSeries
+
+	// secretToTarget remembers the target name a source Secret last parsed to,
+	// keyed by namespace/name. When a still-present Secret fails to parse this
+	// tick (a transient edit — host cleared, port typo), we keep its last-known
+	// target in `current` so its series stay sticky rather than being swept as
+	// "source removed". A genuinely removed source drops out of the Secret list
+	// entirely, so its entry is pruned and its series correctly disappear.
+	secretToTarget map[string]string
 
 	// lastSrcRV / lastDestRV track the ResourceVersion of the most recent
 	// Secret list responses. When neither has changed since the previous
@@ -278,16 +287,41 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 
 			src, err := secrets.ParseSource(&s, "")
 			if err != nil {
-				r.Logger.V(1).Info("skipping invalid source", "secret", s.Name, "err", err.Error())
+				metrics.IncSourceParseError(s.Name)
+				// Keep this target's series sticky if we've seen it parse before:
+				// a transient parse error must not make its monitoring go dark
+				// (BackupOverdue can never fire on an absent series).
+				r.mu.Lock()
+				prevTarget, known := r.secretToTarget[secretKey(&s)]
+				r.mu.Unlock()
+				if known {
+					currentMu.Lock()
+					current[prevTarget] = true
+					currentMu.Unlock()
+				}
+				r.Logger.V(1).Info("skipping invalid source; keeping last-known metrics", "secret", s.Name, "err", err.Error())
 				return
 			}
 			currentMu.Lock()
 			current[src.TargetName] = true
 			currentMu.Unlock()
+			r.mu.Lock()
+			if r.secretToTarget == nil {
+				r.secretToTarget = map[string]string{}
+			}
+			r.secretToTarget[secretKey(&s)] = src.TargetName
+			r.mu.Unlock()
 			r.refreshSource(ctx, src, dests)
 		}()
 	}
 	wg.Wait()
+
+	// Secret keys present this tick — used to prune secretToTarget for sources
+	// that genuinely disappeared (vs. merely failed to parse, which keeps them).
+	presentSecrets := make(map[string]bool, len(sources))
+	for i := range sources {
+		presentSecrets[secretKey(&sources[i])] = true
+	}
 
 	r.mu.Lock()
 	for prev := range r.trackedTargets {
@@ -296,8 +330,28 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 			delete(r.trackedSeries, prev)
 		}
 	}
+	for sk := range r.secretToTarget {
+		if !presentSecrets[sk] {
+			delete(r.secretToTarget, sk)
+		}
+	}
 	r.trackedTargets = current
 	r.mu.Unlock()
+
+	// Prune the broadcast-dedup cache for targets that no longer exist, so it
+	// doesn't leak one entry per ever-seen target over the process lifetime.
+	r.tsMu.Lock()
+	for tgt := range r.lastSeenTimestamp {
+		if !current[tgt] {
+			delete(r.lastSeenTimestamp, tgt)
+		}
+	}
+	r.tsMu.Unlock()
+}
+
+// secretKey identifies a Secret across ticks for the secretToTarget map.
+func secretKey(s *corev1.Secret) string {
+	return s.Namespace + "/" + s.Name
 }
 
 func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Source, all []*secrets.Destination) {
@@ -416,12 +470,12 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 		metrics.SetSchemaChanged(src.TargetName, newest.Report.SchemaChanged)
 		metrics.SetCharsetChanged(src.TargetName, newest.Report.CharsetChanged)
 		metrics.SetLastRunAnomalies(src.TargetName, len(newest.Report.Anomalies))
-	} else {
-		// A failed run won't have a report. Keep these gauges sticky on their
-		// last known good values rather than zeroing them — a transient
-		// failure should not silence schema/size alerts.
-		metrics.SetLastRunAnomalies(src.TargetName, 0)
 	}
+	// A failed run won't have a report. Leave last_run_anomalies (and
+	// schema/charset/size, above) sticky on their last known values rather than
+	// zeroing them — a transient failure must not resolve BackupAnomaliesAppearing
+	// exactly when something else is also breaking. (Previously this branch
+	// zeroed anomalies, contradicting its own "keep sticky" comment.)
 
 	if success != nil {
 		metrics.SetDumpSize(src.TargetName, success.EncryptedSizeBytes)
@@ -568,10 +622,15 @@ func loadLatestMeta(ctx context.Context, st storage.Storage, target string) (*me
 func mostRecentMeta(objs []storage.Object) storage.Object {
 	var latest storage.Object
 	for _, o := range objs {
-		if path.Ext(o.Path) != ".json" {
+		if !strings.HasSuffix(o.Path, ".meta.json") {
 			continue
 		}
-		if o.LastModified.After(latest.LastModified) {
+		// Select by the path-encoded ISO timestamp, not LastModified: mtime is
+		// unreliable (backends bump it on listing, clock-skewed replication),
+		// which could pin an older run as "latest" and make last_run_status /
+		// the scrubber check the wrong run. ISO timestamps in the path sort
+		// lexically = chronologically.
+		if latest.Path == "" || o.Path > latest.Path {
 			latest = o
 		}
 	}

@@ -359,16 +359,21 @@ const sortState = {
   runs:         { col: 'timestamp', dir: 'desc' },
 };
 function cmp(a, b) {
-  if (a == null && b == null) return 0;
-  if (a == null) return 1;   // nulls last regardless of direction
-  if (b == null) return -1;
   if (typeof a === 'number' && typeof b === 'number') return a - b;
   return String(a).localeCompare(String(b));
 }
 function sortBy(arr, getter, dir) {
   const sorted = arr.slice();
   sorted.sort((x, y) => {
-    const r = cmp(getter(x), getter(y));
+    const a = getter(x), b = getter(y);
+    // Nulls always sort LAST, independent of direction — so we must decide
+    // them BEFORE the asc/desc negation below. (Previously null-handling
+    // lived in cmp and got negated for desc, floating null/failed rows to
+    // the top of every desc-sorted table.)
+    if (a == null && b == null) return 0;
+    if (a == null) return 1;
+    if (b == null) return -1;
+    const r = cmp(a, b);
     return dir === 'asc' ? r : -r;
   });
   return sorted;

@@ -1187,12 +1187,35 @@ const ALERT_ICONS = {
   BackupDestinationFailing: '💾',
   BackupDumpSizeCollapsed: '📉',
   BackupSchemaChanged: '🔧',
+  BackupCharsetChanged: '🔤',
   BackupAnomaliesAppearing: '⚠️',
   BackupLastRunFailed: '❌',
+  BackupStorageCorrupted: '🧬',
+  BackupRetentionFailing: '🗑️',
+  BackupRestoreVerificationFailed: '🚨',
+  BackupRestoreVerificationStale: '🕰️',
   BackupSucceeded: '🟢',
   BackupOperatorTestAlert: '🧪',
 };
 const ALERT_DESCRIPTIONS = ALERT_ICONS; // legacy alias used by the rules-reference table
+
+// Severity per shipped rule, mirroring CLAUDE.md §13 / values.yaml. Used by the
+// rules-reference table; keep in sync when adding a rule. Default 'warning'.
+const ALERT_SEVERITY = {
+  BackupOverdue: 'warning',
+  BackupDestinationFailing: 'warning',
+  BackupDumpSizeCollapsed: 'critical',
+  BackupSchemaChanged: 'info',
+  BackupCharsetChanged: 'warning',
+  BackupStorageCorrupted: 'critical',
+  BackupRetentionFailing: 'warning',
+  BackupAnomaliesAppearing: 'warning',
+  BackupLastRunFailed: 'warning',
+  BackupSucceeded: 'info',
+  BackupRestoreVerificationFailed: 'critical',
+  BackupRestoreVerificationStale: 'warning',
+};
+function alertSeverity(name) { return ALERT_SEVERITY[name] || 'warning'; }
 
 function getAlertDescription(alertname) {
   const icon = ALERT_ICONS[alertname] || '🔔';
@@ -1435,7 +1458,7 @@ receivers:
             const info = getAlertDescription(name);
             return `<tr>
             <td><code style="font-size:12px">${escHTML(info.icon)} ${escHTML(info.title)}</code></td>
-            <td><span class="badge badge-${name === 'BackupDumpSizeCollapsed' ? 'critical' : name === 'BackupSchemaChanged' || name === 'BackupSucceeded' ? 'info' : 'warning'}">${name === 'BackupDumpSizeCollapsed' ? 'critical' : name === 'BackupSchemaChanged' || name === 'BackupSucceeded' ? 'info' : 'warning'}</span></td>
+            <td><span class="badge badge-${alertSeverity(name)}">${alertSeverity(name)}</span></td>
             <td style="font-size:12px">${escHTML(info.desc)}</td>
             <td style="font-size:12px;color:var(--text-muted)">${escHTML(info.action)}</td>
           </tr>`;
@@ -1695,18 +1718,28 @@ function sortRuns(runs) {
   return sortBy(runs, g[s.col] || g.timestamp, s.dir);
 }
 
-// Go's time.Duration String form: e.g. "1h2m3s", "45s", "0s". Best-effort.
+// Go's time.Duration String form: e.g. "1h2m3s", "45s", "0s", "743ms",
+// "3.25s", "1.5µs". The old /(\d+)([hms])/ regex mis-read sub-second units —
+// "743ms" parsed as 743 MINUTES (the trailing "s" was dropped and "743m" won)
+// and "3.25s" as 25s — so duration-sorted rows were badly ordered. Parse the
+// real grammar: a run of <float><unit>, ms/us/µs/ns matched before s/m/h.
 function parseDurationSec(s) {
   if (!s) return null;
-  let total = 0, m;
-  const re = /(\d+)([hms])/g;
+  let total = 0, matched = false, m;
+  const re = /([0-9]*\.?[0-9]+)(ns|us|µs|ms|s|m|h)/g;
   while ((m = re.exec(s)) !== null) {
-    const n = +m[1];
-    if (m[2] === 'h') total += n * 3600;
-    else if (m[2] === 'm') total += n * 60;
-    else total += n;
+    matched = true;
+    const n = parseFloat(m[1]);
+    switch (m[2]) {
+      case 'ns': total += n / 1e9; break;
+      case 'us': case 'µs': total += n / 1e6; break;
+      case 'ms': total += n / 1e3; break;
+      case 's':  total += n; break;
+      case 'm':  total += n * 60; break;
+      case 'h':  total += n * 3600; break;
+    }
   }
-  return total || null;
+  return matched ? total : null;
 }
 
 
@@ -1768,10 +1801,15 @@ async function fetchTargetRuns(name) {
     _targetRunsInFlight.delete(name);
   }
   if (failed) {
-    // Keep any previously cached runs for this target; just flag the
-    // failure so the region offers a retry rather than claiming emptiness.
-    if (_targetRuns.name === name) _targetRuns.failed = true;
-    else _targetRuns = { name, runs: null, lastFetch: 0, failed: true };
+    // Keep any previously cached runs for this target; flag the failure so the
+    // region offers a retry rather than claiming emptiness. Record lastFetch
+    // even on failure so a failed probe honours the TTL cooldown — otherwise
+    // the 10 s SSE refresh tick re-probes the unreachable destination every
+    // tick (the connection storm that got the operator IP-blocked). The Retry
+    // button and SSE invalidation both reset lastFetch to 0 to force an
+    // immediate re-probe.
+    if (_targetRuns.name === name) { _targetRuns.failed = true; _targetRuns.lastFetch = Date.now(); }
+    else _targetRuns = { name, runs: null, lastFetch: Date.now(), failed: true };
   } else {
     _targetRuns = { name, runs, lastFetch: Date.now(), failed: false };
   }
@@ -1944,7 +1982,9 @@ async function renderTargetDetail(name, loading = true) {
   // expired, or invalidated by SSE — NOT on a language switch or sort,
   // which reuse the cache and so re-render instantly. fetchTargetRuns sets
   // its in-flight flag synchronously, so the region below shows a spinner.
-  const runsFresh = _targetRuns.name === name && !_targetRuns.failed &&
+  // Note: a failed probe is "fresh" for the TTL window too (its lastFetch is
+  // stamped on failure), so we back off instead of re-probing every SSE tick.
+  const runsFresh = _targetRuns.name === name &&
     (Date.now() - _targetRuns.lastFetch < RUN_HISTORY_TTL_MS);
   if (!runsFresh) fetchTargetRuns(name);
 
@@ -1975,7 +2015,7 @@ async function renderTargetDetail(name, loading = true) {
       </h3>
       <div class="job-progress-host">${renderProgressCell(runningJob)}</div>
       <div style="font-size:11px;color:var(--text-muted);margin-top:6px">
-        ${tr('table.startTime') || 'Started'}: ${new Date(runningJob.startTime).toLocaleString()} · Job: <code>${escHTML(runningJob.name)}</code>
+        ${tr('table.startTime')}: ${new Date(runningJob.startTime).toLocaleString()} · Job: <code>${escHTML(runningJob.name)}</code>
       </div>
     </div>` : ''}
     <div class="detail-grid">
@@ -2493,7 +2533,7 @@ async function renderAgeKeys(loading = true) {
     <div class="page-header">
       <div>
         <h1>${tr('nav.ageKeys') || 'Age Keys'}</h1>
-        <div class="subtitle">${tr('ageKeys.subtitle') || 'Public keys (age recipients) backups are encrypted to. Rotation: add new, wait one cycle, remove old.'}</div>
+        <div class="subtitle">${tr('ageKeys.subtitle')}</div>
       </div>
     </div>
     <div id="age-keys-section" class="table-card"></div>

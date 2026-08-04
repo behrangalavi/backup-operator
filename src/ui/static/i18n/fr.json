@@ -216,7 +216,8 @@
     "severity": "Sévérité",
     "alert": "Alerte",
     "sinceFiring": "Active depuis",
-    "destination": "Destination"
+    "destination": "Destination",
+    "startTime": "Démarré"
   },
   "target": {
     "configuration": "Configuration",
@@ -442,21 +443,22 @@
     "removed": "Destinataire supprimé",
     "removeFailed": "Échec de la suppression : {error}",
     "removeConfirm": "Supprimer le destinataire {name} ? Les pods worker ne chiffreront plus pour cette clé. Les dumps existants restent déchiffrables avec la clé privée correspondante.",
-    "readOnly": "Mode lecture seule — la modification des destinataires est désactivée."
+    "readOnly": "Mode lecture seule — la modification des destinataires est désactivée.",
+    "subtitle": "Clés publiques des destinataires age auxquelles l'opérateur chiffre les sauvegardes."
   },
   "hero": {
     "status": {
-      "healthy":     "Tous les systèmes en bonne santé",
-      "healthySub":  "{sources} sources sauvegardées vers {dests} destinations",
-      "failures":    "{count} échecs dans les dernières 24h",
+      "healthy": "Tous les systèmes en bonne santé",
+      "healthySub": "{sources} sources sauvegardées vers {dests} destinations",
+      "failures": "{count} échecs dans les dernières 24h",
       "failuresSub": "Voir la table des cibles ci-dessous pour analyse",
-      "quiet":       "Flotte silencieuse — aucun run en 24h",
-      "quietSub":    "Planification, mise en pause ou panne plus large ?"
+      "quiet": "Flotte silencieuse — aucun run en 24h",
+      "quietSub": "Planification, mise en pause ou panne plus large ?"
     },
     "metric": {
-      "runs24h":      "Runs / 24h",
-      "failed24h":    "Échecs / 24h",
-      "running":      "En cours",
+      "runs24h": "Runs / 24h",
+      "failed24h": "Échecs / 24h",
+      "running": "En cours",
       "destinations": "Destinations"
     },
     "activity": {
@@ -602,6 +604,31 @@
     "_default": {
       "desc": "Règle d'alerte personnalisée.",
       "action": "Consulter les règles Prometheus pour plus de détails."
+    },
+    "BackupCharsetChanged": {
+      "title": "Jeu de caractères / collation modifié",
+      "desc": "Le jeu de caractères ou la collation de la base diffère de l'exécution précédente. Un passage utf8→utf8mb4 peut tronquer silencieusement les données multi-octets à la restauration.",
+      "action": "Confirmer que le changement est intentionnel (mise à niveau/migration) et que les restaurations conservent les caractères multi-octets."
+    },
+    "BackupStorageCorrupted": {
+      "title": "Dump stocké corrompu",
+      "desc": "Un re-hachage périodique d'un dump stocké ne correspond plus au SHA256 enregistré dans son meta.json — l'artefact est corrompu ou a été altéré.",
+      "action": "Considérer le dump concerné comme irrécupérable ; vérifier les autres exécutions et relancer une sauvegarde. Contrôler le backend de stockage."
+    },
+    "BackupRetentionFailing": {
+      "title": "Rétention en échec",
+      "desc": "Le balayage de rétention pré-envoi échoue depuis plus de 24 h. Les anciens dumps ne sont pas purgés ; le stockage finira par se remplir et bloquer les sauvegardes.",
+      "action": "Vérifier les identifiants/permissions de la destination et l'espace libre ; consulter les événements RetentionFailed sur le Secret source."
+    },
+    "BackupRestoreVerificationFailed": {
+      "title": "Vérification de restauration échouée",
+      "desc": "La dernière vérification de restauration n'a pas pu déchiffrer+analyser (ou restaurer) la sauvegarde — le dump n'est peut-être pas récupérable.",
+      "action": "Inspecter le bloc restoreVerification du meta.json ; confirmer via une restauration hors ligne avec la clé privée age."
+    },
+    "BackupRestoreVerificationStale": {
+      "title": "Vérification de restauration obsolète",
+      "desc": "Aucune vérification de restauration réussie pour cette cible depuis plus de 14 jours.",
+      "action": "Vérifier que la vérification est toujours armée et que le vérificateur se termine ; une exécution manuelle re-vérifiera si en retard."
     }
   },
   "analysis": {

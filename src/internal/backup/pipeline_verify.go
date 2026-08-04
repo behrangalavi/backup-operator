@@ -17,6 +17,30 @@ import (
 	"github.com/go-logr/logr"
 )
 
+// verifierBudget returns how long the restore verifier may run: at most 70% of
+// the run context's remaining time, so meta.json upload + retention always keep
+// headroom and a slow verifier can't starve them. Falls back to 30m when the
+// context carries no deadline (shouldn't happen for a real run, but keeps the
+// verifier bounded in tests / unusual setups).
+func verifierBudget(ctx context.Context) time.Duration {
+	const fallback = 30 * time.Minute
+	dl, ok := ctx.Deadline()
+	if !ok {
+		return fallback
+	}
+	remaining := time.Until(dl)
+	if remaining <= 0 {
+		// No time left; hand the verifier a tiny budget so it fails fast with a
+		// timeout result rather than a negative/expired context.
+		return time.Second
+	}
+	budget := time.Duration(float64(remaining) * 0.7)
+	if budget > fallback {
+		budget = fallback
+	}
+	return budget
+}
+
 func (p *Pipeline) runRestoreVerifier(
 	ctx context.Context,
 	src *secrets.Source,
@@ -26,6 +50,19 @@ func (p *Pipeline) runRestoreVerifier(
 	dumpCounts map[string]int64,
 	log logr.Logger,
 ) *meta.RestoreVerificationResult {
+	// Restore verification is observability, NOT a gate (§14): it must never
+	// turn a successful backup into a failed run. It runs after the dump has
+	// uploaded but before meta.json, on the same run context — so a slow
+	// verifier (Phase-2 full restore of a big DB) that eats the remaining
+	// RUN_TIMEOUT would cancel ctx, fail the subsequent uploadMeta on every
+	// destination, and trip the phantom-backup guard into failing the whole
+	// run (worker exit 1, K8s re-dumps). Give the verifier its own bounded
+	// sub-context so its deadline can never cascade into uploadMeta; if it
+	// blows the budget it yields a skipped/timeout result and the run still
+	// completes successfully.
+	vctx, cancel := context.WithTimeout(ctx, verifierBudget(ctx))
+	defer cancel()
+
 	mode := src.RestoreVerificationMode
 	v, err := p.verifierFactory(mode, src.DBType, log)
 	if err != nil {
@@ -38,7 +75,7 @@ func (p *Pipeline) runRestoreVerifier(
 		return nil
 	}
 	started := time.Now().UTC()
-	res, err := v.Verify(ctx, verifier.Input{
+	res, err := v.Verify(vctx, verifier.Input{
 		Source:      src,
 		DumpPath:    dumpFile,
 		Identity:    id,

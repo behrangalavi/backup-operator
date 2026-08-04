@@ -82,6 +82,37 @@ func TestDSN_TLSOverride(t *testing.T) {
 	}
 }
 
+// TestDSNTLSValue regresses the CollectStats crash: verify-* / require / other
+// annotation values must map to a value go-sql-driver accepts, never be passed
+// verbatim (which failed the connection and silently degraded stats).
+func TestDSNTLSValue(t *testing.T) {
+	cases := map[string]string{
+		"":                "preferred",
+		"preferred":       "preferred",
+		"false":           "false",
+		"off":             "false",
+		"disabled":        "false",
+		"skip":            "false",
+		"true":            "true",
+		"verify-identity": "true",
+		"verify-full":     "true",
+		"skip-verify":     "skip-verify",
+		"verify-ca":       "skip-verify",
+		"require":         "skip-verify",
+		"VERIFY-CA":       "skip-verify", // case-insensitive
+	}
+	valid := map[string]bool{"preferred": true, "false": true, "true": true, "skip-verify": true}
+	for in, want := range cases {
+		got := dsnTLSValue(in)
+		if got != want {
+			t.Errorf("dsnTLSValue(%q) = %q, want %q", in, got, want)
+		}
+		if !valid[got] {
+			t.Errorf("dsnTLSValue(%q) = %q is not a valid go-sql-driver TLSConfig value", in, got)
+		}
+	}
+}
+
 func argList(args []string) string { return strings.Join(args, " ") }
 
 func TestBuildDumpArgs_Defaults(t *testing.T) {

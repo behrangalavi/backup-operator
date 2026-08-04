@@ -1050,7 +1050,7 @@ This section documents the complete data lifecycle for compliance audits (DSGVO/
 
 | Principal | Can access | Cannot access |
 |---|---|---|
-| Operator pod | Source/Dest Secrets (CRUD), CronJobs (CRUD), ConfigMaps (get/update/patch), Jobs (create), Leases, Events, Prometheus query API (read), Alertmanager API (read status + write test alerts) | Private key, dump contents |
+| Operator pod | Source/Dest Secrets (CRUD), CronJobs (CRUD), ConfigMaps (get/list/watch/update/patch), Jobs (get/list/watch/create), Leases, Events, SubjectAccessReviews (create — a cluster-scoped role the UI uses to check the caller's own permissions), Prometheus query API (read), Alertmanager API (read status + write test alerts) | Private key, dump contents |
 | Worker pod | Source/Dest Secrets (read), Events (create), **Pods (create/delete) when `restoreVerification.enableEphemeralPodSpawn=true`** | CronJobs, Leases, private key |
 | Storage backend | Encrypted dumps, unencrypted meta.json | Private key, DB credentials |
 | Restore operator (human) | Private key, storage backend | Cluster Secrets (unless they have kubectl access) |

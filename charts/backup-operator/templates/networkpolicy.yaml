@@ -31,6 +31,9 @@ spec:
           port: 22
         - protocol: TCP
           port: 23  # Hetzner Storage Box
+    # NOTE: FTPS is not covered here — it needs the control port (21/990) AND
+    # the server's PASV data-port range. Add both via networkPolicy.extraEgressRules
+    # (see the FTPS example in values.yaml) if you use an FTPS destination.
     # S3-compatible storage (HTTPS)
     - ports:
         - protocol: TCP

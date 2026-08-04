@@ -315,8 +315,12 @@ grafanaDashboard:
 
 # Restricts operator pod egress to DNS, K8s API, SSH (22/23), and HTTPS (443).
 # Disabled by default — enable once you've verified your storage endpoints
-# are reachable through the allowed ports. Use extraEgressRules for
-# non-standard ports (e.g. MinIO on 9000, DB ports for MetricsRefresher).
+# are reachable through the allowed ports. Use extraEgressRules for anything
+# else. The operator only dials STORAGE backends (metrics refresh + scrub),
+# never databases — so custom ports are storage ports (e.g. MinIO on 9000),
+# not DB ports. FTPS is NOT covered by the built-in rules: it needs the
+# control port (21 explicit / 990 implicit) AND the server's PASV data-port
+# range, both via extraEgressRules — see the FTPS example below.
 networkPolicy:
   enabled: false
   extraEgressRules: []
@@ -325,3 +329,13 @@ networkPolicy:
   #   - ports:
   #       - protocol: TCP
   #         port: 9000
+  # Example: FTPS (explicit) with a PASV data-port range of 49152-49215
+  # extraEgressRules:
+  #   - ports:
+  #       - protocol: TCP
+  #         port: 21
+  #       - protocol: TCP
+  #         port: 990
+  #       - protocol: TCP
+  #         endPort: 49215
+  #         port: 49152

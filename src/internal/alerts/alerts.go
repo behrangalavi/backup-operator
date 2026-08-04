@@ -7,8 +7,9 @@
 //     This is the canonical view: it respects the "for:" duration, label
 //     overrides, and any custom rules the operator has added.
 //
-//   - LocalProvider re-evaluates the same six rule conditions on the
-//     operator's own gathered metric state. It exists so the UI shows
+//   - LocalProvider re-evaluates every problem-signalling rule the chart
+//     ships (all of §13 except the positive BackupSucceeded heartbeat) on
+//     the operator's own gathered metric state. It exists so the UI shows
 //     useful information even when Prometheus is not yet configured —
 //     no setup, but no "for:" debounce either.
 //

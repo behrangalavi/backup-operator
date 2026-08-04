@@ -4,8 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -98,7 +96,7 @@ func (d *redisDumper) CollectStats(ctx context.Context) (*dumper.Stats, error) {
 	}
 
 	return &dumper.Stats{
-		SchemaHash:  hashSchema(hashSeed),
+		SchemaHash:  dumper.HashSchema(hashSeed),
 		Tables:      tables,
 		GeneratedAt: time.Now().UTC(),
 	}, nil
@@ -202,12 +200,3 @@ func parseDatabaseFilter(s string) map[string]bool {
 	return m
 }
 
-func hashSchema(seed []string) string {
-	sort.Strings(seed)
-	h := sha256.New()
-	for _, s := range seed {
-		h.Write([]byte(s))
-		h.Write([]byte{'\n'})
-	}
-	return hex.EncodeToString(h.Sum(nil))
-}

@@ -142,12 +142,14 @@ func TestSplitEndpoint(t *testing.T) {
 }
 
 func TestSplitEndpoint_IPv6(t *testing.T) {
-	host, port, err := splitEndpoint("[::1]:5432")
+	// Brackets are stripped: the `-h host` CLI forms (redis-cli/psql/mysql)
+	// want a bare host, and net.JoinHostPort re-brackets when a URL needs it.
+	host, port, err := splitEndpoint("[fd00::1]:5432")
 	if err != nil {
 		t.Fatalf("splitEndpoint failed: %v", err)
 	}
-	if host != "[::1]" || port != "5432" {
-		t.Errorf("got (%q, %q), want ([::1], 5432)", host, port)
+	if host != "fd00::1" || port != "5432" {
+		t.Errorf("got (%q, %q), want (fd00::1, 5432)", host, port)
 	}
 }
 
@@ -217,17 +219,23 @@ func TestSmokeMatch(t *testing.T) {
 
 // --- evaluateSmoke ---
 
+// A successful restore with no row-count comparison (nil/empty smoke result,
+// e.g. analyzer-enabled=false) is a MATCH with a caveat, not Skipped — Skipped
+// would fire a permanent critical alert for a fully successful restore.
 func TestEvaluateSmoke_Nil(t *testing.T) {
-	verdict, _ := evaluateSmoke(ModeFull, nil)
-	if verdict != meta.VerificationSkipped {
-		t.Errorf("evaluateSmoke(nil) verdict = %q, want %q", verdict, meta.VerificationSkipped)
+	verdict, summary := evaluateSmoke(ModeFull, nil)
+	if verdict != meta.VerificationMatch {
+		t.Errorf("evaluateSmoke(nil) verdict = %q, want %q", verdict, meta.VerificationMatch)
+	}
+	if !strings.Contains(summary, "no row-count comparison") {
+		t.Errorf("summary should note the missing comparison, got: %s", summary)
 	}
 }
 
 func TestEvaluateSmoke_Empty(t *testing.T) {
 	verdict, _ := evaluateSmoke(ModeFull, &SmokeResult{})
-	if verdict != meta.VerificationSkipped {
-		t.Errorf("evaluateSmoke(empty) verdict = %q, want %q", verdict, meta.VerificationSkipped)
+	if verdict != meta.VerificationMatch {
+		t.Errorf("evaluateSmoke(empty) verdict = %q, want %q", verdict, meta.VerificationMatch)
 	}
 }
 

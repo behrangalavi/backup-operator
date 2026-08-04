@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -70,6 +71,17 @@ func (e *mongoEngine) Restore(ctx context.Context, endpoint string, plaintext io
 		return err
 	}
 
+	// Pass the password via a 0600 --config file, never on argv — otherwise it
+	// is visible in `ps` / container telemetry / any sidecar with PID-namespace
+	// access, breaking the project's "credentials never on command lines" rule
+	// (the mongo dumper already does this). The per-run password shortens the
+	// exposure but doesn't excuse leaking it.
+	configPath, err := writeMongoPasswordConfig(e.password)
+	if err != nil {
+		return fmt.Errorf("write mongo config: %w", err)
+	}
+	defer func() { _ = os.Remove(configPath) }()
+
 	// mongorestore reads its archive from stdin via --archive (no path).
 	// --gzip is intentionally OMITTED here because the verifier-driver
 	// has already gunzipped the stream upstream — feeding compressed
@@ -78,7 +90,7 @@ func (e *mongoEngine) Restore(ctx context.Context, endpoint string, plaintext io
 		"--host", host,
 		"--port", port,
 		"--username", mongoVerifierUser,
-		"--password", e.password,
+		"--config", configPath,
 		"--authenticationDatabase", "admin",
 		"--archive",
 		"--quiet",
@@ -144,4 +156,31 @@ func splitMongoCollection(name string) (string, string) {
 		return "", ""
 	}
 	return name[:idx], name[idx+1:]
+}
+
+// writeMongoPasswordConfig writes a 0600 YAML config consumable by
+// `mongorestore --config`, so the password never appears on the command line.
+// Mirrors the mongo dumper's helper. Caller must os.Remove the returned path.
+func writeMongoPasswordConfig(password string) (string, error) {
+	f, err := os.CreateTemp("", "mongorestore-*.yaml")
+	if err != nil {
+		return "", err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return "", err
+	}
+	escaped := strings.ReplaceAll(password, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+	if _, err := fmt.Fprintf(f, "password: \"%s\"\n", escaped); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
 }

@@ -261,7 +261,15 @@ func evaluateSmoke(mode Mode, sr *SmokeResult) (string, string) {
 		if sr != nil && len(sr.Notes) > 0 {
 			notes = " — " + strings.Join(sr.Notes, "; ")
 		}
-		return meta.VerificationSkipped, fmt.Sprintf("restore + reachability OK; no smoke comparisons performed%s", notes)
+		// Reaching here means the pod spawned, the DB came up, and the restore
+		// ran — that successful restore IS the verification. The only thing
+		// absent is the per-table row-count cross-check (no preStats baseline,
+		// e.g. analyzer-enabled=false, or an engine whose smoke doesn't surface
+		// row counts). That is a MATCH with a caveat, NOT Skipped: §14 treats
+		// Skipped like a hard mismatch, so returning Skipped here fired a
+		// permanent critical BackupRestoreVerificationFailed for a source that
+		// had merely turned the analyzer off — despite a fully successful restore.
+		return meta.VerificationMatch, fmt.Sprintf("restore + reachability OK; no row-count comparison available%s", notes)
 	}
 	var matches, mismatches int
 	for _, t := range sr.Tables {

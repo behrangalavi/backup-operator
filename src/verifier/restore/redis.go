@@ -137,16 +137,16 @@ func (e *redisEngine) SmokeQueries(ctx context.Context, endpoint string, preTabl
 		return nil, fmt.Errorf("DBSIZE: %w", err)
 	}
 	dbsize, _ := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
-	res := &SmokeResult{
-		Notes: []string{"redis Phase-2 verification is auth+roundtrip only; full RDB restore is deferred to a later iteration"},
-	}
-	res.Tables = append(res.Tables, TableSmoke{
-		Name:     "<dbsize>",
-		Expected: 0, // we did NOT restore data; expect 1 (the probe key) or 0
-		Got:      dbsize,
-		Match:    dbsize >= 0,
-	})
-	return res, nil
+	// Do NOT synthesise a "<dbsize>" table with Match: dbsize >= 0 (always
+	// true): that made evaluateSmoke report "restore + smoke OK (1/1 tables
+	// matched)", implying a data restore that never happened. redis Phase-2 is
+	// auth + SET/GET roundtrip + reachability only — real RDB load is deferred.
+	// Return zero tables plus a Note, so the verdict is an honest
+	// match-with-caveat rather than a fabricated per-table match.
+	return &SmokeResult{
+		Notes: []string{fmt.Sprintf(
+			"redis Phase-2 verification is auth+roundtrip+reachability only (DBSIZE=%d); full RDB restore is deferred to a later iteration", dbsize)},
+	}, nil
 }
 
 // scanLines is a tiny helper to split a small reader into lines without

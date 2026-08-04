@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"path"
+	"strings"
 	"sync"
 	"time"
 
@@ -622,10 +622,15 @@ func loadLatestMeta(ctx context.Context, st storage.Storage, target string) (*me
 func mostRecentMeta(objs []storage.Object) storage.Object {
 	var latest storage.Object
 	for _, o := range objs {
-		if path.Ext(o.Path) != ".json" {
+		if !strings.HasSuffix(o.Path, ".meta.json") {
 			continue
 		}
-		if o.LastModified.After(latest.LastModified) {
+		// Select by the path-encoded ISO timestamp, not LastModified: mtime is
+		// unreliable (backends bump it on listing, clock-skewed replication),
+		// which could pin an older run as "latest" and make last_run_status /
+		// the scrubber check the wrong run. ISO timestamps in the path sort
+		// lexically = chronologically.
+		if latest.Path == "" || o.Path > latest.Path {
 			latest = o
 		}
 	}

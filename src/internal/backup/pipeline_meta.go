@@ -7,6 +7,7 @@ import (
 	"io"
 	"path"
 	"sort"
+	"strings"
 	"time"
 
 	"backup-operator/analyzer"
@@ -32,6 +33,7 @@ func (p *Pipeline) loadPreviousMeta(ctx context.Context, dests []*secrets.Destin
 	// succeeded. If all destinations fail before that point, the analyzer
 	// is running blind and the operator should know.
 	destAccessed := 0
+	var best *meta.MetaFile
 	for _, d := range dests {
 		st, err := p.getStorage(d)
 		if err != nil {
@@ -65,9 +67,20 @@ func (p *Pipeline) loadPreviousMeta(ctx context.Context, dests []*secrets.Destin
 			if m.IsFailure() {
 				continue
 			}
-			metrics.SetAnalyzerBaselineUnavailable(target, false)
-			return &m
+			// This destination's newest success. Compare across ALL
+			// destinations and keep the globally newest — returning the first
+			// reachable destination's success could pin a stale baseline when
+			// that destination lagged behind another (false analyzer drift).
+			cand := m
+			if best == nil || cand.ParsedTimestamp().After(best.ParsedTimestamp()) {
+				best = &cand
+			}
+			break
 		}
+	}
+	if best != nil {
+		metrics.SetAnalyzerBaselineUnavailable(target, false)
+		return best
 	}
 	// No successful baseline. Distinguish "every destination broken" from
 	// "no baseline yet" — both return nil to the caller, the gauge tells
@@ -82,23 +95,23 @@ func (p *Pipeline) loadPreviousMeta(ctx context.Context, dests []*secrets.Destin
 	return nil
 }
 
-// sortedMetaPaths returns meta paths newest-first by LastModified.
+// sortedMetaPaths returns meta paths newest-first by the timestamp ENCODED IN
+// THE PATH, not by LastModified. Object storage mtime is unreliable — some
+// backends bump it on listing, replication skews clocks, FTPS servers may lack
+// clean MDTM — so ordering by it could pick a stale meta as the baseline. The
+// path is target/YYYY/MM/DD/dump-<ISO-ts>.meta.json, and ISO timestamps sort
+// lexically = chronologically, so a descending string sort of the full path is
+// correct (the same property meta.LatestPerTarget relies on).
 func sortedMetaPaths(objs []storage.Object) []string {
-	metas := make([]storage.Object, 0, len(objs))
+	metas := make([]string, 0, len(objs))
 	for _, o := range objs {
-		if path.Ext(o.Path) != ".json" {
+		if !strings.HasSuffix(o.Path, ".meta.json") {
 			continue
 		}
-		metas = append(metas, o)
+		metas = append(metas, o.Path)
 	}
-	sort.Slice(metas, func(i, j int) bool {
-		return metas[i].LastModified.After(metas[j].LastModified)
-	})
-	out := make([]string, len(metas))
-	for i, m := range metas {
-		out[i] = m.Path
-	}
-	return out
+	sort.Sort(sort.Reverse(sort.StringSlice(metas)))
+	return metas
 }
 
 func metaJSON(src *secrets.Source, stats *dumper.Stats, statsError string, report *analyzer.Report, verification *meta.DumpVerification, size int64, sha256sum, timestamp string, runStart time.Time, dumpDuration time.Duration, schemaChangedAt time.Time, destResults []meta.DestinationResult, restoreVerification *meta.RestoreVerificationResult, retention []meta.RetentionResult) ([]byte, error) {

@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -20,8 +21,12 @@ type SecretListResult struct {
 
 // listBackupSecrets lists source and destination Secrets in the given
 // namespace. If namespace is empty, all namespaces are searched.
-// Invalid destination Secrets are silently skipped.
-func listBackupSecrets(ctx context.Context, c client.Client, namespace string) (*SecretListResult, error) {
+// Invalid destination Secrets are skipped. Destinations sharing a logical
+// name (backup.mogenius.io/name) are de-duplicated — the first wins, the rest
+// are skipped with a warning — because the logical name keys the storage pool,
+// the per-destination concurrency slots, and every per-destination metric
+// label; two live destinations under one name silently corrupt all three.
+func listBackupSecrets(ctx context.Context, c client.Client, namespace string, log logr.Logger) (*SecretListResult, error) {
 	var srcList corev1.SecretList
 	srcOpts := []client.ListOption{client.MatchingLabels{labels.LabelRole: labels.RoleSource}}
 	if namespace != "" {
@@ -41,11 +46,18 @@ func listBackupSecrets(ctx context.Context, c client.Client, namespace string) (
 	}
 
 	dests := make([]*secrets.Destination, 0, len(destList.Items))
+	seenName := make(map[string]string, len(destList.Items)) // logical name -> first Secret name
 	for i := range destList.Items {
 		d, err := secrets.ParseDestination(&destList.Items[i])
 		if err != nil {
 			continue
 		}
+		if first, dup := seenName[d.Name]; dup {
+			log.Info("skipping destination with duplicate logical name; keeping the first",
+				"name", d.Name, "kept", first, "skipped", d.SecretName)
+			continue
+		}
+		seenName[d.Name] = d.SecretName
 		dests = append(dests, d)
 	}
 

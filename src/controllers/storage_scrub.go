@@ -103,7 +103,7 @@ func (s *StorageScrubber) NeedLeaderElection() bool { return true }
 
 func (s *StorageScrubber) scrub(ctx context.Context) {
 	s.ensurePool()
-	res, err := listBackupSecrets(ctx, s.Client, s.Namespace)
+	res, err := listBackupSecrets(ctx, s.Client, s.Namespace, s.Logger)
 	if err != nil {
 		s.Logger.Error(err, "list secrets")
 		return

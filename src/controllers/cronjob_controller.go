@@ -71,7 +71,12 @@ func (r *CronJobReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("backup-cronjob-controller").
 		For(&corev1.Secret{}, builder.WithPredicates(roleLabelTransitionPredicate())).
-		Owns(&batchv1.CronJob{}).
+		// GenerationChangedPredicate: react only to spec changes on owned
+		// CronJobs, not status-only updates. Without it, the CronJob controller
+		// bumps status.lastScheduleTime on EVERY fire, and each such update
+		// triggered a reconcile — one API round-trip per fire per source (real
+		// load at 10k+ sources) that only re-computed an unchanged spec.
+		Owns(&batchv1.CronJob{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
 }
 

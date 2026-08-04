@@ -192,6 +192,7 @@ func loadDestinations(ctx context.Context, cs kubernetes.Interface, ns string, s
 		return nil, err
 	}
 	out := make([]*secrets.Destination, 0, len(list.Items))
+	seenName := make(map[string]string, len(list.Items)) // logical name -> first Secret name
 	for i := range list.Items {
 		s := &list.Items[i]
 		dest, err := secrets.ParseDestination(s)
@@ -202,6 +203,16 @@ func loadDestinations(ctx context.Context, cs kubernetes.Interface, ns string, s
 		if !src.AllowsDestination(dest.Name) {
 			continue
 		}
+		// De-dup by logical name: the pipeline's per-destination storage cache
+		// is keyed on it, so a second destination sharing a name would reuse
+		// the first's client and silently never receive its dump while still
+		// reporting success. First wins; log the skip.
+		if first, dup := seenName[dest.Name]; dup {
+			ctrl.Log.WithName("worker").Info("skipping destination with duplicate logical name; keeping the first",
+				"name", dest.Name, "kept", first, "skipped", s.Name)
+			continue
+		}
+		seenName[dest.Name] = s.Name
 		out = append(out, dest)
 	}
 	return out, nil

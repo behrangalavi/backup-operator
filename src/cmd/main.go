@@ -101,6 +101,11 @@ func main() {
 		// produces. Set by Helm; required so CronJobs are runnable.
 		{Key: "WORKER_IMAGE", Optional: false},
 		{Key: "WORKER_IMAGE_PULL_POLICY", Optional: true, Default: "IfNotPresent"},
+		// Comma-separated pull-secret names, mirrored from the chart's
+		// imagePullSecrets so worker pods can pull the (fat) image from a
+		// private registry — without this a private-registry install fails
+		// with node-dependent ImagePullBackOff on worker pods only.
+		{Key: "WORKER_IMAGE_PULL_SECRETS", Optional: true},
 		{Key: "WORKER_SERVICE_ACCOUNT", Optional: false},
 		{Key: "AGE_SECRET_NAME", Optional: false},
 
@@ -204,6 +209,7 @@ func main() {
 	worker := controllers.WorkerSpec{
 		Image:              config.GetValue("WORKER_IMAGE"),
 		ImagePullPolicy:    corev1.PullPolicy(config.GetValue("WORKER_IMAGE_PULL_POLICY")),
+		ImagePullSecrets:   parsePullSecrets(config.GetValue("WORKER_IMAGE_PULL_SECRETS")),
 		ServiceAccountName: config.GetValue("WORKER_SERVICE_ACCOUNT"),
 		AgeSecretName:      config.GetValue("AGE_SECRET_NAME"),
 		TempDir:            config.GetValue("TEMP_DIR"),
@@ -435,6 +441,19 @@ func namespaceForUI(watchNs string) string {
 
 // buildWorkerResources constructs ResourceRequirements from env vars.
 // Empty values are silently skipped, so resource limits are optional.
+// parsePullSecrets turns a comma-separated list of Secret names into the
+// LocalObjectReference slice the worker pod spec needs. Blank entries are
+// skipped; empty input yields nil (no pull secrets).
+func parsePullSecrets(csv string) []corev1.LocalObjectReference {
+	var out []corev1.LocalObjectReference
+	for _, name := range strings.Split(csv, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			out = append(out, corev1.LocalObjectReference{Name: name})
+		}
+	}
+	return out
+}
+
 func buildWorkerResources() corev1.ResourceRequirements {
 	reqs := corev1.ResourceRequirements{}
 	if v := config.GetValue("WORKER_CPU_LIMIT"); v != "" {

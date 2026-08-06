@@ -775,7 +775,7 @@ window.deleteSource = function(secretName, displayName) {
     <div class="confirm-text">${tr('modal.delete.warning')}</div>
     <div class="form-actions">
       <button class="btn btn-secondary" onclick="closeModal()" title="Keep this source — close without deleting">${tr('common.cancel')}</button>
-      <button class="btn btn-danger" onclick="confirmDeleteSource('${secretName}')" title="Permanently delete the source Secret. The CronJob is cascaded via OwnerReference; existing dumps in storage remain.">${tr('common.delete')}</button>
+      <button class="btn btn-danger" onclick="confirmDeleteSource('${escJS(secretName)}')" title="Permanently delete the source Secret. The CronJob is cascaded via OwnerReference; existing dumps in storage remain.">${tr('common.delete')}</button>
     </div>`);
 };
 
@@ -1165,7 +1165,7 @@ window.deleteDest = function(secretName, displayName) {
     <div class="confirm-text">${tr('modal.delete.warning')}</div>
     <div class="form-actions">
       <button class="btn btn-secondary" onclick="closeModal()" title="Keep this destination — close without deleting">${tr('common.cancel')}</button>
-      <button class="btn btn-danger" onclick="confirmDeleteDest('${secretName}')" title="Permanently delete the destination Secret. Sources will skip it on next run; existing dumps in storage remain.">${tr('common.delete')}</button>
+      <button class="btn btn-danger" onclick="confirmDeleteDest('${escJS(secretName)}')" title="Permanently delete the destination Secret. Sources will skip it on next run; existing dumps in storage remain.">${tr('common.delete')}</button>
     </div>`);
 };
 
@@ -1295,8 +1295,11 @@ async function renderAlerts(loading = true) {
   }
 
   // --- Setup Guide (shown when nothing is configured) ---
+  // Guard the field access (mirrors the `|| {}` at the top of the block): a
+  // status response missing `prometheus`/`alertmanager` would otherwise throw
+  // a TypeError in this async renderer and hang the Alerts page on its spinner.
   let setupGuide = '';
-  if (statusResp && !statusResp.prometheus.configured && !statusResp.alertmanager.configured) {
+  if (statusResp && !(statusResp.prometheus || {}).configured && !(statusResp.alertmanager || {}).configured) {
     setupGuide = `
       <div class="table-card" style="margin-bottom:16px">
         <div style="padding:12px 16px;border-bottom:1px solid var(--border)">

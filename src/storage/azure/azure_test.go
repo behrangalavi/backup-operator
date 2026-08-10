@@ -137,3 +137,36 @@ func TestStripPrefix_WithPrefix(t *testing.T) {
 		}
 	}
 }
+
+// TestNew_RejectsSSRFAccountName regresses the SSRF bypass: the account name
+// is interpolated into the service-URL host, so a value that smuggles a host
+// (metadata IP, path segment) must be rejected before a client is built.
+func TestNew_RejectsSSRFAccountName(t *testing.T) {
+	bad := []string{
+		"169.254.169.254/",       // metadata host injection
+		"evil.example.com",        // dots not allowed
+		"acct/../x",               // path traversal
+		"ACCOUNT",                 // uppercase (Azure is lowercase-only)
+		"ab",                      // too short
+		"this-name-is-way-too-long-for-azure", // >24 + hyphen
+		"my_account",              // underscore
+	}
+	for _, a := range bad {
+		_, err := New("test", storage.SecretData{
+			keyAccountName: []byte(a),
+			keyAccountKey:  []byte(validKey),
+			keyContainer:   []byte("backups"),
+		}, logr.Discard())
+		if err == nil {
+			t.Errorf("account-name %q must be rejected", a)
+		}
+	}
+	// A valid account name still succeeds.
+	if _, err := New("test", storage.SecretData{
+		keyAccountName: []byte("myaccount123"),
+		keyAccountKey:  []byte(validKey),
+		keyContainer:   []byte("backups"),
+	}, logr.Discard()); err != nil {
+		t.Errorf("valid account name rejected: %v", err)
+	}
+}

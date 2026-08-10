@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 
 	"backup-operator/storage"
@@ -12,6 +13,14 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/go-logr/logr"
 )
+
+// accountNameRe is Azure's storage-account naming rule: 3-24 lowercase
+// letters/digits. We enforce it before interpolating the account into the
+// service URL host — otherwise a value like "169.254.169.254/" (settable via
+// the auth-less UI) would make the host resolve to a metadata/loopback address,
+// an SSRF the egress guard deliberately skips for azure (it assumes the host is
+// the fixed *.blob.core.windows.net domain).
+var accountNameRe = regexp.MustCompile(`^[a-z0-9]{3,24}$`)
 
 // Required Secret keys: account-name, account-key, container.
 // Optional: path-prefix.
@@ -34,6 +43,9 @@ func New(name string, data storage.SecretData, logger logr.Logger) (storage.Stor
 	account := strings.TrimSpace(string(data[keyAccountName]))
 	if account == "" {
 		return nil, fmt.Errorf("azure storage %q: missing %q", name, keyAccountName)
+	}
+	if !accountNameRe.MatchString(account) {
+		return nil, fmt.Errorf("azure storage %q: invalid account-name (must be 3-24 lowercase alphanumerics)", name)
 	}
 	key := strings.TrimSpace(string(data[keyAccountKey]))
 	if key == "" {

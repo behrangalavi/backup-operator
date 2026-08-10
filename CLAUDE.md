@@ -80,7 +80,7 @@ This service is what you get when those three are non-negotiable.
 | `backup-worker` | CronJob-spawned Job pod | One-shot: dump → encrypt → fan-out → retention | One pod per backup run, isolated resources, native K8s observability |
 | `backup-restore` | Operator's laptop | List + decrypt + extract a chosen artifact | Only place the age private key ever lives |
 
-The same image ships all binaries; the entrypoint differs per pod.
+The container image ships the two in-cluster binaries — `backup-operator` and `backup-worker` — with the entrypoint differing per pod. `backup-restore` is deliberately NOT in the image: it is built separately and runs on the operator's machine, the only place the age private key ever lives (see §5.3 and the "Restore is a separate binary" ADR).
 
 ---
 

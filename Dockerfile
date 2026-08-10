@@ -39,7 +39,8 @@ ARG TARGETARCH
 
 # Install once: trust the four upstream repos (debian main, MySQL,
 # Mongo) before the package install so the apt-update covers them all.
-# `--no-install-recommends` keeps the image lean (~280MB).
+# `--no-install-recommends` trims the image, but the DB client tooling still
+# dominates: the final image is ~530MB (see the "Three binaries, one image" ADR).
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl gnupg; \

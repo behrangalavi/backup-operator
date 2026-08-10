@@ -136,14 +136,36 @@ func (s *streamVerifier) parseSQL(ctx context.Context, in verifier.Input, r io.R
 		}
 		return meta.VerificationSkipped, fmt.Sprintf("read decrypted stream: %v", err), err
 	}
-	if err := rc.Close(); err != nil && ctx.Err() == nil {
-		return meta.VerificationSkipped, fmt.Sprintf("close row counter: %v", err), err
+	// A row-counter scan error (classically bufio.ErrTooLong on a single line
+	// > the scanner buffer — e.g. a wide row with a large blob) must NOT map to
+	// Skipped: §14 treats Skipped like a hard mismatch, so an otherwise-healthy
+	// large-row dump would fire a permanent critical BackupRestoreVerificationFailed
+	// every run. Mirror the dump-time path's "never hard-fail on a scan error":
+	// distrust the row count, but still validate the header and pass with a note.
+	countsUnavailable := false
+	var countErr error
+	if err := rc.Close(); err != nil {
+		if ctx.Err() != nil {
+			return meta.VerificationSkipped, "context cancelled mid-stream", ctx.Err()
+		}
+		countsUnavailable = true
+		countErr = err
 	}
 
 	header := string(headBuf)
 	if !sqlHeaderLooksValid(s.dbType, header) {
 		return meta.VerificationMismatch,
 			fmt.Sprintf("dump header does not look like a %s dump (first 256 bytes did not match expected marker)", s.dbType),
+			nil
+	}
+
+	if countsUnavailable {
+		// Header is valid; we just couldn't count rows. The dump decrypted and
+		// gunzipped and looks like the right engine — that is the core property
+		// stream-validate proves. Report match with the caveat rather than a
+		// false critical.
+		return meta.VerificationMatch,
+			fmt.Sprintf("decrypt + parse OK; header valid; row count unavailable (%v)", countErr),
 			nil
 	}
 

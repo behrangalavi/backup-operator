@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os/exec"
 	"strings"
 	"time"
@@ -216,13 +217,17 @@ func smokeMatch(mode Mode, expected, got int64) bool {
 	return ratio >= 0.99
 }
 
-// splitEndpoint parses "host:port".
+// splitEndpoint parses "host:port" into a BARE host (IPv6 brackets stripped)
+// and port, for the CLI tools that take `-h host` separately (redis-cli, psql,
+// mysql). net.SplitHostPort handles bracketed IPv6 ("[fd00::1]:5432" -> host
+// "fd00::1"). The DSN/URI builders don't call this — they interpolate the full
+// (bracketed) endpoint directly, which is already correct for IPv6.
 func splitEndpoint(ep string) (string, string, error) {
-	idx := strings.LastIndex(ep, ":")
-	if idx <= 0 {
-		return "", "", fmt.Errorf("invalid endpoint %q (want host:port)", ep)
+	host, port, err := net.SplitHostPort(ep)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid endpoint %q (want host:port): %w", ep, err)
 	}
-	return ep[:idx], ep[idx+1:], nil
+	return host, port, nil
 }
 
 // sanitiseStderr removes the per-run verifier password from CLI error output

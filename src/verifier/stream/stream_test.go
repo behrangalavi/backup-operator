@@ -353,3 +353,35 @@ func TestStream_UnsupportedDBSkipped(t *testing.T) {
 		t.Errorf("verdict = %q, want skipped (unsupported dbType)", res.Verdict)
 	}
 }
+
+// TestStream_OversizeLineFallsBackToMatch regresses the bug where a dump with a
+// single line larger than the row-counter's 10 MB scanner buffer (a wide row
+// with a big blob) produced a Close error -> Skipped -> permanent critical
+// alert. The verifier must instead validate the header and pass with a
+// "row count unavailable" note.
+func TestStream_OversizeLineFallsBackToMatch(t *testing.T) {
+	var b bytes.Buffer
+	b.WriteString("-- PostgreSQL database dump\n")
+	b.WriteString("COPY public.blobs (id, data) FROM stdin;\n")
+	b.WriteString("1\t")
+	b.Write(bytes.Repeat([]byte("A"), 11*1024*1024)) // > 10 MB single line
+	b.WriteString("\n\\.\n")
+
+	dumpPath, eph := makeEncryptedDump(t, b.Bytes())
+	defer eph.Wipe()
+
+	v := New("postgres", testr.New(t))
+	res, err := v.Verify(context.Background(), verifier.Input{
+		Source:    &secrets.Source{TargetName: "x", DBType: "postgres"},
+		DumpPath:  dumpPath,
+		Identity:  eph,
+		PreStats:  &dumper.Stats{Tables: []dumper.TableStats{{Name: "public.blobs", RowCount: 1}}},
+		StartedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if res.Verdict != meta.VerificationMatch {
+		t.Errorf("verdict = %q, want match (oversize line must not be a critical). summary=%q", res.Verdict, res.Summary)
+	}
+}

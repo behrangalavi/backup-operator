@@ -117,12 +117,31 @@ jobs:
       # Smoke build for the runner's native arch only (no push). Catches
       # Dockerfile breakage (bad apt package, broken build stage) on every PR
       # without the cost of the full multi-arch release build. GHA layer cache
-      # keeps repeat runs fast.
+      # keeps repeat runs fast. load: true so the tool smoke-test below can run
+      # the built image.
       - name: Build image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: false
-          load: false
+          load: true
+          tags: backup-operator:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # The image only earns its ~530 MB by carrying the DB client tools the
+      # worker + Phase-2 verifier exec. "It built" does not prove they are on
+      # PATH — a moved apt package (Oracle's mysql client splits are historically
+      # fluid) would silently ship an image that fails at first backup. Assert
+      # every tool is runnable. redis-cli only ships on the arch where the
+      # mariadb/redis packages land, so probe it best-effort.
+      - name: Smoke-test DB client tools
+        run: |
+          docker run --rm --entrypoint sh backup-operator:ci -c '
+            set -eux
+            pg_dump --version
+            mysqldump --version
+            mongodump --version
+            mongorestore --version
+            command -v redis-cli && redis-cli --version || echo "redis-cli not on this arch (ok)"
+          '

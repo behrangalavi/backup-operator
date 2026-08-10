@@ -5,6 +5,8 @@ import (
 	cryptorand "crypto/rand"
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -83,8 +85,17 @@ func (d *k8sDB) waitForPodIP(ctx context.Context) error {
 			d.log.V(1).Info("pod get failed; retrying", "err", err.Error())
 		} else if pod.Status.Phase == corev1.PodFailed {
 			return fmt.Errorf("pod %s entered Failed phase", d.name)
+		} else if pod.Status.Phase == corev1.PodSucceeded {
+			// The DB container exited 0 immediately (bad image entrypoint, a
+			// one-shot command, RestartPolicyNever). It will never serve — fail
+			// fast instead of spinning until readyTimeout and returning an
+			// opaque deadline error.
+			return fmt.Errorf("pod %s exited (Succeeded) before serving; check the verification image entrypoint", d.name)
 		} else if pod.Status.PodIP != "" && pod.Status.Phase == corev1.PodRunning {
-			d.endpoint = fmt.Sprintf("%s:%d", pod.Status.PodIP, d.port)
+			// net.JoinHostPort brackets IPv6 PodIPs ("[fd00::1]:5432"); a bare
+			// fmt "%s:%d" produced "fd00::1:5432", which every DSN/URI form
+			// (postgres/mysql/mongo use the endpoint verbatim) then parsed wrong.
+			d.endpoint = net.JoinHostPort(pod.Status.PodIP, strconv.Itoa(int(d.port)))
 			d.log.V(1).Info("ephemeral pod has IP", "endpoint", d.endpoint)
 			return nil
 		}

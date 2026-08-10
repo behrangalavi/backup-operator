@@ -238,7 +238,7 @@ func (r *MetricsRefresher) ensurePool() {
 
 func (r *MetricsRefresher) refresh(ctx context.Context) {
 	r.ensurePool()
-	res, err := listBackupSecrets(ctx, r.Client, r.Namespace)
+	res, err := listBackupSecrets(ctx, r.Client, r.Namespace, r.Logger)
 	if err != nil {
 		r.Logger.Error(err, "list secrets")
 		return

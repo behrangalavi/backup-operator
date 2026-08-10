@@ -258,6 +258,41 @@ func TestWait_PodFailsImmediately(t *testing.T) {
 	}
 }
 
+// TestWait_PodSucceededFailsFast regresses the case where the DB container
+// exits 0 immediately (bad entrypoint): Wait must fail fast, not spin until
+// ReadyTimeout and return an opaque deadline error.
+func TestWait_PodSucceededFailsFast(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	s := NewK8sSpawner(cs, "backup")
+	db, err := s.Spawn(context.Background(), Spec{
+		NamePrefix:   "x",
+		Image:        "redis:7-alpine",
+		Port:         6379,
+		ReadyTimeout: time.Minute, // long — the test must NOT wait this out
+	}, testr.New(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pods, _ := cs.CoreV1().Pods("backup").List(context.Background(), metav1.ListOptions{})
+	pod := pods.Items[0].DeepCopy()
+	pod.Status.Phase = corev1.PodSucceeded
+	if _, err := cs.CoreV1().Pods("backup").UpdateStatus(context.Background(), pod, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- db.Wait(context.Background()) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected error for Succeeded pod")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Wait did not fail fast on PodSucceeded (spun toward ReadyTimeout)")
+	}
+}
+
 func TestWait_ProbeRunsAfterIP(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	s := NewK8sSpawner(cs, "backup")

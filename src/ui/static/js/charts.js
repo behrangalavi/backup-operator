@@ -712,10 +712,14 @@ function renderAnomalyStream(items) {
 //
 // Click on any row's label routes to that target's detail page.
 function renderFleetHeatmap(rows) {
-  if (!rows || rows.length === 0) {
+  // Defensively drop any row missing its days array: the cell/xTick code below
+  // dereferences r.days for EVERY row, so one malformed row would throw and
+  // blank the whole dashboard render.
+  rows = (rows || []).filter(r => r && Array.isArray(r.days) && r.days.length > 0);
+  if (rows.length === 0) {
     return '<div class="chart-empty">' + tr('chart.fleetHeatmap.empty') + '</div>';
   }
-  const days = rows[0].days ? rows[0].days.length : 30;
+  const days = rows[0].days.length;
   // Cell + row geometry. Row height (cellSize + cellGap) MUST stay
   // ≥ the label font-size in px or labels overlap when many targets
   // are listed. 14 px cell + 4 px gap = 18 px row, comfortable for

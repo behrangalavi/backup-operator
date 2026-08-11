@@ -23,6 +23,7 @@ func BuildVerification(
 	dumpCounts map[string]int64,
 	dbType string,
 	encryptedSize int64,
+	rawDumpSize int64,
 ) *DumpVerification {
 	if preStats == nil {
 		return &DumpVerification{
@@ -175,7 +176,7 @@ func BuildVerification(
 			)
 		}
 	} else if encryptedSize > 0 {
-		if reason := looksEmptyByHeuristic(dbType, preStats, encryptedSize); reason != "" {
+		if reason := looksEmptyByHeuristic(dbType, preStats, encryptedSize, rawDumpSize); reason != "" {
 			v.LooksEmpty = true
 			v.Summary = reason
 		}
@@ -196,7 +197,7 @@ func BuildVerification(
 // Redis: RDB has a fixed 50-byte header + per-key serialisation. With any
 // keys present, the encrypted dump should clear ~200 bytes easily; anything
 // smaller means redis-cli emitted only the header.
-func looksEmptyByHeuristic(dbType string, preStats *dumper.Stats, encryptedSize int64) string {
+func looksEmptyByHeuristic(dbType string, preStats *dumper.Stats, encryptedSize, rawDumpSize int64) string {
 	if preStats == nil {
 		return ""
 	}
@@ -219,11 +220,18 @@ func looksEmptyByHeuristic(dbType string, preStats *dumper.Stats, encryptedSize 
 		for _, t := range preStats.Tables {
 			preTotalKeys += t.RowCount
 		}
-		const minBytesWithKeys = 200
-		if preTotalKeys > 0 && encryptedSize < minBytesWithKeys {
+		// Check the RAW (pre-compression, pre-encryption) RDB size, not the
+		// encrypted size: age+gzip overhead alone is a few hundred bytes, so
+		// the old `encryptedSize < 200` could never fire — a header-only RDB
+		// (source has keys, dump is just the "REDIS00xx" preamble) was reported
+		// as a successful backup. A real RDB carrying even one key is far larger
+		// than a bare header; 200 raw bytes is comfortably below any real
+		// keyset yet above the ~9-40 byte header.
+		const minRawBytesWithKeys = 200
+		if preTotalKeys > 0 && rawDumpSize < minRawBytesWithKeys {
 			return fmt.Sprintf(
-				"empty dump heuristic: source has %d keys but encrypted RDB is only %d bytes (header-only)",
-				preTotalKeys, encryptedSize,
+				"empty dump heuristic: source has %d keys but raw RDB is only %d bytes (header-only)",
+				preTotalKeys, rawDumpSize,
 			)
 		}
 	}

@@ -169,13 +169,18 @@ func TestDumpToFileWithEncryptor_GzipRoundtrip(t *testing.T) {
 	payload := "INSERT INTO users VALUES (1, 'alice');\n"
 	d := &fakeDumper{dbType: "postgres", payload: payload}
 
-	size, sum, err := p.dumpToFileWithEncryptor(context.Background(), d, dumpFile, nil,
+	res, err := p.dumpToFileWithEncryptor(context.Background(), d, dumpFile, nil,
 		passthroughEncryptor{}, labels.CompressionGzip)
 	if err != nil {
 		t.Fatalf("dumpToFileWithEncryptor: %v", err)
 	}
+	size, sum := res.EncryptedSize, res.SHA256
 	if size <= 0 {
 		t.Errorf("expected positive file size, got %d", size)
+	}
+	// Raw (pre-compression) size must equal the payload the dumper emitted.
+	if res.RawSize != int64(len(payload)) {
+		t.Errorf("raw size %d != payload %d", res.RawSize, len(payload))
 	}
 	if len(sum) != 64 {
 		t.Errorf("expected 64-char hex sha256, got %d chars: %q", len(sum), sum)
@@ -210,7 +215,7 @@ func TestDumpToFileWithEncryptor_RowCounterSeesRawStream(t *testing.T) {
 	d := &fakeDumper{dbType: "mysql", payload: payload}
 	rc := dumper.NewRowCounter(nil, "mysql")
 
-	_, _, err := p.dumpToFileWithEncryptor(context.Background(), d, dumpFile, rc,
+	_, err := p.dumpToFileWithEncryptor(context.Background(), d, dumpFile, rc,
 		passthroughEncryptor{}, labels.CompressionGzip)
 	if err != nil {
 		t.Fatalf("dumpToFileWithEncryptor: %v", err)
@@ -229,7 +234,7 @@ func TestDumpToFileWithEncryptor_DumpErrorPropagates(t *testing.T) {
 	dumpFile := filepath.Join(t.TempDir(), "dump.sql.gz.age")
 	d := &fakeDumper{dbType: "postgres", dumpErr: fmt.Errorf("pg_dump: connection refused")}
 
-	_, _, err := p.dumpToFileWithEncryptor(context.Background(), d, dumpFile, nil,
+	_, err := p.dumpToFileWithEncryptor(context.Background(), d, dumpFile, nil,
 		passthroughEncryptor{}, labels.CompressionGzip)
 	if err == nil {
 		t.Fatal("expected dump error to propagate")

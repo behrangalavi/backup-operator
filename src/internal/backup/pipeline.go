@@ -287,7 +287,8 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 
 	rowCounter := dumper.NewRowCounter(nil, src.DBType) // writer set inside dumpToFile
 	dumpStart := time.Now()
-	encryptedSize, sha256sum, err := p.dumpToFileWithEncryptor(ctx, d, dumpFile, rowCounter, runEncryptor, src.Compression)
+	dumpRes, err := p.dumpToFileWithEncryptor(ctx, d, dumpFile, rowCounter, runEncryptor, src.Compression)
+	encryptedSize, sha256sum := dumpRes.EncryptedSize, dumpRes.SHA256
 	dumpDuration := time.Since(dumpStart)
 	metrics.ObserveDumpDuration(src.TargetName, src.DBType, dumpDuration)
 
@@ -352,7 +353,7 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 			dumpCounts = rowCounter.Counts()
 		}
 	}
-	verification := meta.BuildVerification(preStats, postStats, dumpCounts, src.DBType, encryptedSize)
+	verification := meta.BuildVerification(preStats, postStats, dumpCounts, src.DBType, encryptedSize, dumpRes.RawSize)
 	if verification.Verdict == meta.VerificationMismatch {
 		log.Info("dump verification mismatch detected", "summary", verification.Summary)
 	}

@@ -422,6 +422,23 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 			prevStats = prevMeta.Stats
 			prevSize = prevMeta.EncryptedSizeBytes
 			prevSchemaChangedAt = prevMeta.SchemaChangedAt
+			// SizeChangeRatio compares ENCRYPTED+COMPRESSED sizes across runs.
+			// If the compression algorithm changed since the previous run (e.g.
+			// the user switched gzip->zstd, which is 30-50% smaller), the ratio
+			// drops below the collapse threshold and BackupDumpSizeCollapsed
+			// (critical) fires on a perfectly healthy dump. Zero prevSize for
+			// this one run so the size comparison is skipped (Compare treats
+			// prevSize<=0 as "no comparable baseline"); the next run compares
+			// like-for-like. Empty prevMeta.Compression means a legacy gzip meta.
+			prevComp := prevMeta.Compression
+			if prevComp == "" {
+				prevComp = labels.CompressionGzip
+			}
+			if prevComp != src.Compression {
+				log.Info("compression changed since last run; skipping size-collapse check for this run",
+					"previous", prevComp, "current", src.Compression)
+				prevSize = 0
+			}
 		}
 		// AnonymizeTables persists hashed table names into meta.json, so the
 		// previous run's Stats.Tables[].Name is already in hashed form.

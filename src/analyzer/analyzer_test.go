@@ -30,6 +30,25 @@ func TestCompare_SizeCollapse(t *testing.T) {
 	}
 }
 
+// TestCompare_PrevSizeZeroSkipsSizeCheck documents the invariant the pipeline
+// relies on to suppress a false size-collapse when the compression algorithm
+// changed between runs (gzip->zstd): it passes prevSize=0, which must skip the
+// size comparison entirely (no ratio, no anomaly).
+func TestCompare_PrevSizeZeroSkipsSizeCheck(t *testing.T) {
+	a := NewAnalyzer()
+	prev := &dumper.Stats{SchemaHash: "h"}
+	curr := &dumper.Stats{SchemaHash: "h"}
+
+	r := a.Compare(prev, curr, 0, 100) // prevSize unknown/not comparable
+
+	if hasAnomaly(r.Anomalies, "size-collapse") {
+		t.Errorf("prevSize=0 must skip the size check, got %+v", r.Anomalies)
+	}
+	if r.SizeChangeRatio != 0 {
+		t.Errorf("prevSize=0 must leave SizeChangeRatio at 0, got %v", r.SizeChangeRatio)
+	}
+}
+
 func TestCompare_NoSizeCollapseWhenStable(t *testing.T) {
 	a := NewAnalyzer()
 	prev := &dumper.Stats{SchemaHash: "h"}

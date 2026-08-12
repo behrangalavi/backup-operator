@@ -89,6 +89,20 @@ func (p *Pipeline) runRestoreVerifier(
 		OwnerRef:    p.ownerRef,
 	})
 	if err != nil {
+		// Budget exhaustion (our sub-context timed out while the run's parent
+		// context is still alive) is NOT a verification failure — the dump may
+		// well be restorable, the verifier just didn't fit in its time slice.
+		// Returning a FailureResult here would map to Verdict=Skipped, which
+		// §14 treats like a hard mismatch → a false critical
+		// BackupRestoreVerificationFailed for a merely-slow (large) restore,
+		// re-introducing the very Skipped→false-critical class the budget was
+		// added around. Return nil so the caller carries the previous verdict
+		// forward (preserving the interval clock too). A parent-ctx timeout is
+		// left as a failure — the whole run is aborting anyway.
+		if vctx.Err() != nil && ctx.Err() == nil {
+			log.Info("restore verifier exceeded its time budget; keeping previous verdict", "mode", mode)
+			return nil
+		}
 		log.Error(err, "restore-verifier hard failure", "mode", mode)
 		return verifier.FailureResult(mode, started, err, id.RecipientFingerprint())
 	}

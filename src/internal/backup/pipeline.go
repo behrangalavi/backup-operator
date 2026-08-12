@@ -556,7 +556,15 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	var restoreVerification *meta.RestoreVerificationResult
 	if ephID != nil && p.verifierFactory != nil {
 		restoreVerification = p.runRestoreVerifier(ctx, src, dumpFile, ephID, preStats, dumpCounts, log)
-	} else if restoreVerificationActive(src) && preloadedMeta != nil {
+	}
+	// Carry the previous run's verification result forward when this run
+	// produced none — either because it wasn't due (interval not elapsed, not
+	// armed) OR because the verifier ran out of its time budget and returned
+	// nil (see runRestoreVerifier). Both must preserve the interval clock and
+	// must NOT surface as a fresh Skipped→critical. `restoreVerification == nil`
+	// covers both; a real verdict (match/mismatch/genuine failure) is non-nil
+	// and is kept as-is.
+	if restoreVerification == nil && restoreVerificationActive(src) && preloadedMeta != nil {
 		// This run did not verify (interval not yet elapsed). Carry the
 		// previous run's verification result forward so its CompletedAt clock
 		// persists in this meta.json. Without this, a skipped run writes a meta

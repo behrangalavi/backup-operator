@@ -83,3 +83,23 @@ func TestInitializeConfigModule_ValidationPasses(t *testing.T) {
 		t.Errorf("GetValue = %q, want %q", got, "good")
 	}
 }
+
+func TestGetBool_TruthyForms(t *testing.T) {
+	cases := map[string]bool{
+		"true": true, "True": true, "TRUE": true,
+		"1": true, "yes": true, "on": true, " true ": true,
+		"false": false, "False": false, "0": false, "no": false,
+		"": false, "flase": false, "2": false,
+	}
+	for val, want := range cases {
+		t.Setenv("TEST_BOOL", val)
+		if err := InitializeConfigModule([]ConfigItemDescription{
+			{Key: "TEST_BOOL", Optional: true, Default: ""},
+		}); err != nil {
+			t.Fatalf("init: %v", err)
+		}
+		if got := GetBool("TEST_BOOL"); got != want {
+			t.Errorf("GetBool(%q) = %v, want %v", val, got, want)
+		}
+	}
+}

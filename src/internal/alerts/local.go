@@ -166,8 +166,11 @@ func (p *LocalProvider) List(ctx context.Context) ([]Alert, error) {
 			}
 		}
 
-		// 3. BackupDumpSizeCollapsed
-		if s.dumpSizeChangeKnown && s.dumpSizeChangeRatio > 0 && s.dumpSizeChangeRatio < 0.5 {
+		// 3. BackupDumpSizeCollapsed. Mirror the Prometheus rule's bare
+		// `< 0.5` — the dumpSizeChangeKnown flag already guards "gauge unset",
+		// so the old extra `> 0` was redundant and wrongly suppressed a total
+		// collapse to zero bytes (ratio 0), which Prometheus would fire on.
+		if s.dumpSizeChangeKnown && s.dumpSizeChangeRatio < 0.5 {
 			out = append(out, Alert{
 				Alertname:   "BackupDumpSizeCollapsed",
 				Target:      target,

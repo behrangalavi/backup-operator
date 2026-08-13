@@ -509,6 +509,7 @@ The operator and the worker have separate (overlapping) config schemas. All valu
 | `DEFAULT_MIN_KEEP` | no | `3` | Fallback for sources without annotation |
 | `WORKER_IMAGE` | **yes** | — | Container image for worker pods (Helm sets to operator's image) |
 | `WORKER_IMAGE_PULL_POLICY` | no | `IfNotPresent` | |
+| `WORKER_IMAGE_PULL_SECRETS` | no | — | Comma-separated pull-secret names, stamped into every worker pod so a private-registry image can be pulled on any node. Helm mirrors `imagePullSecrets` into this. Without it, private-registry installs hit node-dependent `ImagePullBackOff` on worker pods only. |
 | `WORKER_SERVICE_ACCOUNT` | **yes** | — | SA bound to worker pods (separate from operator SA, minimal privileges) |
 | `AGE_SECRET_NAME` | **yes** | — | Secret holding `AGE_PUBLIC_KEYS` for worker pods to mount |
 | `WORKER_CPU_LIMIT` | no | `2000m` | CPU limit for worker pods |
@@ -544,6 +545,8 @@ The operator and the worker have separate (overlapping) config schemas. All valu
 | `DEFAULT_MIN_KEEP` | no | `3` |
 | `DEFAULT_SCHEDULE` | no | `0 2 * * *` (parser needs it for fallback) |
 | `POD_NAMESPACE` | recommended | — (or pass via `--namespace`) |
+| `POD_NAME` | no (Phase-2) | — | Worker pod name (Downward API). Used as the `OwnerReference` name for spawned ephemeral verifier DB pods so K8s GC cascades them. Only needed for Phase-2 restore-verification modes. |
+| `POD_UID` | no (Phase-2) | — | Worker pod UID (Downward API); the `OwnerReference` UID for spawned verifier pods. Only needed for Phase-2 restore-verification modes. |
 
 ### Restore (`cmd/restore/main.go`)
 

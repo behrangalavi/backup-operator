@@ -92,7 +92,7 @@ func (s *Server) handleAPICreateSource(w http.ResponseWriter, r *http.Request) {
 	}
 	var req sourceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "invalid JSON: " + err.Error())
+		writeError(w, http.StatusBadRequest, codeBadRequest, "invalid JSON")
 		return
 	}
 	if req.Name == "" || req.DBType == "" || req.Host == "" {

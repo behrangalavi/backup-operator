@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,9 +87,18 @@ func GetInt64(key string) int64 {
 	return v
 }
 
-// GetBool returns true when the config value is "true" (case-sensitive).
+// GetBool interprets common truthy spellings case-insensitively:
+// true/1/yes/on. Everything else (including empty/unset) is false. This
+// matters for security-relevant flags like UI_READ_ONLY — the previous
+// exact "true"-only match meant UI_READ_ONLY=True or =1 silently left the
+// read-only guard OFF with no error.
 func GetBool(key string) bool {
-	return GetValue(key) == "true"
+	switch strings.ToLower(strings.TrimSpace(GetValue(key))) {
+	case "true", "1", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // GetDurationSeconds parses the config value as an integer number of seconds

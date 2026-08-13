@@ -67,8 +67,8 @@ func main() {
 		},
 		{Key: "TEMP_DIR", Optional: true, Default: "/tmp/backup-operator"},
 		{Key: "TEMP_DIR_SIZE", Optional: true, Default: "10Gi"},
-		{Key: "DEFAULT_RETENTION_DAYS", Optional: true, Default: "30"},
-		{Key: "DEFAULT_MIN_KEEP", Optional: true, Default: "3"},
+		{Key: "DEFAULT_RETENTION_DAYS", Optional: true, Default: "30", Validate: validateNonNegInt},
+		{Key: "DEFAULT_MIN_KEEP", Optional: true, Default: "3", Validate: validateNonNegInt},
 		{Key: "METRICS_REFRESH_INTERVAL_SECONDS", Optional: true, Default: "30", Validate: func(v string) error {
 			n, err := strconv.Atoi(v)
 			if err != nil {
@@ -441,6 +441,21 @@ func namespaceForUI(watchNs string) string {
 
 // buildWorkerResources constructs ResourceRequirements from env vars.
 // Empty values are silently skipped, so resource limits are optional.
+// validateNonNegInt rejects non-integer or negative config values. Used for
+// DEFAULT_RETENTION_DAYS / DEFAULT_MIN_KEEP so a typo fails loudly at startup
+// instead of silently becoming 0 (0 min-keep = no safety floor) — parity with
+// the worker binary, which already guards these.
+func validateNonNegInt(v string) error {
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fmt.Errorf("must be an integer: %w", err)
+	}
+	if n < 0 {
+		return fmt.Errorf("must be >= 0, got %d", n)
+	}
+	return nil
+}
+
 // parsePullSecrets turns a comma-separated list of Secret names into the
 // LocalObjectReference slice the worker pod spec needs. Blank entries are
 // skipped; empty input yields nil (no pull secrets).

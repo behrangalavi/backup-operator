@@ -94,6 +94,25 @@ func (c *cache[V]) getOrRefreshAsync(key string, load func() (V, error), onRefre
 		c.mu.Unlock()
 		return e.v, fresh
 	}
+	// Claim a refresh slot WITHOUT blocking, BEFORE spawning. Acquiring the
+	// semaphore inside the goroutine (as this used to) meant every missed key
+	// spawned a goroutine that then parked on the full channel — on a cold
+	// cache over a large fleet (thousands of keys) that is a thousands-strong
+	// goroutine + memory spike. Non-blocking acquire bounds the number of
+	// spawned goroutines to the semaphore capacity; an over-cap tick returns
+	// stale and retries on the next SSE tick (the stale-while-revalidate
+	// contract already tolerates that). It also prevents a flood on one cache
+	// from starving the other: a refused refresh doesn't queue, it just waits
+	// for the next tick when a slot is likely free.
+	if c.sem != nil {
+		select {
+		case c.sem <- struct{}{}:
+			// slot acquired; released in the goroutine below
+		default:
+			c.mu.Unlock()
+			return e.v, false // fresh is false here; skip-and-retry next tick
+		}
+	}
 	c.loading[key] = true
 	c.mu.Unlock()
 
@@ -112,7 +131,6 @@ func (c *cache[V]) getOrRefreshAsync(key string, load func() (V, error), onRefre
 			c.mu.Unlock()
 		}()
 		if c.sem != nil {
-			c.sem <- struct{}{}
 			defer func() { <-c.sem }()
 		}
 		v, err := load()

@@ -2,10 +2,56 @@ package ui
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 )
+
+// With a bounded semaphore, getOrRefreshAsync must SPAWN at most cap
+// goroutines across distinct keys — acquiring the slot before the `go`, not
+// inside it. Over-cap keys return stale and are retried on a later tick rather
+// than parking a goroutine each (the cold-cache/big-fleet goroutine spike).
+// Distinguisher: the old (acquire-inside) code marked all 5 keys `loading` and
+// parked 3 goroutines; the fix marks only the 2 that won a slot.
+func TestGetOrRefreshAsync_BoundsSpawnAtSemaphore(t *testing.T) {
+	c := newCache[int](time.Minute)
+	c.sem = make(chan struct{}, 2)
+
+	release := make(chan struct{})
+	load := func() (int, error) {
+		<-release // hang so slots stay occupied
+		return 1, nil
+	}
+	for i := 0; i < 5; i++ {
+		v, fresh := c.getOrRefreshAsync(fmt.Sprintf("k%d", i), load, nil)
+		if fresh || v != 0 {
+			t.Errorf("k%d: cold miss must return stale zero + fresh=false", i)
+		}
+	}
+	time.Sleep(100 * time.Millisecond) // let any spawned goroutines reach the loader
+
+	c.mu.Lock()
+	nLoading := len(c.loading)
+	c.mu.Unlock()
+	if nLoading != 2 {
+		t.Fatalf("expected exactly 2 keys marked loading (sem cap 2), got %d — over-cap keys must be skipped, not parked", nLoading)
+	}
+	close(release)
+
+	// A skipped key must be refreshable once slots free up (skip-and-retry).
+	time.Sleep(100 * time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if got, ok := c.getOrRefreshAsync("k4", load, nil); ok && got == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("skipped key k4 never refreshed after slots freed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
 
 // getOrRefreshAsync must never block the caller on the loader, even when
 // the loader is slow. This is the property /api/jobs (estimateDuration)

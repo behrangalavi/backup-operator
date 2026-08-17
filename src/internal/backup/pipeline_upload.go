@@ -103,10 +103,12 @@ func (p *Pipeline) uploadMeta(
 				if err := st.Upload(ctx, metaPath, bytes.NewReader(metaBytes)); err != nil {
 					if attempt < maxRetries {
 						log.Info("meta upload failed, retrying", "destination", d.Name, "attempt", attempt, "err", err.Error())
+						t := time.NewTimer(backoff)
 						select {
 						case <-ctx.Done():
+							t.Stop() // don't leak the timer on cancel
 							return
-						case <-time.After(backoff):
+						case <-t.C:
 							backoff *= 2
 						}
 						continue
@@ -154,10 +156,12 @@ func (p *Pipeline) uploadDumpWithRetry(
 				"delay", delay.String(),
 				"err", lastErr.Error(),
 			)
+			t := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
+				t.Stop() // don't leak the timer on cancel
 				return ctx.Err()
-			case <-time.After(delay):
+			case <-t.C:
 			}
 		}
 	}

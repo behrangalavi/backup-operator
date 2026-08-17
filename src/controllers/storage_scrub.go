@@ -125,8 +125,12 @@ func (s *StorageScrubber) scrub(ctx context.Context) {
 		go func(src *secrets.Source) {
 			defer wg.Done()
 			defer safe.Goroutine(s.Logger, "storage-scrub-source", src.TargetName)
-			workers <- struct{}{}
-			defer func() { <-workers }()
+			select {
+			case workers <- struct{}{}:
+				defer func() { <-workers }()
+			case <-ctx.Done():
+				return
+			}
 			s.scrubSource(ctx, src, res.Dests, streamSlots)
 		}(src)
 	}
@@ -146,9 +150,14 @@ func (s *StorageScrubber) scrubSource(ctx context.Context, src *secrets.Source, 
 			defer safe.Goroutine(s.Logger, "storage-scrub", d.Name)
 			// Gate on the shared stream semaphore so total in-flight dump
 			// re-streams stay bounded regardless of how many sources are
-			// being walked concurrently.
-			streamSlots <- struct{}{}
-			defer func() { <-streamSlots }()
+			// being walked concurrently. Bail promptly on shutdown rather
+			// than blocking for a slot.
+			select {
+			case streamSlots <- struct{}{}:
+				defer func() { <-streamSlots }()
+			case <-ctx.Done():
+				return
+			}
 			s.scrubOne(ctx, src.TargetName, d)
 		}(d)
 	}

@@ -1085,8 +1085,12 @@ func (s *Server) handleAPIDestinationStats(w http.ResponseWriter, r *http.Reques
 		go func(idx int) {
 			defer wg.Done()
 			defer safe.Goroutine(s.cfg.Logger, "destination-stats", list.Items[idx].Name)
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-r.Context().Done():
+				return
+			}
 
 			sec := &list.Items[idx]
 			dest, err := secrets.ParseDestination(sec)
@@ -1241,8 +1245,12 @@ func (s *Server) handleAPIDestinationHealth(w http.ResponseWriter, r *http.Reque
 		go func(d *secrets.Destination) {
 			defer wg.Done()
 			defer safe.Goroutine(s.cfg.Logger, "destination-health", d.Name)
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-r.Context().Done():
+				return
+			}
 
 			st, err := s.storageFor(d, "health")
 			if err != nil {
@@ -1488,8 +1496,12 @@ func (s *Server) handleAPIConsistencyCheck(w http.ResponseWriter, r *http.Reques
 		go func(idx int, d *secrets.Destination) {
 			defer wg.Done()
 			defer safe.Goroutine(s.cfg.Logger, "consistency-check", d.Name)
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-r.Context().Done():
+				return
+			}
 
 			st, err := s.storageFor(d, "consistency")
 			if err != nil {

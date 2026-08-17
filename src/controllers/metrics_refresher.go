@@ -282,8 +282,15 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			defer safe.Goroutine(r.Logger, "metrics-refresh-source", s.Name)
-			workers <- struct{}{}
-			defer func() { <-workers }()
+			// Acquire a worker slot but bail promptly on shutdown instead of
+			// blocking until a peer frees one (matches the per-dest slot
+			// acquire below). Only release if we actually acquired.
+			select {
+			case workers <- struct{}{}:
+				defer func() { <-workers }()
+			case <-ctx.Done():
+				return
+			}
 
 			src, err := secrets.ParseSource(&s, "")
 			if err != nil {
@@ -390,6 +397,10 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 		select {
 		case slot <- struct{}{}:
 		case <-ctx.Done():
+			// Shutdown mid-fan-out: wait for the destination goroutines already
+			// spawned to finish rather than detaching them (they hold slots and
+			// write metrics). Skip the aggregation below — the tick is aborting.
+			wg.Wait()
 			return
 		}
 		wg.Add(1)

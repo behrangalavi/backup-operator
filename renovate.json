@@ -1,16 +1,58 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended"
+    "config:recommended",
+    ":pinDigestsDisabled",
+    "helpers:pinGitHubActionDigests"
   ],
+  "gomod": {
+    "fileMatch": ["^src/go\\.mod$"],
+    "postUpdateOptions": ["gomodTidy"]
+  },
+  "docker": {
+    "pinDigests": true
+  },
+  "helm-values": {
+    "fileMatch": ["^charts/.+/values\\.yaml$"]
+  },
   "customManagers": [
     {
+      "description": "Dockerfile ARG pins (MongoDB Database Tools tarball version)",
       "customType": "regex",
-      "fileMatch": ["kubernetes/.+\\.yaml$"],
-      "matchStrings": [
-        "repository:\\s*(?<depName>[^\\s]+)\\n\\s+tag:\\s*(?<currentValue>[^\\s]+)"
-      ],
-      "datasourceTemplate": "docker"
+      "fileMatch": ["^Dockerfile$"],
+      "matchStrings": ["ARG MONGO_TOOLS_VERSION=(?<currentValue>[0-9.]+)"],
+      "depNameTemplate": "mongodb/mongo-tools",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "description": "golangci-lint release pinned in the Justfile and CI",
+      "customType": "regex",
+      "fileMatch": ["^Justfile$", "^\\.github/workflows/.+\\.ya?ml$"],
+      "matchStrings": ["(?:VERSION=|version: )(?<currentValue>v2\\.[0-9.]+)"],
+      "depNameTemplate": "golangci/golangci-lint",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "description": "Go tools run via `go run pkg@version` / `go install pkg@version`",
+      "customType": "regex",
+      "fileMatch": ["^Justfile$", "^\\.github/workflows/.+\\.ya?ml$"],
+      "matchStrings": ["go (?:run|install) (?<depName>[a-z0-9./-]+)(?:/cmd/[a-z-]+)?@(?<currentValue>v[0-9][0-9.]*)"],
+      "datasourceTemplate": "go"
+    },
+    {
+      "description": "Trivy / cosign / kubeconform / helm-unittest versions in CI",
+      "customType": "regex",
+      "fileMatch": ["^\\.github/workflows/.+\\.ya?ml$"],
+      "matchStrings": ["# renovate: depName=(?<depName>[^\\s]+)\\s+\\w+: (?<currentValue>v?[0-9][0-9.]*)"],
+      "datasourceTemplate": "github-releases"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchManagers": ["gomod"],
+      "matchPackagePatterns": ["^k8s\\.io/", "^sigs\\.k8s\\.io/controller-runtime"],
+      "groupName": "kubernetes libraries",
+      "description": "k8s.io/* and controller-runtime must move together (the 0.35→0.37 bump broke controller-runtime 0.23)"
     }
   ]
 }

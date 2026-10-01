@@ -1,7 +1,25 @@
 {{- if .Values.networkPolicy.enabled }}
-# Operator NetworkPolicy — restricts egress to the Kubernetes API and
-# storage destinations. DNS (port 53) is always allowed so in-cluster
-# name resolution works.
+{{- $np := .Values.networkPolicy }}
+# Operator NetworkPolicy.
+#
+# Ingress: the operator serves metrics (8080), the mutating UI (8081) and
+# the docs portal (8083). Without an ingress section the whole cluster can
+# reach the unauthenticated UI, so this policy restricts who may connect:
+#   - metrics: from `networkPolicy.metrics.allowedFrom` (default: any pod in
+#     `networkPolicy.monitoringNamespace`)
+#   - ui/docs: from `networkPolicy.ui.allowedFrom` — EMPTY BY DEFAULT, which
+#     with policyTypes=[Ingress] means deny. Set it to the auth-proxy / ingress
+#     controller pods that front the UI.
+# Health probes (8082) come from the kubelet, which NetworkPolicy ingress
+# rules do not govern on the common CNIs (Calico, Cilium, kindnet); if your
+# CNI does enforce on kubelet traffic, add its node CIDR to
+# `networkPolicy.ui.allowedFrom` as an ipBlock — port 8082 is listed below.
+#
+# Egress: DNS always; the API server (optionally scoped to
+# `networkPolicy.apiServerCIDRs`); SSH/HTTPS to storage; Prometheus /
+# Alertmanager (optionally scoped to `networkPolicy.monitoringNamespace`).
+# FTPS is NOT covered — it needs the control port (21/990) AND the server's
+# PASV data-port range; add both via extraEgressRules.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -11,7 +29,37 @@ spec:
   podSelector:
     matchLabels: {{- include "backup-operator.selectorLabels" . | nindent 6 }}
   policyTypes:
+    - Ingress
     - Egress
+  ingress:
+    # Prometheus scrape of /metrics
+    - ports:
+        - protocol: TCP
+          port: 8080
+      {{- $metricsFrom := ($np.metrics).allowedFrom }}
+      {{- if and (not $metricsFrom) $np.monitoringNamespace }}
+      from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.monitoringNamespace }}
+      {{- else if $metricsFrom }}
+      from: {{- toYaml $metricsFrom | nindent 8 }}
+      {{- end }}
+    {{- with ($np.ui).allowedFrom }}
+    # Management UI, docs portal and (for CNIs that enforce on kubelet
+    # traffic) the health port.
+    - ports:
+        - protocol: TCP
+          port: {{ $.Values.ui.port }}
+        - protocol: TCP
+          port: {{ ($.Values.docs).port | default 8083 }}
+        - protocol: TCP
+          port: 8082
+      from: {{- toYaml . | nindent 8 }}
+    {{- end }}
+    {{- with $np.extraIngressRules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
   egress:
     # DNS resolution (CoreDNS / kube-dns)
     - ports:
@@ -19,41 +67,120 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # Kubernetes API server
+    # Kubernetes API server. 443 doubles as HTTPS to S3-compatible storage
+    # unless apiServerCIDRs scopes it — then storage gets its own rule.
     - ports:
         - protocol: TCP
           port: 443
         - protocol: TCP
           port: 6443
-    # SFTP destinations (SSH)
+      {{- with $np.apiServerCIDRs }}
+      to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      {{- end }}
+    {{- if $np.apiServerCIDRs }}
+    # S3-compatible / Azure / GCS storage (HTTPS) — unscoped, destinations
+    # are user-defined.
+    - ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+    # SFTP destinations (SSH); 23 = Hetzner Storage Box
     - ports:
         - protocol: TCP
           port: 22
         - protocol: TCP
-          port: 23  # Hetzner Storage Box
-    # NOTE: FTPS is not covered here — it needs the control port (21/990) AND
-    # the server's PASV data-port range. Add both via networkPolicy.extraEgressRules
-    # (see the FTPS example in values.yaml) if you use an FTPS destination.
-    # S3-compatible storage (HTTPS)
+          port: 23
+    {{- if or (.Values.alerts).prometheusURL (.Values.alerts).alertmanagerURL }}
+    # Prometheus query API (UI Alerts page) and Alertmanager API (status
+    # check + test alert). Scoped to the monitoring namespace when set.
+    - ports:
+        {{- if (.Values.alerts).prometheusURL }}
+        - protocol: TCP
+          port: 9090
+        {{- end }}
+        {{- if (.Values.alerts).alertmanagerURL }}
+        - protocol: TCP
+          port: 9093
+        {{- end }}
+      {{- with $np.monitoringNamespace }}
+      to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+      {{- end }}
+    {{- end }}
+    {{- with $np.extraEgressRules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- $workerNP := true }}{{- if and $np.worker (hasKey $np.worker "enabled") }}{{ $workerNP = $np.worker.enabled }}{{ end }}
+{{- if $workerNP }}
+---
+# Worker NetworkPolicy. Worker pods hold the database credentials and dial
+# both the databases and the storage backends, so they are the pods that
+# most need an egress boundary. Selected by the labels the CronJob
+# reconciler stamps on every worker pod (controllers/cronjob_controller.go).
+# No ingress is needed — nothing connects to a worker.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "backup-operator.fullname" . }}-worker
+  labels: {{- include "backup-operator.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: backup-operator
+    matchExpressions:
+      - key: backup.mogenius.io/target
+        operator: Exists
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    # DNS resolution
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Kubernetes API (BackupSource / credentials / destinations, Events)
     - ports:
         - protocol: TCP
           port: 443
-    # Metrics scraping (Prometheus pulls, no egress needed)
-    {{- if (.Values.alerts).prometheusURL }}
-    # Prometheus query API for the UI Alerts page (push direction).
-    # Default port for Prometheus Operator's "operated" Service is 9090.
+        - protocol: TCP
+          port: 6443
+      {{- with $np.apiServerCIDRs }}
+      to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      {{- end }}
+    {{- if $np.apiServerCIDRs }}
+    # HTTPS storage (S3 / Azure / GCS)
     - ports:
         - protocol: TCP
-          port: 9090
+          port: 443
     {{- end }}
-    {{- if (.Values.alerts).alertmanagerURL }}
-    # Alertmanager API (currently only used for status info; the UI shows
-    # an "open in Alertmanager" link, but a future tab might call it).
+    # SSH storage (SFTP; 23 = Hetzner Storage Box)
     - ports:
         - protocol: TCP
-          port: 9093
-    {{- end }}
-    {{- with .Values.networkPolicy.extraEgressRules }}
+          port: 22
+        - protocol: TCP
+          port: 23
+    # Databases on their default ports: postgres, mysql/mariadb, mongo, redis.
+    # Non-default DB ports go into networkPolicy.worker.extraEgressRules.
+    - ports:
+        {{- range (($np.worker).databasePorts | default (list 5432 3306 27017 6379)) }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- with ($np.worker).extraEgressRules }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
+{{- end }}
 {{- end }}

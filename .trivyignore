@@ -1,0 +1,3 @@
+# CVE allow-list for the release-time Trivy scan (fail on HIGH/CRITICAL).
+# One CVE per line with a dated justification; remove when the fix lands.
+# CVE-2024-XXXXX  # <reason>, expires YYYY-MM-DD

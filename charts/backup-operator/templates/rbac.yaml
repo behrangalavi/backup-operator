@@ -37,10 +37,16 @@ rules:
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create"]
 
-  # Operator — leader election lease.
+  # Operator — leader election lease. controller-runtime creates the Lease
+  # if absent (create cannot be scoped by resourceNames) and then only ever
+  # get/updates its own lease, so the mutating verbs are pinned to it.
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["create"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    resourceNames: [{{ .Values.config.leaderElectionId | quote }}]
+    verbs: ["get", "update"]
 
   # Operator — emit events (worker, UI) and read them back for the
   # in-product audit view. get/list use the API reader directly to

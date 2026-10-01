@@ -1,0 +1,43 @@
+suite: crds
+templates:
+  - crds.yaml
+values:
+  - ./values/base.yaml
+tests:
+  - it: renders the three CRDs with the keep policy
+    asserts:
+      - hasDocuments:
+          count: 3
+      - documentSelector:
+          path: metadata.name
+          value: backupsources.backup.mogenius.io
+        equal:
+          path: metadata.annotations["helm.sh/resource-policy"]
+          value: keep
+      - documentSelector:
+          path: metadata.name
+          value: backupdestinations.backup.mogenius.io
+        equal:
+          path: spec.versions[0].subresources.status
+          value: {}
+      - documentSelector:
+          path: metadata.name
+          value: backuprecipients.backup.mogenius.io
+        equal:
+          path: metadata.labels["app.kubernetes.io/part-of"]
+          value: backup-operator
+  - it: drops the keep policy when crds.keep=false
+    set:
+      crds.keep: false
+    asserts:
+      - documentSelector:
+          path: metadata.name
+          value: backupsources.backup.mogenius.io
+        isNull:
+          path: metadata.annotations["helm.sh/resource-policy"]
+  - it: renders nothing when crds.install=false
+    set:
+      crds.install: false
+    asserts:
+      - hasDocuments:
+          count: 0

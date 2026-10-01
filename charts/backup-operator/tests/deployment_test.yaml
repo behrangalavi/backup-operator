@@ -1,0 +1,104 @@
+suite: deployment
+templates:
+  - deployment.yaml
+values:
+  - ./values/base.yaml
+tests:
+  - it: seeds bootstrap recipients from the array form and omits worker knobs when empty
+    set:
+      agePublicKeys: ["age1aaa", "age1bbb"]
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: BOOTSTRAP_AGE_RECIPIENTS
+            value: "age1aaa,age1bbb"
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WORKER_NODE_SELECTOR
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SETTINGS_CONFIGMAP
+          any: true
+  - it: accepts the string form of agePublicKeys
+    set:
+      agePublicKeys: "age1single"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: BOOTSTRAP_AGE_RECIPIENTS
+            value: "age1single"
+  - it: fails without any age recipient
+    set:
+      agePublicKeys: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: agePublicKeys is required
+  - it: renders worker knobs as JSON env vars
+    set:
+      worker.nodeSelector:
+        disk: fast
+      worker.tolerations:
+        - key: spot
+          operator: Exists
+      worker.priorityClassName: backup-low
+      worker.extraVolumeMounts:
+        - name: ca
+          mountPath: /etc/ca
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WORKER_NODE_SELECTOR
+            value: '{"disk":"fast"}'
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WORKER_TOLERATIONS
+            value: '[{"key":"spot","operator":"Exists"}]'
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WORKER_PRIORITY_CLASS_NAME
+            value: backup-low
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WORKER_EXTRA_VOLUME_MOUNTS
+            value: '[{"mountPath":"/etc/ca","name":"ca"}]'
+  - it: applies operator scheduling knobs and keeps the hardened security contexts by default
+    set:
+      nodeSelector:
+        tier: control
+      priorityClassName: system-cluster-critical
+      podLabels:
+        team: ops
+      config.metricsRefreshIntervalSeconds: 15
+    asserts:
+      - equal:
+          path: spec.template.spec.nodeSelector.tier
+          value: control
+      - equal:
+          path: spec.template.spec.priorityClassName
+          value: system-cluster-critical
+      - equal:
+          path: spec.template.metadata.labels.team
+          value: ops
+      - equal:
+          path: spec.template.metadata.labels["app.kubernetes.io/name"]
+          value: backup-operator
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: METRICS_REFRESH_INTERVAL_SECONDS
+            value: "15"

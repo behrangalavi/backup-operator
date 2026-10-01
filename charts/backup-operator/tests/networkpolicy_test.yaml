@@ -1,0 +1,95 @@
+suite: networkpolicy
+templates:
+  - networkpolicy.yaml
+values:
+  - ./values/base.yaml
+tests:
+  - it: renders nothing by default
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: renders operator and worker policies with ingress denied for the UI
+    set:
+      networkPolicy.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 2
+      - documentIndex: 0
+        equal:
+          path: spec.policyTypes
+          value: [Ingress, Egress]
+      - documentIndex: 0
+        lengthEqual:
+          path: spec.ingress
+          count: 1
+      - documentIndex: 0
+        equal:
+          path: spec.ingress[0].ports[0].port
+          value: 8080
+      - documentIndex: 1
+        equal:
+          path: metadata.name
+          value: RELEASE-NAME-backup-operator-worker
+      - documentIndex: 1
+        equal:
+          path: spec.podSelector.matchExpressions[0].key
+          value: backup.mogenius.io/target
+      - documentIndex: 1
+        contains:
+          path: spec.egress
+          content:
+            ports:
+              - protocol: TCP
+                port: 5432
+              - protocol: TCP
+                port: 3306
+              - protocol: TCP
+                port: 27017
+              - protocol: TCP
+                port: 6379
+  - it: scopes API server and monitoring egress and opens the UI to the proxy
+    set:
+      networkPolicy.enabled: true
+      networkPolicy.apiServerCIDRs: ["10.96.0.1/32"]
+      networkPolicy.monitoringNamespace: monitoring
+      networkPolicy.ui.allowedFrom:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: auth
+    asserts:
+      - documentIndex: 0
+        lengthEqual:
+          path: spec.ingress
+          count: 2
+      - documentIndex: 0
+        equal:
+          path: spec.ingress[0].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: monitoring
+      - documentIndex: 0
+        equal:
+          path: spec.ingress[1].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: auth
+      - documentIndex: 0
+        equal:
+          path: spec.egress[1].to[0].ipBlock.cidr
+          value: 10.96.0.1/32
+      - documentIndex: 0
+        contains:
+          path: spec.egress
+          content:
+            ports:
+              - protocol: TCP
+                port: 9090
+              - protocol: TCP
+                port: 9093
+            to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: monitoring
+  - it: can disable the worker policy
+    set:
+      networkPolicy.enabled: true
+      networkPolicy.worker.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 1

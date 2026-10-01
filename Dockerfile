@@ -1,4 +1,7 @@
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+# Base images are pinned by digest for reproducible builds; Renovate bumps
+# the digest together with the tag (see renovate.json). Resolve a new
+# digest with `docker buildx imagetools inspect <image:tag>`.
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine@sha256:8ac98ca534ac3f51e1f420a1dd2c15e74c75cfa0f23f3ad27eb5d7236c349a0c AS builder
 WORKDIR /workspace
 
 ARG TARGETOS
@@ -33,7 +36,7 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOARM=${TARGETVARIANT#v} \
 # `mariadb-client` (for dbType=mariadb sources) lets the dumper pick the
 # canonical tool per source rather than papering over differences with
 # wire-protocol compatibility tricks.
-FROM debian:bookworm-slim AS runtime
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS runtime
 ARG MONGO_TOOLS_VERSION=100.16.1
 ARG TARGETARCH
 
@@ -70,7 +73,9 @@ RUN set -eux; \
       amd64) \
         # MySQL rotates GPG keys yearly; pin to a specific year so
         # failed rotations don't surface as silent unsigned-repo
-        # warnings. Bump when the upstream key expires.
+        # warnings. Bump when the upstream key expires — checked
+        # 2026-10-01: repo.mysql.com still publishes only the 2025 key
+        # (RPM-GPG-KEY-mysql-2026 → 404), so 2025 remains current.
         curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2025 | gpg --dearmor -o /usr/share/keyrings/mysql.gpg; \
         echo "deb [signed-by=/usr/share/keyrings/mysql.gpg] http://repo.mysql.com/apt/debian bookworm mysql-8.4-lts" > /etc/apt/sources.list.d/mysql.list; \
         DBCLIENT_PKG="mysql-community-client-core"; \

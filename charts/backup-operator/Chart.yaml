@@ -2,9 +2,23 @@ apiVersion: v2
 name: backup-operator
 description: Kubernetes-native backup service for Postgres/MySQL/MariaDB/Mongo/Redis with semantic dump analysis
 type: application
+# version / appVersion are placeholders — the release workflow stamps the
+# semantic-release version into both before `helm package`.
 version: 0.1.0
 appVersion: "0.1.0"
+kubeVersion: ">=1.26.0-0"
+home: https://github.com/behrangalavi/backup-operator
+sources:
+  - https://github.com/behrangalavi/backup-operator
 icon: https://raw.githubusercontent.com/mogenius/branding/main/logo.svg
+keywords:
+  - backup
+  - postgres
+  - mysql
+  - mariadb
+  - mongodb
+  - redis
+  - age
 maintainers:
   - name: mogenius
     url: https://mogenius.com

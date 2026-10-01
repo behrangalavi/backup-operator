@@ -13,11 +13,16 @@
   `helm uninstall` from deleting the CRDs — and with them every
   BackupSource / BackupDestination / BackupRecipient in the cluster.
 */}}
-{{- if (.Values.crds).install | default true }}
+{{- /* `false | default true` is true in Go templates, so booleans that
+       default to true are read with hasKey instead of `default`. */}}
+{{- $crds := .Values.crds | default dict }}
+{{- $install := true }}{{- if hasKey $crds "install" }}{{ $install = $crds.install }}{{ end }}
+{{- $keep := true }}{{- if hasKey $crds "keep" }}{{ $keep = $crds.keep }}{{ end }}
+{{- if $install }}
 {{- range $path, $_ := .Files.Glob "files/crds/*.yaml" }}
 {{- $crd := $.Files.Get $path | fromYaml }}
 {{- $annotations := $crd.metadata.annotations | default dict }}
-{{- if ($.Values.crds).keep | default true }}
+{{- if $keep }}
 {{- $_ := set $annotations "helm.sh/resource-policy" "keep" }}
 {{- end }}
 {{- $_ := set $crd.metadata "annotations" $annotations }}

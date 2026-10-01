@@ -1,0 +1,107 @@
+suite: rbac
+templates:
+  - rbac.yaml
+values:
+  - ./values/base.yaml
+tests:
+  - it: grants read-only CRD access and no SubjectAccessReview without the UI
+    asserts:
+      - hasDocuments:
+          count: 4
+      - documentIndex: 0
+        equal:
+          path: kind
+          value: Role
+      - documentIndex: 0
+        contains:
+          path: rules
+          content:
+            apiGroups: ["backup.mogenius.io"]
+            resources: ["backupsources", "backupdestinations", "backuprecipients"]
+            verbs: ["get", "list", "watch"]
+      - documentIndex: 0
+        contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["secrets"]
+            verbs: ["get", "create", "update", "patch"]
+      - documentIndex: 0
+        notContains:
+          path: rules
+          content:
+            apiGroups: ["coordination.k8s.io"]
+            resources: ["leases"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+      - documentIndex: 0
+        contains:
+          path: rules
+          content:
+            apiGroups: ["coordination.k8s.io"]
+            resources: ["leases"]
+            resourceNames: ["backup-operator"]
+            verbs: ["get", "update"]
+  - it: grants CRD and Secret mutation plus the SubjectAccessReview ClusterRole with a writable UI
+    set:
+      ui.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 6
+      - documentIndex: 0
+        contains:
+          path: rules
+          content:
+            apiGroups: ["backup.mogenius.io"]
+            resources: ["backupsources", "backupdestinations", "backuprecipients"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+      - documentIndex: 2
+        equal:
+          path: kind
+          value: ClusterRole
+      - documentIndex: 2
+        equal:
+          path: rules[0].resources[0]
+          value: subjectaccessreviews
+  - it: keeps the operator read-only when the UI itself is read-only
+    set:
+      ui.enabled: true
+      ui.readOnly: true
+    asserts:
+      - documentIndex: 0
+        contains:
+          path: rules
+          content:
+            apiGroups: ["backup.mogenius.io"]
+            resources: ["backupsources", "backupdestinations", "backuprecipients"]
+            verbs: ["get", "list", "watch"]
+  - it: gives the worker only by-name Secret reads and no pod verbs by default
+    asserts:
+      - documentIndex: 2
+        equal:
+          path: metadata.name
+          value: RELEASE-NAME-backup-operator-worker
+      - documentIndex: 2
+        contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["secrets"]
+            verbs: ["get"]
+      - documentIndex: 2
+        notContains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["pods"]
+            verbs: ["create", "get", "list", "watch", "delete"]
+  - it: adds pod verbs for Phase-2 restore verification
+    set:
+      restoreVerification.enableEphemeralPodSpawn: true
+    asserts:
+      - documentIndex: 2
+        contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["pods"]
+            verbs: ["create", "get", "list", "watch", "delete"]

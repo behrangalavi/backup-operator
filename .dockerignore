@@ -1,0 +1,18 @@
+# Build context hygiene: the Dockerfile only COPYs src/, CLAUDE.md, README.md.
+# Everything else is noise at best and credentials at worst (.env holds the
+# local operator config, test/local holds real database passwords).
+.git
+.github
+.idea
+.vscode
+.env
+.env.*
+!.env.example
+dist
+test
+charts
+docs
+*.log
+*.tgz
+src/restore
+src/**/*_test.go

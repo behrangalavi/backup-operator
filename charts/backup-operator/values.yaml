@@ -12,6 +12,61 @@ imagePullSecrets: []
 
 replicaCount: 1
 
+# Deployment rollout strategy. Leader election makes a surge safe; use
+# Recreate on clusters that forbid two operator pods at once.
+strategy: {}
+  # type: RollingUpdate
+
+# --- Operator pod scheduling / extension knobs ---
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+priorityClassName: ""
+podAnnotations: {}
+# Extra labels merged into the pod template (the full chart label set is
+# always present; these are additions).
+podLabels: {}
+# Extra env vars / envFrom for the operator container (e.g. HTTPS_PROXY,
+# a Secret with PROMETHEUS_URL basic-auth).
+extraEnv: []
+envFrom: []
+# Extra volumes/mounts for the operator (e.g. a CA bundle for an internal
+# S3 endpoint). The /tmp emptyDir is always mounted.
+extraVolumes: []
+extraVolumeMounts: []
+
+# Pod / container security contexts. Defaults pass Pod Security Admission
+# "restricted"; override only when your platform injects something that
+# conflicts (OpenShift SCC UID ranges, for example).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# Probe timings. startup is empty by default (the operator is ready in
+# seconds); set e.g. {failureThreshold: 30, periodSeconds: 2} on slow nodes.
+probes:
+  startup: {}
+  liveness:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
 # Discovery is namespace-scoped — the operator watches BackupSource /
 # BackupDestination / BackupRecipient objects in its own namespace only.
 # Set to a different namespace to override; "" means the release namespace.
@@ -38,6 +93,10 @@ config:
   # floor that prevents accidentally deleting the most recent backups.
   defaultRetentionDays: 30
   defaultMinKeep: 3
+  # Tick interval of the MetricsRefresher (reconstructs run-level metrics and
+  # BackupSource status from each destination's latest meta.json). Floor 5.
+  # Unset = operator default (30).
+  metricsRefreshIntervalSeconds: null
 
 # Public age recipient(s). Required: the chart fails to render if empty.
 # Each key is seeded by the operator at startup as a BackupRecipient object
@@ -79,6 +138,29 @@ workerResources:
   requests:
     cpu: 250m
     memory: 256Mi
+
+# Worker pod scheduling / extension knobs. Flow through the operator (as
+# JSON env vars WORKER_*) into every CronJob it renders, so backup pods can
+# be pinned to dedicated / spot / storage-local nodes, carry a
+# priorityClass, or mount a CA bundle for a TLS database.
+worker:
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  priorityClassName: ""
+  podAnnotations: {}
+  # Extra env vars for the worker container, Kubernetes EnvVar shape.
+  extraEnv: []
+  # Extra volumes/mounts for the worker pod, e.g. a CA bundle:
+  #   extraVolumes:
+  #     - name: db-ca
+  #       secret: { secretName: db-ca }
+  #   extraVolumeMounts:
+  #     - name: db-ca
+  #       mountPath: /etc/backup/ca
+  #       readOnly: true
+  extraVolumes: []
+  extraVolumeMounts: []
 
 # K8s-native retry on Job failure. Each retry spawns a fresh worker pod
 # with exponential backoff (10s, 20s, 40s, ..., capped at 6m). Catches
@@ -213,6 +295,10 @@ serviceMonitor:
   # added automatically from `.Values.prometheusReleaseLabel` (above) — this
   # field is for any additional custom labels.
   labels: {}
+  # Prometheus relabel configs applied to the scrape target / to scraped
+  # samples (e.g. drop high-cardinality series).
+  relabelings: []
+  metricRelabelings: []
 
 prometheusRule:
   enabled: true
@@ -251,9 +337,11 @@ prometheusRule:
       labels: { severity: warning }
       annotations:
         summary: "Database charset/collation changed for backup target {{ $labels.target }} — restore may silently truncate multibyte characters"
+    # A scrub also "fails" when the destination was briefly unreachable, so
+    # ride out a single blip before paging critical.
     - alert: BackupStorageCorrupted
       expr: max by (target, destination) (backup_operator_storage_scrub_passed) == 0
-      for: 1m
+      for: 15m
       labels: { severity: critical }
       annotations:
         summary: "Storage scrub failed for backup target {{ $labels.target }} on {{ $labels.destination }} — stored dump SHA256 does not match meta.json (corruption or unreachable)"
@@ -323,18 +411,57 @@ grafanaDashboard:
   # folder routing: `grafana_folder: "Backup"`).
   labels: {}
 
-# Restricts operator pod egress to DNS, K8s API, SSH (22/23), and HTTPS (443).
-# Disabled by default — enable once you've verified your storage endpoints
-# are reachable through the allowed ports. Use extraEgressRules for anything
-# else. The operator only dials STORAGE backends (metrics refresh + scrub),
-# never databases — so custom ports are storage ports (e.g. MinIO on 9000),
-# not DB ports. FTPS is NOT covered by the built-in rules: it needs the
-# control port (21 explicit / 990 implicit) AND the server's PASV data-port
-# range, both via extraEgressRules — see the FTPS example below.
+# NetworkPolicies for the operator pod and the worker pods. Disabled by
+# default — enable once you've verified your storage endpoints are reachable
+# through the allowed ports.
+#
+# Operator ingress: metrics (8080) from `metrics.allowedFrom` (default: any
+# pod in `monitoringNamespace`); UI (ui.port) and docs from `ui.allowedFrom`,
+# which is EMPTY by default = denied. The UI has no built-in auth, so point
+# allowedFrom at your auth proxy / ingress controller only. Health probes
+# come from the kubelet and are not subject to ingress rules on the common
+# CNIs; if yours enforces them, add the node CIDR as an ipBlock to
+# ui.allowedFrom (port 8082 is included in that rule).
+#
+# Operator egress: DNS, API server (optionally scoped to apiServerCIDRs),
+# SSH 22/23 and HTTPS 443 to storage, Prometheus/Alertmanager (optionally
+# scoped to monitoringNamespace). The operator only dials STORAGE backends
+# (metrics refresh + scrub + UI probes), never databases.
+#
+# Worker egress: DNS, API server, SSH/HTTPS storage and the default database
+# ports (databasePorts). Non-default DB ports → worker.extraEgressRules.
+#
+# FTPS is NOT covered by the built-in rules: it needs the control port (21
+# explicit / 990 implicit) AND the server's PASV data-port range, both via
+# extraEgressRules (operator) and worker.extraEgressRules — see the example.
 networkPolicy:
   enabled: false
+  # CIDRs of the Kubernetes API server endpoints (kubectl get endpoints
+  # kubernetes -n default). Empty = 443/6443 open to any destination.
+  apiServerCIDRs: []
+  # Namespace running Prometheus / Alertmanager; scopes the 9090/9093 egress
+  # and is the default source for metrics scrapes.
+  monitoringNamespace: ""
+  metrics:
+    # NetworkPolicyPeer list allowed to scrape /metrics. Empty = any pod in
+    # monitoringNamespace (or anywhere, when that is empty too).
+    allowedFrom: []
+  ui:
+    # NetworkPolicyPeer list allowed to reach the UI and docs ports. EMPTY =
+    # DENIED. Example (oauth2-proxy in namespace "auth"):
+    #   allowedFrom:
+    #     - namespaceSelector:
+    #         matchLabels: { kubernetes.io/metadata.name: auth }
+    #       podSelector:
+    #         matchLabels: { app.kubernetes.io/name: oauth2-proxy }
+    allowedFrom: []
+  extraIngressRules: []
   extraEgressRules: []
-  # Example: allow MinIO on a custom port
+  worker:
+    enabled: true
+    databasePorts: [5432, 3306, 27017, 6379]
+    extraEgressRules: []
+  # Example: allow MinIO on a custom port (operator AND worker need it)
   # extraEgressRules:
   #   - ports:
   #       - protocol: TCP

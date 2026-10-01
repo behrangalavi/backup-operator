@@ -1,0 +1,46 @@
+{{ .Chart.Name }} {{ .Chart.Version }} installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Configuration model
+  Backups are declared with CustomResources (backup.mogenius.io/v1alpha1):
+    BackupSource       what to dump, when, retention, analyzer, verification
+    BackupDestination  where to upload (sftp / ftps / s3 / azure / gcs)
+    BackupRecipient    an age public key every dump is encrypted to
+  Only credentials live in Secrets, referenced by name from the CR spec.
+  Only PUBLIC age keys are stored in the cluster — keep the private key
+  offline; it is the only way to decrypt a backup.
+
+  kubectl -n {{ .Release.Namespace }} get backupsources,backupdestinations,backuprecipients
+
+{{- $keys := 0 }}
+{{- if kindIs "slice" .Values.agePublicKeys }}{{ $keys = len .Values.agePublicKeys }}{{ else if .Values.agePublicKeys }}{{ $keys = 1 }}{{ end }}
+Age recipients
+  {{ $keys }} key(s) from agePublicKeys are seeded as BackupRecipient objects by
+  the operator at startup. Add or rotate keys with further BackupRecipient
+  manifests; removing a key from values does not delete its object.
+
+{{- if .Values.ui.enabled }}
+
+Management UI (port {{ .Values.ui.port }})
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "backup-operator.fullname" . }} {{ .Values.ui.port }}:{{ .Values.ui.port }}
+  then open http://localhost:{{ .Values.ui.port }}
+  The UI has NO built-in authentication. Front it with an auth proxy before
+  exposing it beyond port-forward.
+{{- if not .Values.networkPolicy.enabled }}
+  WARNING: networkPolicy.enabled=false — every pod in the cluster can reach
+  the UI on port {{ .Values.ui.port }}. Enable the NetworkPolicy and set
+  networkPolicy.ui.allowedFrom to your auth proxy.
+{{- else if not (.Values.networkPolicy.ui).allowedFrom }}
+  NOTE: networkPolicy.ui.allowedFrom is empty, so UI ingress is denied by the
+  NetworkPolicy. Use port-forward, or set allowedFrom to your auth proxy.
+{{- end }}
+{{- end }}
+
+Migrating from the labelled-Secret model (pre-CRD releases)
+  Secrets labelled backup.mogenius.io/role are no longer read. Convert them
+  once with the restore CLI:
+    backup-restore migrate -n {{ .Release.Namespace }} --age-secret {{ include "backup-operator.fullname" . }}-age           # print
+    backup-restore migrate -n {{ .Release.Namespace }} --age-secret {{ include "backup-operator.fullname" . }}-age --apply   # create
+
+Restore
+  backup-restore --destination <BackupDestination> -n {{ .Release.Namespace }} --target <source> --list
+  backup-restore --destination <BackupDestination> -n {{ .Release.Namespace }} --target <source> --age-key ~/age.key --decompress | psql ...

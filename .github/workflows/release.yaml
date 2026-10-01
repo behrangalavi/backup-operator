@@ -21,34 +21,14 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # 1. Quality gate. Mirrors ci.yaml so a main-push that bypasses CI
-  #    (e.g. direct push, force-push) still gets the same checks.
+  # 1. Quality gate. Reuses ci.yaml verbatim (workflow_call) so a main-push
+  #    that bypasses a PR (direct push, force-push) runs exactly the checks
+  #    the PR would have: build/race tests, lint, govulncheck, generated-file
+  #    drift, chart unit tests + kubeconform, image smoke test, UI tests.
   test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: src/go.mod
-          cache-dependency-path: src/go.sum
-
-      - name: Build
-        working-directory: src
-        run: go build ./...
-
-      - name: Vet
-        working-directory: src
-        run: go vet ./...
-
-      - name: Test
-        working-directory: src
-        run: go test ./...
-
-      - uses: azure/setup-helm@v5
-
-      - name: Helm lint
-        run: helm lint charts/backup-operator --set agePublicKeys="age1test"
+    uses: ./.github/workflows/ci.yaml
+    permissions:
+      contents: read
 
   # 2. Dry-run semantic-release to determine whether this push releases
   #    anything and, if so, the next version. Read-only token; no tag,
@@ -80,7 +60,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # 3. Build & push multi-arch image with the planned version. No :latest
-  #    tag yet — that floats only after the entire release succeeds.
+  #    tag yet — that floats only after the entire release succeeds. The
+  #    pushed image is scanned (Trivy, HIGH/CRITICAL fail the release) and
+  #    signed keyless with cosign (Sigstore OIDC via id-token).
   build-image:
     runs-on: ubuntu-latest
     needs: plan
@@ -88,6 +70,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@v5
 
@@ -99,7 +84,8 @@ jobs:
 
       - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/build-push-action@v7
+      - id: push
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -111,6 +97,30 @@ jobs:
           provenance: true
           sbom: true
 
+      # Scan the pushed multi-arch image. The runtime stage is ~530 MB of
+      # Debian plus DB client packages — exactly the surface CVE scanners
+      # exist for. .trivyignore carries dated, justified exceptions.
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.push.outputs.digest }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          trivyignores: .trivyignore
+
+      - uses: sigstore/cosign-installer@v3
+
+      # Keyless: the signature is bound to this workflow's OIDC identity and
+      # recorded in Rekor. Verify with
+      #   cosign verify --certificate-identity-regexp 'github.com/<owner>/<repo>/' \
+      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com <image>@<digest>
+      - name: Sign image
+        env:
+          COSIGN_YES: "true"
+        run: cosign sign --recursive ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.push.outputs.digest }}
+
   # 4. Package & push the Helm chart with the planned version. Runs only
   #    after image push succeeded — chart references the image, so we
   #    never publish a chart that points at a missing image.
@@ -121,6 +131,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v5
 
@@ -138,7 +149,18 @@ jobs:
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} --username ${{ github.actor }} --password-stdin
 
       - name: Push chart
-        run: helm push backup-operator-${{ needs.plan.outputs.version }}.tgz oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
+        id: push
+        run: |
+          helm push backup-operator-${{ needs.plan.outputs.version }}.tgz oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts 2>&1 | tee push.log
+          echo "digest=$(sed -n 's/^Digest: //p' push.log)" >> "$GITHUB_OUTPUT"
+
+      - uses: sigstore/cosign-installer@v3
+
+      # Sign the OCI chart artifact by digest, same keyless flow as the image.
+      - name: Sign chart
+        env:
+          COSIGN_YES: "true"
+        run: cosign sign ${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/backup-operator@${{ steps.push.outputs.digest }}
 
   # 5. Image + chart are now both pushed. Create the Git tag and the
   #    GitHub Release. If everything above failed, no tag exists and the

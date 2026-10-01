@@ -29,13 +29,23 @@ build-restore:
 # Build binaries for all targets
 build-all: build-linux-amd64 build-linux-arm64
 
-build-linux-amd64:
-    cd src && GOOS=linux GOARCH=amd64 go build -tags timetzdata -trimpath -gcflags="all=-l" \
-        -ldflags="-s -w" -o ../dist/amd64/backup-operator ./cmd/main.go
+# Cross-compile all three binaries for one Linux arch into dist/<arch>/.
+# The worker has no Version var yet, so only the operator carries -X.
+build-linux arch:
+    #!/usr/bin/env sh
+    set -e
+    VERSION=$(git describe --tags $(git rev-list --tags --max-count=1) 2>/dev/null || echo "dev")
+    cd src
+    GOOS=linux GOARCH={{arch}} go build -tags timetzdata -trimpath -gcflags="all=-l" \
+        -ldflags="-s -w -X main.Version=${VERSION}" -o ../dist/{{arch}}/backup-operator ./cmd/main.go
+    GOOS=linux GOARCH={{arch}} go build -tags timetzdata -trimpath -gcflags="all=-l" \
+        -ldflags="-s -w" -o ../dist/{{arch}}/backup-worker ./cmd/worker
+    GOOS=linux GOARCH={{arch}} go build -tags timetzdata -trimpath -gcflags="all=-l" \
+        -ldflags="-s -w" -o ../dist/{{arch}}/backup-restore ./cmd/restore
 
-build-linux-arm64:
-    cd src && GOOS=linux GOARCH=arm64 go build -tags timetzdata -trimpath -gcflags="all=-l" \
-        -ldflags="-s -w" -o ../dist/arm64/backup-operator ./cmd/main.go
+build-linux-amd64: (build-linux "amd64")
+
+build-linux-arm64: (build-linux "arm64")
 
 # Tidy module deps
 tidy:
@@ -73,11 +83,34 @@ adopt-crds release="backup-operator" namespace="backup":
     done
 
 # Run tests and linters for quick local iteration
-check: generate-check golangci-lint test-unit
+check: generate-check golangci-lint test-unit test-ui test-chart
 
-# Execute unit tests
+# Execute unit tests (with the race detector — the operator is full of
+# fan-out goroutines, pools and semaphores)
 test-unit:
-    cd src && go run gotest.tools/gotestsum@latest --format="testname" --hide-summary="skipped" --format-hide-empty-pkg --rerun-fails="0" -- -count=1 ./...
+    cd src && go run gotest.tools/gotestsum@v1.13.0 --format="testname" --hide-summary="skipped" --format-hide-empty-pkg --rerun-fails="0" -- -race -count=1 ./...
+
+# Frontend unit tests (node:test, no dependencies). No-op until
+# src/ui/static/js/tests exists.
+test-ui:
+    #!/usr/bin/env sh
+    set -e
+    if [ -d src/ui/static/js/tests ]; then node --test 'src/ui/static/js/tests/*.test.mjs'; else echo "no frontend tests yet (src/ui/static/js/tests)"; fi
+
+# Helm chart unit tests (helm-unittest plugin) + schema validation of the
+# rendered manifests (kubeconform, installed into a cache dir on demand).
+test-chart:
+    #!/usr/bin/env sh
+    set -e
+    helm plugin list | grep -q unittest || helm plugin install https://github.com/helm-unittest/helm-unittest.git --version 0.6.3
+    helm unittest charts/backup-operator
+    helm lint --strict charts/backup-operator --set agePublicKeys="age1test"
+    BINDIR="${XDG_CACHE_HOME:-$HOME/.cache}/backup-operator-tools/bin"
+    [ -x "$BINDIR/kubeconform" ] || GOBIN="$BINDIR" go install github.com/yannh/kubeconform/cmd/kubeconform@v0.7.0
+    helm template backup-operator charts/backup-operator --api-versions monitoring.coreos.com/v1 \
+        --set agePublicKeys="age1test" --set ui.enabled=true --set docs.enabled=true --set networkPolicy.enabled=true \
+        --set storageScrub.enabled=true --set restoreVerification.enableEphemeralPodSpawn=true --set replicaCount=2 \
+        | "$BINDIR/kubeconform" -strict -ignore-missing-schemas -summary
 
 # Execute golangci-lint (pinned to match .github/workflows/ci.yaml — bump both together).
 # Uses the prebuilt release binary, not `go run`: building golangci-lint from

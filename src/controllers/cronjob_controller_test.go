@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"backup-operator/api/v1alpha1"
+	"backup-operator/internal/secrets"
 
 	"github.com/go-logr/logr"
 	batchv1 "k8s.io/api/batch/v1"
@@ -229,5 +230,57 @@ func TestCronJobNameFor_LongCollision(t *testing.T) {
 	b := "very-long-prefix-shared-between-two-sources-bbbbbbbbbb"
 	if cronJobNameFor(a) == cronJobNameFor(b) {
 		t.Errorf("collision: both produced %q", cronJobNameFor(a))
+	}
+}
+
+// TestBuildCronJob_AppliesSchedulingKnobs: the optional pod-shape knobs land
+// in the worker pod template and the built-in env/volumes are preserved.
+func TestBuildCronJob_AppliesSchedulingKnobs(t *testing.T) {
+	src := testSource("knobs", "backup")
+	flat, _ := secrets.FromBackupSource(src, nil, "0 2 * * *")
+	r := &CronJobReconciler{Logger: logr.Discard(), Worker: WorkerSpec{
+		Image: "img", ServiceAccountName: "sa", AgeSecretName: "age", TempDir: "/tmp/x", RunTimeoutSeconds: 10,
+		NodeSelector:      map[string]string{"pool": "backup"},
+		Tolerations:       []corev1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpEqual, Value: "backup", Effect: corev1.TaintEffectNoSchedule}},
+		Affinity:          &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{}},
+		PriorityClassName: "backup-low",
+		PodAnnotations:    map[string]string{"sidecar.istio.io/inject": "false"},
+		ExtraEnv:          []corev1.EnvVar{{Name: "PGSSLMODE", Value: "require"}},
+		ExtraVolumes:      []corev1.Volume{{Name: "ca", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "db-ca"}}}},
+		ExtraVolumeMounts: []corev1.VolumeMount{{Name: "ca", MountPath: "/etc/db-ca", ReadOnly: true}},
+	}}
+	cj := r.buildCronJob(src, flat)
+	pod := cj.Spec.JobTemplate.Spec.Template
+	if pod.Spec.NodeSelector["pool"] != "backup" || len(pod.Spec.Tolerations) != 1 || pod.Spec.Affinity == nil || pod.Spec.PriorityClassName != "backup-low" {
+		t.Errorf("scheduling knobs not applied: %+v", pod.Spec)
+	}
+	if pod.Annotations["sidecar.istio.io/inject"] != "false" {
+		t.Errorf("pod annotations not applied: %v", pod.Annotations)
+	}
+	c := pod.Spec.Containers[0]
+	hasEnv := func(name string) bool {
+		for _, e := range c.Env {
+			if e.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasEnv("PGSSLMODE") || !hasEnv("AGE_PUBLIC_KEYS") {
+		t.Errorf("extra env must be appended to, not replace, the built-in env: %v", c.Env)
+	}
+	foundMount, foundVol := false, false
+	for _, m := range c.VolumeMounts {
+		if m.Name == "ca" {
+			foundMount = true
+		}
+	}
+	for _, v := range pod.Spec.Volumes {
+		if v.Name == "ca" {
+			foundVol = true
+		}
+	}
+	if !foundMount || !foundVol || len(pod.Spec.Volumes) < 2 {
+		t.Errorf("extra volume/mount must be appended alongside the temp volume: vols=%v mounts=%v", pod.Spec.Volumes, c.VolumeMounts)
 	}
 }

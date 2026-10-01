@@ -221,3 +221,27 @@ func TestGetOrRefreshAsync_OnRefreshOnlyOnSuccess(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// TestCache_SweepsExpiredEntries regresses the churn leak: a key that is
+// never requested again must not live in the map forever once it has been
+// expired for more than a TTL.
+func TestCache_SweepsExpiredEntries(t *testing.T) {
+	c := newCache[int](10 * time.Millisecond)
+	for i := 0; i < 50; i++ {
+		k := "dest-" + string(rune('a'+i%26)) + string(rune('a'+i/26))
+		if _, err := c.getOrLoad(k, func() (int, error) { return i, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if c.size() != 50 {
+		t.Fatalf("expected 50 entries, got %d", c.size())
+	}
+	time.Sleep(35 * time.Millisecond) // > 2×TTL: expired AND past the stale grace
+	// Any access triggers the sweep (rate-limited to once per TTL).
+	if _, err := c.getOrLoad("fresh", func() (int, error) { return 1, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.size(); got != 1 {
+		t.Errorf("expired entries must be swept on access, got %d entries", got)
+	}
+}

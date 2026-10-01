@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"os"
 	"path"
-	"strings"
 	"sync"
 	"time"
 
 	"backup-operator/internal/meta"
+	"backup-operator/internal/redact"
 	"backup-operator/internal/safe"
 	"backup-operator/internal/secrets"
 	"backup-operator/metrics"
@@ -51,7 +51,10 @@ func (p *Pipeline) fanOutDumps(
 			if err != nil {
 				log.Error(err, "destination upload failed", "destination", d.Name)
 				metrics.SetDestinationFailed(target, d.Name, true)
-				results[idx].Error = err.Error()
+				// meta.json is stored in plaintext: scrub credentials out of the
+				// storage error (URI userinfo, key=value secrets) before it lands
+				// in a bucket anyone with read access can open.
+				results[idx].Error = redact.StorageError(err)
 				return
 			}
 			metrics.SetDestinationFailed(target, d.Name, false)
@@ -196,7 +199,7 @@ func (p *Pipeline) uploadDumpOne(
 	}
 	metrics.ObserveUploadDuration(target, d.Name, d.StorageType, time.Since(start))
 
-	if err := verifyUploadSize(ctx, st, objectPath, localSize, p.logger); err != nil {
+	if err := p.verifyUploadSize(ctx, st, d.Name, target, objectPath, localSize); err != nil {
 		return err
 	}
 	return nil
@@ -204,24 +207,62 @@ func (p *Pipeline) uploadDumpOne(
 
 // verifyUploadSize checks that the uploaded object's size matches the local
 // file. Catches silent truncation, network corruption, or partial writes.
-func verifyUploadSize(ctx context.Context, st storage.Storage, objectPath string, expected int64, log logr.Logger) error {
-	objs, err := st.List(ctx, objectPath)
+// When the check cannot run — List failed, or the backend did not return the
+// object — the run continues (availability over strictness), but the gap is
+// now visible: an Info log plus a Warning `UploadVerifySkipped` Event on the
+// source, instead of a V(1) line nobody sees.
+func (p *Pipeline) verifyUploadSize(ctx context.Context, st storage.Storage, destName, target, objectPath string, expected int64) error {
+	skipReason, err := checkUploadSize(ctx, st, objectPath, expected)
 	if err != nil {
-		log.V(1).Info("post-upload verify: list failed, skipping", "path", objectPath, "err", err.Error())
+		return err
+	}
+	if skipReason != "" {
+		p.logger.Info("post-upload size verification skipped", "destination", destName, "path", objectPath, "reason", skipReason)
+		p.events.Emit("Warning", "UploadVerifySkipped",
+			fmt.Sprintf("Post-upload size verification skipped for target %s on %s (%s): %s",
+				target, destName, path.Base(objectPath), skipReason))
 		return nil
 	}
-	for _, o := range objs {
-		if o.Path == objectPath || strings.HasSuffix(o.Path, "/"+path.Base(objectPath)) {
-			if o.Size != expected {
-				return &RetryableError{
-					Op:  "upload verify",
-					Err: fmt.Errorf("size mismatch for %s: local=%d remote=%d", objectPath, expected, o.Size),
-				}
-			}
-			log.V(1).Info("post-upload verify passed", "path", objectPath, "size", expected)
-			return nil
-		}
-	}
-	log.V(1).Info("post-upload verify: object not found in listing, skipping", "path", objectPath)
+	p.logger.V(1).Info("post-upload verify passed", "destination", destName, "path", objectPath, "size", expected)
 	return nil
+}
+
+// verifyUploadSize is the event-less form kept for callers without a
+// Pipeline (tests); the method above is what the upload path uses.
+func verifyUploadSize(ctx context.Context, st storage.Storage, objectPath string, expected int64, log logr.Logger) error {
+	skipReason, err := checkUploadSize(ctx, st, objectPath, expected)
+	if err != nil {
+		return err
+	}
+	if skipReason != "" {
+		log.Info("post-upload size verification skipped", "path", objectPath, "reason", skipReason)
+	}
+	return nil
+}
+
+// checkUploadSize lists the uploaded path and compares sizes. The match is
+// exact on the object path: Storage.List returns logical, prefix-stripped
+// paths, so the uploaded key round-trips as-is. A basename suffix match used
+// to be accepted too, which could compare against a different object under
+// the same prefix and either pass a truncated upload or fail a good one.
+// skipReason is non-empty when the check could not run; err is the size
+// mismatch (retryable — the next attempt re-uploads).
+func checkUploadSize(ctx context.Context, st storage.Storage, objectPath string, expected int64) (skipReason string, err error) {
+	objs, err := st.List(ctx, objectPath)
+	if err != nil {
+		return "list failed: " + redact.StorageError(err), nil
+	}
+	for _, o := range objs {
+		if o.Path != objectPath {
+			continue
+		}
+		if o.Size != expected {
+			return "", &RetryableError{
+				Op:  "upload verify",
+				Err: fmt.Errorf("size mismatch for %s: local=%d remote=%d", objectPath, expected, o.Size),
+			}
+		}
+		return "", nil
+	}
+	return "object not returned by listing", nil
 }

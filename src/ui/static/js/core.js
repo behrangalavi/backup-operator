@@ -84,12 +84,42 @@ function tr(key, vars) {
   if (s == null) s = lookup(dictionaries[fallbackLang]);
   if (s == null) s = key;
   if (vars) {
-    s = s.replace(/\{(\w+)\}/g, (_, k) => (vars[k] != null ? vars[k] : '{' + k + '}'));
+    // Interpolated values are HTML-escaped: tr() output almost always lands
+    // in innerHTML templates, and several vars carry server/K8s error text
+    // that can echo user-controlled names. Use trText() for textContent
+    // sinks (toast, modal title) where escaping would show literal entities.
+    s = s.replace(/\{(\w+)\}/g, (_, k) => (vars[k] != null ? escHTML(String(vars[k])) : '{' + k + '}'));
   }
   return s;
 }
 
-window.tr = tr; // expose for inline handlers and easy console debugging
+// trText is tr() without HTML-escaping of the interpolated vars — for sinks
+// that set textContent (toast, modal title), where the browser never parses
+// the string as markup and escaping would render "&amp;" literally.
+function trText(key, vars) {
+  const parts = key.split('.');
+  const lookup = (dict) => {
+    let v = dict;
+    for (const p of parts) {
+      if (v == null || typeof v !== 'object') return undefined;
+      v = v[p];
+    }
+    return typeof v === 'string' ? v : undefined;
+  };
+  let s = lookup(dictionaries[currentLang]);
+  if (s == null) s = lookup(dictionaries[fallbackLang]);
+  if (s == null) s = key;
+  if (vars) {
+    s = s.replace(/\{(\w+)\}/g, (_, k) => (vars[k] != null ? String(vars[k]) : '{' + k + '}'));
+  }
+  return s;
+}
+
+// _i18nInstall preloads a dictionary without a network fetch. Used by the
+// node test harness; harmless in the browser.
+function _i18nInstall(code, dict) { dictionaries[code] = dict; }
+
+window.tr = tr; // expose for easy console debugging
 
 async function setLang(code) {
   if (!availableLangs.includes(code)) code = fallbackLang;
@@ -112,7 +142,10 @@ function applyStaticTranslations() {
     el.textContent = tr(key);
   });
   $$('[data-i18n-title]').forEach(el => {
-    el.title = tr(el.dataset.i18nTitle);
+    el.title = trText(el.dataset.i18nTitle);
+  });
+  $$('[data-i18n-aria-label]').forEach(el => {
+    el.setAttribute('aria-label', trText(el.dataset.i18nAriaLabel));
   });
   // Refresh the language picker label.
   const picker = $('#langPicker');
@@ -187,6 +220,24 @@ async function api(path, opts = {}) {
   return data;
 }
 
+// fetchWithTimeout is the raw-Response sibling of api(): same AbortController
+// timeout, no JSON parsing. For downloads (blob responses) only.
+async function fetchWithTimeout(path, opts = {}) {
+  const timeoutMs = opts.timeoutMs != null ? opts.timeoutMs : DEFAULT_API_TIMEOUT_MS;
+  const ctrl = new AbortController();
+  const timer = timeoutMs > 0 ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+  try {
+    return await fetch(path, { ...opts, signal: ctrl.signal });
+  } catch (e) {
+    const aborted = e && e.name === 'AbortError';
+    const err = new Error(aborted ? trText('apiError.timeout') : (e && e.message) || trText('apiError.network'));
+    err.code = aborted ? 'timeout' : 'network_error';
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 // Map an API error to a (message, toast-type) pair. Used by call sites
 // that want code-driven presentation; sites that don't care can keep
 // using toast(err.message, 'error') and behave exactly as before.
@@ -194,30 +245,44 @@ const apiErrorMessages = {
   validation:           e => e.message,
   bad_request:          e => e.message,
   conflict:             e => e.message,
-  forbidden:            e => e.message || 'Not allowed',
-  not_found:            e => e.message || 'Not found',
-  method_not_allowed:   e => e.message || 'Operation not allowed',
-  server_error:         e => 'Server error: ' + (e.message || 'try again'),
-  timeout:              () => 'Request timed out — the destination may be slow or unreachable',
-  network_error:        () => 'Network error — check your connection',
+  forbidden:            e => e.message || trText('apiError.forbidden'),
+  not_found:            e => e.message || trText('apiError.notFound'),
+  method_not_allowed:   e => e.message || trText('apiError.notAllowed'),
+  server_error:         e => trText('apiError.server', {error: e.message || trText('apiError.tryAgain')}),
+  timeout:              () => trText('apiError.timeout'),
+  network_error:        () => trText('apiError.network'),
 };
 function apiErrorToast(err, fallback) {
-  const msg = (apiErrorMessages[err.code] || (() => err.message || fallback || 'Request failed'))(err);
-  // 5xx (and any unknown ≥500 status) is a server problem — louder.
-  // Everything else is "you tried something that didn't work" — same
-  // visual weight, but operators learn the distinction over time as
-  // codes become actionable in the UI.
-  const type = (err.status >= 500 || err.code === 'server_error') ? 'error' : 'error';
-  toast(msg, type);
+  const msg = (apiErrorMessages[err.code] || (() => err.message || fallback || trText('apiError.generic')))(err);
+  // 5xx, timeouts and network failures are "something is broken" — red.
+  // 4xx is "that request didn't work" — a warning, so operators can tell
+  // an invalid input from a dying backend at a glance.
+  const broken = err.status >= 500 || err.code === 'server_error' || err.code === 'timeout' || err.code === 'network_error';
+  toast(msg, broken ? 'error' : 'warning');
 }
 
 // --- Toast ---
 function toast(msg, type = 'info') {
   const el = document.createElement('div');
   el.className = 'toast toast-' + type;
-  el.textContent = msg;
+  // Errors interrupt assistive tech (role=alert); everything else is
+  // announced politely via the container's aria-live region.
+  if (type === 'error') el.setAttribute('role', 'alert');
+  const text = document.createElement('span');
+  text.className = 'toast-text';
+  text.textContent = msg;
+  const close = document.createElement('button');
+  close.className = 'toast-close';
+  close.type = 'button';
+  close.setAttribute('aria-label', trText('common.dismiss'));
+  close.textContent = '\u00d7';
+  close.addEventListener('click', () => el.remove());
+  el.appendChild(text);
+  el.appendChild(close);
   $('#toasts').appendChild(el);
-  setTimeout(() => el.remove(), 4000);
+  // Errors stay until dismissed or 8 s — reading time matters more than
+  // tidiness for something that went wrong.
+  setTimeout(() => el.remove(), type === 'error' ? 8000 : 4000);
 }
 
 // --- Modal ---
@@ -225,20 +290,29 @@ function toast(msg, type = 'info') {
 // close. Without this, screen-reader users (and keyboard users in general)
 // land at the top of the document after every dialog interaction.
 let modalReturnFocus = null;
+const MODAL_FOCUSABLE = 'a[href], button:not([disabled]), input:not([type=hidden]):not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+function modalFocusables() {
+  return $$(MODAL_FOCUSABLE, $('#modal')).filter(el => el.offsetParent !== null || el === document.activeElement);
+}
 window.openModal = function(title, bodyHTML) {
   modalReturnFocus = document.activeElement;
   $('#modal-title').textContent = title;
   $('#modal-body').innerHTML = bodyHTML;
   $('#modal-overlay').classList.remove('hidden');
+  // The page behind the dialog is inert: no focus, no clicks, hidden from
+  // assistive tech. `inert` is the modern primitive; aria-hidden backs it
+  // up for browsers that predate it.
+  const app = $('#app');
+  if (app) { app.inert = true; app.setAttribute('aria-hidden', 'true'); }
   // Focus the first interactive element inside the body. Falls back to the
   // close button so the dialog is always reachable without a mouse.
-  const target = $('#modal-body').querySelector(
-    'input:not([type=hidden]), select, textarea, button, [tabindex]:not([tabindex="-1"])'
-  ) || $('#modal-overlay .modal-close');
+  const target = $('#modal-body').querySelector(MODAL_FOCUSABLE) || $('#modal-overlay .modal-close');
   if (target) setTimeout(() => target.focus(), 0);
 };
 window.closeModal = function() {
   $('#modal-overlay').classList.add('hidden');
+  const app = $('#app');
+  if (app) { app.inert = false; app.removeAttribute('aria-hidden'); }
   if (modalReturnFocus && typeof modalReturnFocus.focus === 'function') {
     modalReturnFocus.focus();
   }
@@ -247,16 +321,103 @@ window.closeModal = function() {
 $('#modal-overlay').addEventListener('click', e => {
   if (e.target === $('#modal-overlay')) closeModal();
 });
-// Esc closes any visible modal. The tooltip on the close button already
-// promises this — without the handler the promise was a lie.
+// Esc closes any visible modal; Tab/Shift+Tab cycle within it (focus trap).
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && !$('#modal-overlay').classList.contains('hidden')) {
-    closeModal();
+  const overlay = $('#modal-overlay');
+  if (overlay.classList.contains('hidden')) return;
+  if (e.key === 'Escape') { closeModal(); return; }
+  if (e.key !== 'Tab') return;
+  const items = modalFocusables();
+  if (items.length === 0) { e.preventDefault(); return; }
+  const first = items[0], last = items[items.length - 1];
+  if (e.shiftKey && (document.activeElement === first || !$('#modal').contains(document.activeElement))) {
+    e.preventDefault(); last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault(); first.focus();
   }
+});
+
+// --- Delegated actions ---
+// The SPA ships a strict Content-Security-Policy (script-src 'self'), which
+// forbids inline event handlers. Instead, templates mark elements with
+// data-action / data-submit / data-change plus data-arg… attributes, and a
+// single set of document-level listeners dispatches to handlers registered
+// here. Arguments are plain attribute values (escAttr'd by the template), so
+// the "wrong escaper for a JS-in-HTML context" class of XSS cannot recur.
+const _actions = Object.create(null);
+function registerAction(name, fn) { _actions[name] = fn; }
+function registeredActions() { return Object.keys(_actions); }
+// actionAttrs renders the data-* attributes for an action with up to three
+// arguments. Args are stringified; null/undefined become "".
+function actionAttrs(name, ...args) {
+  let out = `data-action="${escAttr(name)}"`;
+  args.forEach((a, i) => {
+    out += ` data-arg${i === 0 ? '' : i + 1}="${escAttr(a == null ? '' : a)}"`;
+  });
+  return out;
+}
+function actionArgs(el) {
+  const d = el.dataset;
+  return [d.arg, d.arg2, d.arg3];
+}
+function dispatchAction(name, el, e) {
+  const fn = _actions[name];
+  if (!fn) { console.warn('[actions] no handler registered for', name); return false; }
+  fn(el, e, ...actionArgs(el));
+  return true;
+}
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-action]');
+  if (!el || el.disabled) return;
+  // Native links/buttons keep their default unless the action says otherwise.
+  if (el.tagName === 'A' && el.getAttribute('href') && el.getAttribute('href') !== '#') { dispatchAction(el.dataset.action, el, e); return; }
+  e.preventDefault();
+  dispatchAction(el.dataset.action, el, e);
+});
+document.addEventListener('submit', e => {
+  const f = e.target.closest('form[data-submit]');
+  if (!f) return;
+  e.preventDefault();
+  dispatchAction(f.dataset.submit, f, e);
+});
+document.addEventListener('change', e => {
+  const el = e.target.closest('[data-change]');
+  if (!el) return;
+  dispatchAction(el.dataset.change, el, e);
+});
+// Keyboard parity for non-native clickable elements (role=button divs, sortable
+// <th>): Enter and Space activate them like a real button.
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const el = e.target;
+  if (!el || !el.matches || !el.matches('[data-action][role="button"]')) return;
+  if (el.tagName === 'BUTTON' || el.tagName === 'A' || el.tagName === 'INPUT') return;
+  e.preventDefault();
+  el.click();
+});
+registerAction('close-modal', () => closeModal());
+registerAction('set-sort', (el, e, list) => setSort(list, el.value));
+registerAction('flip-sort', (el, e, list) => flipSortDir(list));
+registerAction('sort', (el, e, list, col) => toggleSort(list, col));
+registerAction('toggle-dropdown', el => {
+  const menu = el.nextElementSibling;
+  if (!menu) return;
+  const open = menu.classList.toggle('open');
+  el.setAttribute('aria-expanded', open ? 'true' : 'false');
 });
 
 // --- Helpers ---
 function fmtCount(n) { return (n != null) ? n.toLocaleString() : '—'; }
+// fmtCompact abbreviates large counts for chart labels (1.2K, 3.4M); fmtCount
+// is the full locale-formatted number for tables. Formerly a charts.js-local
+// `formatNum`.
+function fmtCompact(n) {
+  if (n == null) return '—';
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return String(n);
+}
 function humanBytes(n) {
   if (!n || n === 0) return '0 B';
   const units = ['B','KiB','MiB','GiB','TiB'];
@@ -275,10 +436,20 @@ function timeAgo(ts) {
   if (diff < 86400) return tr('time.hoursAgo', {n: Math.floor(diff/3600)});
   return tr('time.daysAgo', {n: Math.floor(diff/86400)});
 }
+// escHTML is for text nodes inside markup: `<`, `>`, `&` (the characters that
+// matter in element content). Pure string replacement — no DOM round-trip —
+// so it is identical in the browser and in the node test harness.
 function escHTML(s) {
-  const d = document.createElement('div');
-  d.textContent = s || '';
-  return d.innerHTML;
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+// targetHref builds the hash-router link for a target. Names are free-form
+// (dots, spaces, %, # are all legal), so the path segment is URL-encoded and
+// currentParam() decodes it on the way back in.
+function targetHref(name) {
+  return '#/target/' + encodeURIComponent(name);
 }
 // escAttr is for HTML attribute *values*. textContent → innerHTML escapes
 // `<`, `>`, `&` but NOT `"` or `'` — so escHTML inside a quoted attribute
@@ -294,8 +465,9 @@ function escAttr(s) {
     .replace(/'/g, '&#39;')
     .replace(/`/g, '&#96;');
 }
-// escJS is for JavaScript string literals embedded inside HTML attributes
-// (e.g. onclick="foo('${escJS(name)}')"). escHTML/escAttr produce HTML
+// escJS is for JavaScript string literals embedded inside HTML attributes.
+// No template uses inline handlers any more (CSP), it is kept for the rare
+// script-text contexts and for the tests. escHTML/escAttr produce HTML
 // entities, which the JS parser does NOT decode — wrong escape, wrong
 // context. We unicode-escape every char that could break out of either
 // the JS string or the surrounding HTML attribute. The result is safe
@@ -313,7 +485,7 @@ function escJS(s) {
 function failedBadge(m) {
   const phase = m && m.phase ? ' (' + escHTML(m.phase) + ')' : '';
   const tip = m && (m.error || m.phase) ? escAttr((m.phase ? m.phase + ': ' : '') + (m.error || '')) : '';
-  return `<span class="badge badge-failed"${tip ? ' title="' + tip + '"' : ''}>Failed${phase}</span>`;
+  return `<span class="badge badge-failed"${tip ? ' title="' + tip + '"' : ''}>${tr('badge.failed')}${phase}</span>`;
 }
 
 // verificationRow renders the per-source restore-verification status
@@ -391,8 +563,15 @@ function parseTsCompact(ts) {
 function parseTsRFC(ts) { const t = ts ? Date.parse(ts) : NaN; return isNaN(t) ? null : t; }
 function sortIndicator(list, col) {
   const s = sortState[list];
-  if (!s || s.col !== col) return '<span class="sort-ind">↕</span>';
-  return '<span class="sort-ind active">' + (s.dir === 'asc' ? '▲' : '▼') + '</span>';
+  if (!s || s.col !== col) return '<span class="sort-ind" aria-hidden="true">↕</span>';
+  return '<span class="sort-ind active" aria-hidden="true">' + (s.dir === 'asc' ? '▲' : '▼') + '</span>';
+}
+// sortableTh renders the attributes for a sortable column header: the
+// delegated sort action, keyboard reachability and aria-sort for AT.
+function sortableTh(list, col) {
+  const s = sortState[list];
+  const sort = (!s || s.col !== col) ? 'none' : (s.dir === 'asc' ? 'ascending' : 'descending');
+  return `${actionAttrs('sort', list, col)} role="button" tabindex="0" aria-sort="${sort}"`;
 }
 window.toggleSort = function(list, col) {
   const s = sortState[list];
@@ -419,8 +598,8 @@ function renderSortControl(list, options) {
     `<option value="${k}" ${s.col === k ? 'selected' : ''}>${lbl}</option>`).join('');
   const arrow = s.dir === 'asc' ? '▲' : '▼';
   return `<div class="sort-control">
-    <span class="sort-label">Sort:</span>
-    <select onchange="setSort('${list}', this.value)">${opts}</select>
-    <button class="btn btn-ghost btn-sm sort-dir" onclick="flipSortDir('${list}')" title="Toggle direction">${arrow}</button>
+    <span class="sort-label">${tr('common.sort')}</span>
+    <select data-change="set-sort" data-arg="${escAttr(list)}" aria-label="${escAttr(tr('common.sortBy'))}">${opts}</select>
+    <button class="btn btn-ghost btn-sm sort-dir" ${actionAttrs('flip-sort', list)} title="${escAttr(tr('common.toggleDirection'))}" aria-label="${escAttr(tr('common.toggleDirection'))}">${arrow}</button>
   </div>`;
 }

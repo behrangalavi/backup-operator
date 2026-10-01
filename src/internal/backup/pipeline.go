@@ -39,21 +39,21 @@ type NoopEventEmitter struct{}
 func (NoopEventEmitter) Emit(string, string, string) {}
 
 // Pipeline runs one backup of one Source to N Destinations:
-//   1. CollectStats from the live DB (best-effort; missing stats just skip the analyzer step).
-//   2. Dump → compress (gzip or zstd) → age → temp file (single dump regardless of N destinations).
-//   3. Fan out the temp file to all destinations in parallel.
-//   4. Write a sidecar meta JSON (unencrypted) with stats + analyzer report.
-//   5. Compare with previous meta to populate analyzer metrics.
-//   6. Apply retention policy per destination (best-effort, never fails the run).
+//  1. CollectStats from the live DB (best-effort; missing stats just skip the analyzer step).
+//  2. Dump → compress (gzip or zstd) → age → temp file (single dump regardless of N destinations).
+//  3. Fan out the temp file to all destinations in parallel.
+//  4. Write a sidecar meta JSON (unencrypted) with stats + analyzer report.
+//  5. Compare with previous meta to populate analyzer metrics.
+//  6. Apply retention policy per destination (best-effort, never fails the run).
 type Pipeline struct {
-	encryptor       crypto.Encryptor
-	analyzer        analyzer.Analyzer
-	tempDir         string
-	logger          logr.Logger
-	destProvider    DestinationProvider
-	defaults        RetentionPolicy
-	events          EventEmitter
-	maxConcurrency  int
+	encryptor      crypto.Encryptor
+	analyzer       analyzer.Analyzer
+	tempDir        string
+	logger         logr.Logger
+	destProvider   DestinationProvider
+	defaults       RetentionPolicy
+	events         EventEmitter
+	maxConcurrency int
 	// verifierFactory builds a per-(mode, dbType) restore-verifier. nil
 	// means restore-verification is disabled at this build of the
 	// pipeline (used by tests and the legacy NewPipeline constructor).
@@ -553,17 +553,19 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	// destination — Storage Scrubber already covers byte-level upload
 	// integrity (see CLAUDE.md §18 ADR), and the local file's
 	// decryptability is the property we care about here.
+	var prevRV *meta.RestoreVerificationResult
+	if preloadedMeta != nil {
+		prevRV = preloadedMeta.RestoreVerification
+	}
 	var restoreVerification *meta.RestoreVerificationResult
 	if ephID != nil && p.verifierFactory != nil {
-		restoreVerification = p.runRestoreVerifier(ctx, src, dumpFile, ephID, preStats, dumpCounts, log)
+		restoreVerification = p.runRestoreVerifier(ctx, src, dumpFile, ephID, preStats, dumpCounts, prevRV, log)
 	}
 	// Carry the previous run's verification result forward when this run
-	// produced none — either because it wasn't due (interval not elapsed, not
-	// armed) OR because the verifier ran out of its time budget and returned
-	// nil (see runRestoreVerifier). Both must preserve the interval clock and
-	// must NOT surface as a fresh Skipped→critical. `restoreVerification == nil`
-	// covers both; a real verdict (match/mismatch/genuine failure) is non-nil
-	// and is kept as-is.
+	// produced none because it wasn't due (interval not elapsed, not armed).
+	// A budget timeout is handled inside runRestoreVerifier (it re-stamps the
+	// previous verdict with a fresh CompletedAt so the interval clock moves);
+	// a real verdict (match/mismatch/genuine failure) is non-nil and kept as-is.
 	if restoreVerification == nil && restoreVerificationActive(src) && preloadedMeta != nil {
 		// This run did not verify (interval not yet elapsed). Carry the
 		// previous run's verification result forward so its CompletedAt clock
@@ -645,7 +647,3 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 
 	return nil
 }
-
-
-
-

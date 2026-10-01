@@ -1,6 +1,7 @@
 package alerts
 
 import (
+	"backup-operator/metrics"
 	"context"
 	"fmt"
 	"sort"
@@ -90,35 +91,35 @@ func (p *LocalProvider) List(ctx context.Context) ([]Alert, error) {
 			}
 			val := gaugeValue(m)
 			switch fam.GetName() {
-			case "backup_operator_last_success_timestamp_seconds":
+			case metrics.NameLastSuccessTimestampSeconds:
 				getState(target).lastSuccessTs[labels["destination"]] = val
-			case "backup_operator_destination_failed":
+			case metrics.NameDestinationFailed:
 				getState(target).destinationFailed[labels["destination"]] = val
-			case "backup_operator_storage_scrub_passed":
+			case metrics.NameStorageScrubPassed:
 				getState(target).storageScrubPassed[labels["destination"]] = val
-			case "backup_operator_retention_last_status":
+			case metrics.NameRetentionLastStatus:
 				getState(target).retentionPassed[labels["destination"]] = val
-			case "backup_operator_restore_verification_passed":
+			case metrics.NameRestoreVerificationPassed:
 				getState(target).restoreVerifPassed[labels["mode"]] = val
-			case "backup_operator_restore_verification_last_timestamp_seconds":
+			case metrics.NameRestoreVerificationLastTimestampSeconds:
 				getState(target).restoreVerifLastTs[labels["mode"]] = val
-			case "backup_operator_dump_size_change_ratio":
+			case metrics.NameDumpSizeChangeRatio:
 				s := getState(target)
 				s.dumpSizeChangeRatio = val
 				s.dumpSizeChangeKnown = true
-			case "backup_operator_schema_changed":
+			case metrics.NameSchemaChanged:
 				s := getState(target)
 				s.schemaChanged = val
 				s.schemaChangedKnown = true
-			case "backup_operator_charset_changed":
+			case metrics.NameCharsetChanged:
 				s := getState(target)
 				s.charsetChanged = val
 				s.charsetChangedKnown = true
-			case "backup_operator_last_run_status":
+			case metrics.NameLastRunStatus:
 				s := getState(target)
 				s.lastRunStatus = val
 				s.lastRunStatusKnown = true
-			case "backup_operator_last_run_anomalies":
+			case metrics.NameLastRunAnomalies:
 				s := getState(target)
 				s.lastRunAnomalies = val
 				s.anomaliesKnown = true

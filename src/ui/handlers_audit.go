@@ -33,9 +33,9 @@ type auditResponse struct {
 // emitters. Filtering on these keeps third-party / kubelet noise out of
 // the audit view (e.g. CronJob's SuccessfulCreate, Job-controller events).
 var auditComponents = map[string]bool{
-	"backup-worker":       true,
-	"backup-operator-ui":  true,
-	"cronjob-reconciler":  true,
+	"backup-worker":      true,
+	"backup-operator-ui": true,
+	"cronjob-reconciler": true,
 }
 
 // reasonCategory maps a Reason to a UI filter group. Anything unknown

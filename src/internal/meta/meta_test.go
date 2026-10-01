@@ -15,11 +15,12 @@ import (
 // serves a fixed set of meta.json blobs. Keyed by path; List returns one
 // Object per key, Get returns the stored bytes.
 type fakeStorage struct {
-	name string
+	name  string
 	blobs map[string][]byte
 }
 
-func (f *fakeStorage) Name() string { return f.name }
+func (f *fakeStorage) Name() string                                          { return f.name }
+func (f *fakeStorage) Close() error                                          { return nil }
 func (f *fakeStorage) Upload(_ context.Context, _ string, _ io.Reader) error { return nil }
 func (f *fakeStorage) Delete(_ context.Context, _ string) error              { return nil }
 func (f *fakeStorage) Get(_ context.Context, p string) (io.ReadCloser, error) {
@@ -188,5 +189,30 @@ func TestMetaFile_JSONPath_OmittedFromJSON(t *testing.T) {
 	}
 	if m.Path == "" {
 		t.Error("Path should be set before serialization check")
+	}
+}
+
+func TestSelectMetaPaths_SinceAndLimit(t *testing.T) {
+	objs := []storage.Object{
+		{Path: "t/2026/01/01/dump-20260101T020000Z.meta.json"},
+		{Path: "t/2026/01/01/dump-20260101T020000Z.sql.gz.age"},
+		{Path: "t/2026/01/03/dump-20260103T020000Z.meta.json"},
+		{Path: "t/2026/01/02/dump-20260102T020000Z.meta.json"},
+		{Path: "t/odd/legacy.meta.json"},
+	}
+	all := SelectMetaPaths(objs, ListOptions{})
+	if len(all) != 4 {
+		t.Fatalf("unbounded must keep every meta (incl. legacy names), got %d", len(all))
+	}
+	if all[0] != "t/2026/01/03/dump-20260103T020000Z.meta.json" {
+		t.Errorf("newest first, got %v", all)
+	}
+	since := SelectMetaPaths(objs, ListOptions{Since: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)})
+	if len(since) != 2 || since[1] != "t/2026/01/02/dump-20260102T020000Z.meta.json" {
+		t.Errorf("Since must drop older runs and unordered legacy names, got %v", since)
+	}
+	lim := SelectMetaPaths(objs, ListOptions{Limit: 1})
+	if len(lim) != 1 || lim[0] != "t/2026/01/03/dump-20260103T020000Z.meta.json" {
+		t.Errorf("Limit must keep the newest N, got %v", lim)
 	}
 }

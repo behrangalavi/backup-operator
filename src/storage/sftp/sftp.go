@@ -33,6 +33,17 @@ const (
 	keyInsecureSkipHostVerify = "insecure-skip-host-verify"
 )
 
+// Compile-time interface checks. SFTP dials per call, so the BatchStorage
+// session is the only way to amortise the SSH handshake across a batch;
+// DirectoryRemover lets retention prune empty date partitions.
+var (
+	_ storage.Storage          = (*sftpStorage)(nil)
+	_ storage.BatchStorage     = (*sftpStorage)(nil)
+	_ storage.DirectoryRemover = (*sftpStorage)(nil)
+	_ storage.Storage          = (*sftpSession)(nil)
+	_ storage.DirectoryRemover = (*sftpSession)(nil)
+)
+
 type sftpStorage struct {
 	name       string
 	addr       string
@@ -137,6 +148,20 @@ func buildAuthMethods(name string, data storage.SecretData) ([]ssh.AuthMethod, e
 }
 
 func (s *sftpStorage) Name() string { return s.name }
+
+// Close is a no-op: every operation dials its own connection (or runs inside
+// a WithSession whose closer owns the connection), so there is nothing
+// long-lived to release.
+func (s *sftpStorage) Close() error { return nil }
+
+// wrapNotFound maps pkg/sftp's SSH_FX_NO_SUCH_FILE (surfaced as
+// os.ErrNotExist) onto storage.ErrNotFound while keeping the path context.
+func wrapNotFound(op, p string, err error) error {
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%s %s: %w", op, p, storage.ErrNotFound)
+	}
+	return fmt.Errorf("%s %s: %w", op, p, err)
+}
 
 // buildHostKeyCallback returns a strict known_hosts-backed callback when the
 // destination Secret supplies a known-hosts blob. When it doesn't, the
@@ -277,7 +302,7 @@ func (s *sftpStorage) Upload(ctx context.Context, p string, r io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("create %s: %w", full, err)
 	}
-	if _, err := io.Copy(f, r); err != nil {
+	if _, err := io.Copy(f, storage.ContextReader(ctx, r)); err != nil {
 		_ = f.Close()
 		_ = sc.Remove(full) // remove partial file
 		return fmt.Errorf("write %s: %w", full, err)
@@ -352,7 +377,7 @@ func (s *sftpStorage) Get(ctx context.Context, p string) (io.ReadCloser, error) 
 	if err != nil {
 		_ = sc.Close()
 		_ = ssh.Close()
-		return nil, fmt.Errorf("open %s: %w", p, err)
+		return nil, wrapNotFound("open", p, err)
 	}
 	return &sftpReader{f: f, sc: sc, ssh: ssh}, nil
 }
@@ -377,7 +402,7 @@ func (s *sftpStorage) Delete(ctx context.Context, p string) error {
 	}
 	defer func() { _ = ssh.Close() }()
 	defer func() { _ = sc.Close() }()
-	if err := sc.Remove(s.full(p)); err != nil {
+	if err := sc.Remove(s.full(p)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove %s: %w", p, err)
 	}
 	return nil
@@ -419,7 +444,14 @@ type sftpSession struct {
 
 func (s *sftpSession) Name() string { return s.parent.name }
 
-func (s *sftpSession) Upload(_ context.Context, p string, r io.Reader) error {
+// Close on a session is a no-op; the closer returned by WithSession owns
+// the connection.
+func (s *sftpSession) Close() error { return nil }
+
+func (s *sftpSession) Upload(ctx context.Context, p string, r io.Reader) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	full := s.parent.full(p)
 	if err := s.sc.MkdirAll(path.Dir(full)); err != nil {
 		return fmt.Errorf("mkdir %s: %w", path.Dir(full), err)
@@ -428,7 +460,7 @@ func (s *sftpSession) Upload(_ context.Context, p string, r io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("create %s: %w", full, err)
 	}
-	if _, err := io.Copy(f, r); err != nil {
+	if _, err := io.Copy(f, storage.ContextReader(ctx, r)); err != nil {
 		_ = f.Close()
 		_ = s.sc.Remove(full) // remove partial file
 		return fmt.Errorf("write %s: %w", full, err)
@@ -444,21 +476,30 @@ func (s *sftpSession) List(ctx context.Context, prefix string) ([]storage.Object
 	return walkList(ctx, s.sc, s.parent.full(prefix), s.parent.stripPrefix)
 }
 
-func (s *sftpSession) Get(_ context.Context, p string) (io.ReadCloser, error) {
+func (s *sftpSession) Get(ctx context.Context, p string) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	f, err := s.sc.Open(s.parent.full(p))
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", p, err)
+		return nil, wrapNotFound("open", p, err)
 	}
 	return f, nil
 }
 
-func (s *sftpSession) Delete(_ context.Context, p string) error {
-	if err := s.sc.Remove(s.parent.full(p)); err != nil {
+func (s *sftpSession) Delete(ctx context.Context, p string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := s.sc.Remove(s.parent.full(p)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove %s: %w", p, err)
 	}
 	return nil
 }
 
-func (s *sftpSession) RemoveDirectory(_ context.Context, p string) error {
+func (s *sftpSession) RemoveDirectory(ctx context.Context, p string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return s.sc.RemoveDirectory(s.parent.full(p))
 }

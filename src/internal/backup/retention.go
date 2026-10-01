@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"sort"
@@ -10,6 +11,7 @@ import (
 
 	"backup-operator/internal/labels"
 	"backup-operator/internal/meta"
+	"backup-operator/internal/redact"
 	"backup-operator/internal/secrets"
 	"backup-operator/storage"
 
@@ -90,7 +92,7 @@ func (p *Pipeline) retainForDestination(
 	fail := func(stage string, err error) meta.RetentionResult {
 		log.Error(err, "retention: "+stage, "destination", dest.Name, "phase", phase)
 		res.Status = meta.StatusFailed
-		res.Error = stage + ": " + err.Error()
+		res.Error = stage + ": " + redact.StorageError(err)
 		p.events.Emit("Warning", "RetentionFailed",
 			fmt.Sprintf("Retention %s sweep failed for target %s on %s at %s: %v",
 				phase, target, dest.Name, stage, err))
@@ -141,10 +143,13 @@ func (p *Pipeline) retainForDestination(
 	parentDirs := make(map[string]bool)
 	var firstDeleteErr string
 	for _, v := range victims {
-		if err := active.Delete(ctx, v); err != nil {
+		// Backends return nil for a missing object, but a wrapped ErrNotFound
+		// from an older/foreign implementation means the same thing: the
+		// artifact is gone, which is the outcome retention wanted.
+		if err := active.Delete(ctx, v); err != nil && !errors.Is(err, storage.ErrNotFound) {
 			log.Error(err, "retention: delete", "destination", dest.Name, "path", v)
 			if firstDeleteErr == "" {
-				firstDeleteErr = "delete: " + err.Error()
+				firstDeleteErr = "delete: " + redact.StorageError(err)
 			}
 			continue
 		}
@@ -169,9 +174,7 @@ func (p *Pipeline) retainForDestination(
 	// paths (e.g. target/2024/01/01/). Walk from deepest to shallowest so
 	// child dirs are removed before their parents. Errors are expected when
 	// directories are not empty (still holding other backups) — silently skip.
-	if remover, ok := active.(interface {
-		RemoveDirectory(ctx context.Context, path string) error
-	}); ok {
+	if remover, ok := active.(storage.DirectoryRemover); ok {
 		sorted := sortDirsByDepth(parentDirs)
 		for _, d := range sorted {
 			_ = remover.RemoveDirectory(ctx, d)
@@ -182,16 +185,16 @@ func (p *Pipeline) retainForDestination(
 
 // selectForDeletion is the pure decision function — no I/O, fully testable.
 // Algorithm:
-//   1. Group objects by timestamp (one dump file + one meta file per timestamp).
-//   2. Sort timestamps newest-first.
-//   3. Always keep the MinKeep newest timestamps that contain a real dump
-//      (safety floor). Failure runs write only a dump-<ts>.meta.json sidecar
-//      with no dump file; those must NOT consume a floor slot, otherwise a
-//      streak of failed runs at the top of the list would push every real
-//      dump below the floor and let the age sweep delete all recoverable
-//      backups — precisely during the outage when they are needed most.
-//   4. From the rest, mark for deletion any timestamp older than Days.
-//   5. Return the list of paths to delete (dump + meta together).
+//  1. Group objects by timestamp (one dump file + one meta file per timestamp).
+//  2. Sort timestamps newest-first.
+//  3. Always keep the MinKeep newest timestamps that contain a real dump
+//     (safety floor). Failure runs write only a dump-<ts>.meta.json sidecar
+//     with no dump file; those must NOT consume a floor slot, otherwise a
+//     streak of failed runs at the top of the list would push every real
+//     dump below the floor and let the age sweep delete all recoverable
+//     backups — precisely during the outage when they are needed most.
+//  4. From the rest, mark for deletion any timestamp older than Days.
+//  5. Return the list of paths to delete (dump + meta together).
 func selectForDeletion(objs []storage.Object, policy RetentionPolicy, now time.Time) []string {
 	if policy.Disabled() {
 		return nil

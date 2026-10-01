@@ -5,12 +5,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"net/http"
 	nethttppprof "net/http/pprof"
-	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +34,7 @@ import (
 	"backup-operator/docs"
 	"backup-operator/internal/alerts"
 	"backup-operator/internal/safe"
+	"backup-operator/internal/scheduler"
 	"backup-operator/metrics"
 	"backup-operator/ui"
 )
@@ -50,38 +51,17 @@ func main() {
 		{Key: "WATCH_NAMESPACE", Optional: true},
 		{Key: "POD_NAMESPACE", Optional: true},
 		{Key: "LEADER_ELECTION_ID", Optional: true},
-		{Key: "DEFAULT_SCHEDULE", Optional: true, Default: "0 2 * * *"},
-		{
-			Key:      "RUN_TIMEOUT_SECONDS",
-			Optional: true,
-			Default:  "3600",
-			Validate: func(v string) error {
-				n, err := strconv.Atoi(v)
-				if err != nil {
-					return fmt.Errorf("'RUN_TIMEOUT_SECONDS' must be integer: %w", err)
-				}
-				if n <= 0 {
-					// Flows straight into each Job's activeDeadlineSeconds; a
-					// value <= 0 makes every backup Job fail immediately.
-					return fmt.Errorf("'RUN_TIMEOUT_SECONDS' must be > 0, got %d", n)
-				}
-				return nil
-			},
-		},
-		{Key: "TEMP_DIR", Optional: true, Default: "/tmp/backup-operator"},
+		// A bad default schedule used to surface only when the first CronJob
+		// create failed; validate it here so a Helm typo fails the pod start.
+		{Key: "DEFAULT_SCHEDULE", Optional: true, Default: config.DefaultSchedule, Validate: scheduler.ValidateSchedule},
+		// Flows straight into each Job's activeDeadlineSeconds; a value <= 0
+		// makes every backup Job fail immediately.
+		{Key: "RUN_TIMEOUT_SECONDS", Optional: true, Default: config.DefaultRunTimeoutSeconds, Validate: config.ValidatePositiveInt},
+		{Key: "TEMP_DIR", Optional: true, Default: config.DefaultTempDir},
 		{Key: "TEMP_DIR_SIZE", Optional: true, Default: "10Gi"},
-		{Key: "DEFAULT_RETENTION_DAYS", Optional: true, Default: "30", Validate: validateNonNegInt},
-		{Key: "DEFAULT_MIN_KEEP", Optional: true, Default: "3", Validate: validateNonNegInt},
-		{Key: "METRICS_REFRESH_INTERVAL_SECONDS", Optional: true, Default: "30", Validate: func(v string) error {
-			n, err := strconv.Atoi(v)
-			if err != nil {
-				return fmt.Errorf("'METRICS_REFRESH_INTERVAL_SECONDS' must be integer: %w", err)
-			}
-			if n < 5 {
-				return fmt.Errorf("'METRICS_REFRESH_INTERVAL_SECONDS' must be >= 5")
-			}
-			return nil
-		}},
+		{Key: "DEFAULT_RETENTION_DAYS", Optional: true, Default: config.DefaultRetentionDays, Validate: config.ValidateNonNegInt},
+		{Key: "DEFAULT_MIN_KEEP", Optional: true, Default: config.DefaultMinKeep, Validate: config.ValidateNonNegInt},
+		{Key: "METRICS_REFRESH_INTERVAL_SECONDS", Optional: true, Default: "30", Validate: config.ValidateIntRange(5, 86400)},
 
 		// Storage scrubber — re-hashes the most recent dump per
 		// (source, destination) on a schedule and compares against the
@@ -89,16 +69,10 @@ func main() {
 		// Off by default because each scrub re-streams a full encrypted
 		// dump from storage; enable once you've sized your egress.
 		{Key: "STORAGE_SCRUB_ENABLED", Optional: true, Default: "false"},
-		{Key: "STORAGE_SCRUB_INTERVAL_HOURS", Optional: true, Default: "24", Validate: func(v string) error {
-			n, err := strconv.Atoi(v)
-			if err != nil {
-				return fmt.Errorf("'STORAGE_SCRUB_INTERVAL_HOURS' must be integer: %w", err)
-			}
-			if n < 1 {
-				return fmt.Errorf("'STORAGE_SCRUB_INTERVAL_HOURS' must be >= 1")
-			}
-			return nil
-		}},
+		{Key: "STORAGE_SCRUB_INTERVAL_HOURS", Optional: true, Default: "24", Validate: config.ValidatePositiveInt},
+		// Cap on (target, destination) pairs re-hashed per scrub tick; the
+		// rest continue round-robin on the following ticks.
+		{Key: "STORAGE_SCRUB_MAX_PAIRS_PER_TICK", Optional: true, Default: "500", Validate: config.ValidatePositiveInt},
 
 		// Worker pod template — these flow into every CronJob the reconciler
 		// produces. Set by Helm; required so CronJobs are runnable.
@@ -128,16 +102,20 @@ func main() {
 		// retries with exponential backoff (10s, 20s, 40s, ... capped at
 		// 6m). Bounds the cost of permanent failures while catching
 		// transient ones (DB blips, brief network partitions). 0 disables.
-		{Key: "WORKER_BACKOFF_LIMIT", Optional: true, Default: "2", Validate: func(v string) error {
-			n, err := strconv.Atoi(v)
-			if err != nil {
-				return fmt.Errorf("'WORKER_BACKOFF_LIMIT' must be integer: %w", err)
-			}
-			if n < 0 || n > 10 {
-				return fmt.Errorf("'WORKER_BACKOFF_LIMIT' must be between 0 and 10")
-			}
-			return nil
-		}},
+		{Key: "WORKER_BACKOFF_LIMIT", Optional: true, Default: "2", Validate: config.ValidateIntRange(0, 10)},
+
+		// Worker pod scheduling / shape. JSON-encoded so the chart can pass
+		// arbitrary Kubernetes structures through a flat env; unknown fields
+		// are rejected so a typo in values.yaml fails the operator start
+		// instead of silently scheduling workers anywhere.
+		{Key: "WORKER_NODE_SELECTOR", Optional: true, Validate: validateJSON(func() any { return &map[string]string{} })},
+		{Key: "WORKER_TOLERATIONS", Optional: true, Validate: validateJSON(func() any { return &[]corev1.Toleration{} })},
+		{Key: "WORKER_AFFINITY", Optional: true, Validate: validateJSON(func() any { return &corev1.Affinity{} })},
+		{Key: "WORKER_PRIORITY_CLASS_NAME", Optional: true},
+		{Key: "WORKER_POD_ANNOTATIONS", Optional: true, Validate: validateJSON(func() any { return &map[string]string{} })},
+		{Key: "WORKER_EXTRA_ENV", Optional: true, Validate: validateJSON(func() any { return &[]corev1.EnvVar{} })},
+		{Key: "WORKER_EXTRA_VOLUMES", Optional: true, Validate: validateJSON(func() any { return &[]corev1.Volume{} })},
+		{Key: "WORKER_EXTRA_VOLUME_MOUNTS", Optional: true, Validate: validateJSON(func() any { return &[]corev1.VolumeMount{} })},
 
 		// UI dashboard — read-only timeline of run history. Disabled by
 		// default to keep the operator's surface minimal; flip UI_ENABLED
@@ -156,8 +134,8 @@ func main() {
 		// Hardening knobs against unauthenticated misuse. Defaults are
 		// applied inside ui.New if 0/empty; we still surface them as env
 		// values so operators can tune without rebuilding.
-		{Key: "UI_MAX_BODY_BYTES", Optional: true, Default: "1048576"}, // 1 MiB
-		{Key: "UI_MAX_SSE_CLIENTS", Optional: true, Default: "256"},
+		{Key: "UI_MAX_BODY_BYTES", Optional: true, Default: "1048576", Validate: config.ValidatePositiveInt}, // 1 MiB
+		{Key: "UI_MAX_SSE_CLIENTS", Optional: true, Default: "256", Validate: config.ValidatePositiveInt},
 		// Alert integration. PROMETHEUS_URL points at the in-cluster
 		// Prometheus that scrapes our ServiceMonitor and evaluates the
 		// chart's PrometheusRule — when set, /api/alerts mirrors what
@@ -238,7 +216,16 @@ func main() {
 		MinKeepDef:         config.GetValue("DEFAULT_MIN_KEEP"),
 		DefaultSchedule:    config.GetValue("DEFAULT_SCHEDULE"),
 		Resources:          buildWorkerResources(),
+		PriorityClassName:  config.GetValue("WORKER_PRIORITY_CLASS_NAME"),
 	}
+	// Validated at config init; a decode failure here would be a bug.
+	worker.NodeSelector = jsonEnv[map[string]string]("WORKER_NODE_SELECTOR")
+	worker.Tolerations = jsonEnv[[]corev1.Toleration]("WORKER_TOLERATIONS")
+	worker.Affinity = jsonEnvPtr[corev1.Affinity]("WORKER_AFFINITY")
+	worker.PodAnnotations = jsonEnv[map[string]string]("WORKER_POD_ANNOTATIONS")
+	worker.ExtraEnv = jsonEnv[[]corev1.EnvVar]("WORKER_EXTRA_ENV")
+	worker.ExtraVolumes = jsonEnv[[]corev1.Volume]("WORKER_EXTRA_VOLUMES")
+	worker.ExtraVolumeMounts = jsonEnv[[]corev1.VolumeMount]("WORKER_EXTRA_VOLUME_MOUNTS")
 
 	reconciler := &controllers.CronJobReconciler{
 		Client: mgr.GetClient(),
@@ -315,11 +302,12 @@ func main() {
 
 	if config.GetBool("STORAGE_SCRUB_ENABLED") {
 		scrubber := &controllers.StorageScrubber{
-			Client:    mgr.GetClient(),
-			Logger:    ctrl.Log.WithName("storage-scrubber"),
-			Namespace: watchNs,
-			Interval:  time.Duration(config.GetInt("STORAGE_SCRUB_INTERVAL_HOURS")) * time.Hour,
-			Pool:      storagePool,
+			Client:          mgr.GetClient(),
+			Logger:          ctrl.Log.WithName("storage-scrubber"),
+			Namespace:       watchNs,
+			Interval:        time.Duration(config.GetInt("STORAGE_SCRUB_INTERVAL_HOURS")) * time.Hour,
+			MaxPairsPerTick: config.GetInt("STORAGE_SCRUB_MAX_PAIRS_PER_TICK"),
+			Pool:            storagePool,
 		}
 		assert.NoError(mgr.Add(scrubber), "failed to register storage scrubber")
 	}
@@ -467,21 +455,43 @@ func namespaceForUI(watchNs string) string {
 	return "default"
 }
 
-// buildWorkerResources constructs ResourceRequirements from env vars.
-// Empty values are silently skipped, so resource limits are optional.
-// validateNonNegInt rejects non-integer or negative config values. Used for
-// DEFAULT_RETENTION_DAYS / DEFAULT_MIN_KEEP so a typo fails loudly at startup
-// instead of silently becoming 0 (0 min-keep = no safety floor) — parity with
-// the worker binary, which already guards these.
-func validateNonNegInt(v string) error {
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return fmt.Errorf("must be an integer: %w", err)
+// validateJSON returns a config validator that strictly decodes the value
+// into the type newT produces (unknown fields rejected). Empty is allowed —
+// every JSON knob is optional.
+func validateJSON(newT func() any) func(string) error {
+	return func(v string) error {
+		if strings.TrimSpace(v) == "" {
+			return nil
+		}
+		dec := json.NewDecoder(strings.NewReader(v))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(newT()); err != nil {
+			return fmt.Errorf("must be JSON: %w", err)
+		}
+		return nil
 	}
-	if n < 0 {
-		return fmt.Errorf("must be >= 0, got %d", n)
+}
+
+// jsonEnv decodes an already-validated JSON config value; empty → zero value.
+func jsonEnv[T any](key string) T {
+	var out T
+	v := strings.TrimSpace(config.GetValue(key))
+	if v == "" {
+		return out
 	}
-	return nil
+	assert.NoError(json.Unmarshal([]byte(v), &out), "decode "+key)
+	return out
+}
+
+// jsonEnvPtr is jsonEnv for pointer-typed fields (nil when unset).
+func jsonEnvPtr[T any](key string) *T {
+	v := strings.TrimSpace(config.GetValue(key))
+	if v == "" {
+		return nil
+	}
+	out := new(T)
+	assert.NoError(json.Unmarshal([]byte(v), out), "decode "+key)
+	return out
 }
 
 // parsePullSecrets turns a comma-separated list of Secret names into the

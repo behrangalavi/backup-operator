@@ -44,12 +44,50 @@ func DumpSuffix(compression string) string {
 	return "sql.gz.age"
 }
 
+// dumpSuffixes is the single source of truth for every encrypted-dump file
+// extension this project has ever written, dot-prefixed, newest first. The
+// order matters for callers that strip a suffix off a filename: ".sql.zst.age"
+// must be tried before ".sql.gz.age" so a zstd dump is not misread as gzip.
+var dumpSuffixes = []struct {
+	suffix      string
+	compression string
+}{
+	{"." + DumpSuffix(CompressionZstd), CompressionZstd},
+	{"." + DumpSuffix(CompressionGzip), CompressionGzip},
+}
+
+// DumpSuffixes returns every known encrypted-dump suffix (dot-prefixed,
+// newest first). Callers that need to recognise or strip a dump extension
+// must iterate this list instead of keeping their own copy — the restore
+// CLI, retention and the scrubber used to drift apart here.
+func DumpSuffixes() []string {
+	out := make([]string, len(dumpSuffixes))
+	for i, d := range dumpSuffixes {
+		out[i] = d.suffix
+	}
+	return out
+}
+
+// CompressionForPath derives the compression algorithm from a dump's file
+// extension. The suffix is authoritative — it was chosen by the pipeline that
+// wrote the file — so restore prefers it over meta.json. ok is false when the
+// path carries no known dump suffix.
+func CompressionForPath(p string) (compression string, ok bool) {
+	for _, d := range dumpSuffixes {
+		if hasSuffix(p, d.suffix) {
+			return d.compression, true
+		}
+	}
+	return "", false
+}
+
 // IsDumpSuffix returns true if the path ends with any known encrypted dump
-// suffix (.sql.gz.age or .sql.zst.age). Used by retention classification,
-// storage scrubber, and destination stats to recognise dump artifacts
-// regardless of which compression algorithm was used.
+// suffix. Used by retention classification, the storage scrubber, destination
+// stats and the restore CLI to recognise dump artifacts regardless of which
+// compression algorithm was used.
 func IsDumpSuffix(path string) bool {
-	return hasSuffix(path, ".sql.gz.age") || hasSuffix(path, ".sql.zst.age")
+	_, ok := CompressionForPath(path)
+	return ok
 }
 
 func hasSuffix(s, suffix string) bool {

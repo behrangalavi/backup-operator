@@ -418,7 +418,7 @@ function renderDurationDistribution(stats) {
     const x1 = xScale(r.min), x2 = xScale(r.max);
     const xMed = xScale(r.median), xP95 = xScale(r.p95);
     return `<g>
-      <a href="#/target/${escAttr(r.target)}" style="cursor:pointer">
+      <a href="${escAttr(targetHref(r.target))}" style="cursor:pointer">
         <text x="${(padL - 8).toFixed(1)}" y="${(cy + 4).toFixed(1)}" text-anchor="end" class="chart-axis-text" style="font-size:11px;fill:var(--accent)">${escHTML(r.target)}</text>
       </a>
       <line x1="${x1.toFixed(1)}" y1="${cy.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${cy.toFixed(1)}" stroke="var(--accent, #5b6eef)" stroke-width="3" opacity="0.4" stroke-linecap="round"><title>${escAttr(r.target + ' — min ' + fmtDurationShort(r.min) + ', max ' + fmtDurationShort(r.max) + ', n=' + r.count)}</title></line>
@@ -605,7 +605,7 @@ function renderStorageGrowth(points) {
   // surface too.
   const legend = targets.map(t => {
     const color = colorForTarget(t);
-    return `<a href="#/target/${escAttr(t)}" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;margin-right:10px;text-decoration:none;color:var(--text)">
+    return `<a href="${escAttr(targetHref(t))}" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;margin-right:10px;text-decoration:none;color:var(--text)">
       <span style="display:inline-block;width:10px;height:10px;background:${color};border-radius:2px"></span>${escHTML(t)}
     </a>`;
   }).join('');
@@ -680,7 +680,7 @@ function renderAnomalyStream(items) {
       return `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="4" fill="${color}" stroke="var(--bg)" stroke-width="1"><title>${escAttr(tt)}</title></circle>`;
     }).join('');
     return `<g>
-      <a href="#/target/${escAttr(tgt)}" style="cursor:pointer">
+      <a href="${escAttr(targetHref(tgt))}" style="cursor:pointer">
         <text x="${(ML - 6).toFixed(1)}" y="${(cy + 4).toFixed(1)}" text-anchor="end" class="chart-axis-text" style="font-size:11px;fill:var(--accent)">${escHTML(tgt)}</text>
       </a>
       <line x1="${ML}" y1="${cy.toFixed(1)}" x2="${(W - MR).toFixed(1)}" y2="${cy.toFixed(1)}" class="chart-grid"/>
@@ -763,7 +763,7 @@ function renderFleetHeatmap(rows) {
       return `<rect x="${x}" y="${y}" width="${cellSize}" height="${cellSize}" rx="2" fill="${fill}"><title>${escAttr(tt)}</title></rect>`;
     }).join('');
     return `<g>
-      <a href="#/target/${escAttr(r.target)}" style="cursor:pointer">
+      <a href="${escAttr(targetHref(r.target))}" style="cursor:pointer">
         <title>${escAttr(r.target)}</title>
         <text x="${(padL - 8).toFixed(1)}" y="${labelY.toFixed(1)}" text-anchor="end" class="chart-axis-text" style="font-size:11px;fill:var(--accent)">${escHTML(labelText)}</text>
       </a>
@@ -946,7 +946,7 @@ function renderTablesCard(runs) {
       <thead><tr><th>${tr('verification.table')}</th><th class="num">${tr('table.runCount')}</th><th>Trend</th><th class="num">${tr('table.size')}</th></tr></thead>
       <tbody>${latest.map(t => `<tr>
         <td class="cell-mono">${escHTML(t.name)}</td>
-        <td class="num">${formatNum(t.rowCount)}</td>
+        <td class="num">${fmtCompact(t.rowCount)}</td>
         <td>${renderSparkline(history.get(t.name) || [])}</td>
         <td class="num">${humanBytes(t.sizeBytes)}</td>
       </tr>`).join('')}</tbody>
@@ -980,10 +980,4 @@ function renderSparkline(values) {
   return `<svg viewBox="0 0 ${W} ${H}" class="sparkline ${cls}"><path d="${path}"/></svg>`;
 }
 
-function formatNum(n) {
-  if (n == null) return '—';
-  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
-  return String(n);
-}
+// fmtCompact lives in core.js (shared with the tables).

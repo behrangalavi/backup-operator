@@ -13,6 +13,7 @@ import (
 	"backup-operator/analyzer"
 	"backup-operator/dumper"
 	"backup-operator/internal/meta"
+	"backup-operator/internal/redact"
 	"backup-operator/internal/secrets"
 	"backup-operator/metrics"
 	"backup-operator/storage"
@@ -146,7 +147,7 @@ func metaJSON(src *secrets.Source, stats *dumper.Stats, statsError string, repor
 func failureMetaJSON(src *secrets.Source, timestamp, phase string, runStart time.Time, runErr error) ([]byte, error) {
 	msg := ""
 	if runErr != nil {
-		msg = runErr.Error()
+		msg = redact.String(runErr.Error())
 	}
 	completedAt := time.Now().UTC()
 	m := meta.MetaFile{

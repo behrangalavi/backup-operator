@@ -3,6 +3,8 @@ package backup
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -48,6 +50,7 @@ func (p *Pipeline) runRestoreVerifier(
 	id *crypto.EphemeralIdentity,
 	preStats *dumper.Stats,
 	dumpCounts map[string]int64,
+	prev *meta.RestoreVerificationResult,
 	log logr.Logger,
 ) *meta.RestoreVerificationResult {
 	// Restore verification is observability, NOT a gate (§14): it must never
@@ -60,7 +63,8 @@ func (p *Pipeline) runRestoreVerifier(
 	// sub-context so its deadline can never cascade into uploadMeta; if it
 	// blows the budget it yields a skipped/timeout result and the run still
 	// completes successfully.
-	vctx, cancel := context.WithTimeout(ctx, verifierBudget(ctx))
+	budget := verifierBudget(ctx)
+	vctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
 	mode := src.RestoreVerificationMode
@@ -89,19 +93,23 @@ func (p *Pipeline) runRestoreVerifier(
 		OwnerRef:    p.ownerRef,
 	})
 	if err != nil {
-		// Budget exhaustion (our sub-context timed out while the run's parent
-		// context is still alive) is NOT a verification failure — the dump may
-		// well be restorable, the verifier just didn't fit in its time slice.
-		// Returning a FailureResult here would map to Verdict=Skipped, which
+		// Budget exhaustion (our sub-context hit ITS deadline while the run's
+		// parent context is still alive) is NOT a verification failure — the
+		// dump may well be restorable, the verifier just didn't fit in its time
+		// slice. Returning a FailureResult would map to Verdict=Skipped, which
 		// §14 treats like a hard mismatch → a false critical
-		// BackupRestoreVerificationFailed for a merely-slow (large) restore,
-		// re-introducing the very Skipped→false-critical class the budget was
-		// added around. Return nil so the caller carries the previous verdict
-		// forward (preserving the interval clock too). A parent-ctx timeout is
-		// left as a failure — the whole run is aborting anyway.
-		if vctx.Err() != nil && ctx.Err() == nil {
-			log.Info("restore verifier exceeded its time budget; keeping previous verdict", "mode", mode)
-			return nil
+		// BackupRestoreVerificationFailed for a merely-slow (large) restore.
+		// Instead carry the previous verdict forward WITH a fresh CompletedAt,
+		// so ShouldVerify's interval clock advances: without that, a chronically
+		// slow Phase-2 verification re-spawned its DB pod on every single run
+		// (the carried-forward block kept the OLD CompletedAt, "interval
+		// elapsed" stayed true forever). Detected via DeadlineExceeded on the
+		// sub-context specifically — a verifier that fails for another reason
+		// while coincidentally near the deadline is still a hard failure.
+		if errors.Is(vctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			log.Info("restore verifier exceeded its time budget; carrying previous verdict forward with a fresh clock",
+				"mode", mode, "budget", budget, "previous_verdict", prevVerdict(prev))
+			return budgetExceededResult(prev, mode, started, time.Now().UTC(), budget, id.RecipientFingerprint())
 		}
 		log.Error(err, "restore-verifier hard failure", "mode", mode)
 		return verifier.FailureResult(mode, started, err, id.RecipientFingerprint())
@@ -118,6 +126,44 @@ func (p *Pipeline) runRestoreVerifier(
 	// MetricsRefresher reading meta.json.
 	metrics.ObserveRestoreVerificationDuration(src.TargetName, res.Mode, time.Duration(res.DurationSeconds*float64(time.Second)))
 	return res
+}
+
+// budgetExceededResult is the verification block written when the verifier
+// ran out of its time budget. With a previous verdict it is that verdict,
+// re-stamped with CompletedAt=now and a Summary note, so the interval clock
+// advances and the refresher gauge keeps the last real result. Without one
+// (first verification ever) there is nothing to carry, so a Skipped result
+// with an explanatory Error is written: a verification that never fits its
+// budget cannot succeed on retry either, and surfacing that once per
+// interval beats silently re-spawning a full-restore pod on every run.
+func budgetExceededResult(prev *meta.RestoreVerificationResult, mode string, started, now time.Time, budget time.Duration, fingerprint string) *meta.RestoreVerificationResult {
+	note := fmt.Sprintf("verifier exceeded its %s time budget on %s; ", budget.Round(time.Second), now.Format(time.RFC3339))
+	if prev == nil {
+		return &meta.RestoreVerificationResult{
+			Mode:                          mode,
+			Verdict:                       meta.VerificationSkipped,
+			Summary:                       note + "no previous verdict to carry forward",
+			Error:                         "verifier exceeded its time budget; raise RUN_TIMEOUT_SECONDS or pick a cheaper restoreVerification.mode",
+			StartedAt:                     started,
+			CompletedAt:                   now,
+			DurationSeconds:               now.Sub(started).Seconds(),
+			EphemeralRecipientFingerprint: fingerprint,
+		}
+	}
+	out := *prev
+	out.CompletedAt = now
+	out.Summary = note + "carried forward verdict from " + prev.CompletedAt.UTC().Format(time.RFC3339)
+	if prev.Summary != "" {
+		out.Summary += ": " + prev.Summary
+	}
+	return &out
+}
+
+func prevVerdict(prev *meta.RestoreVerificationResult) string {
+	if prev == nil {
+		return "none"
+	}
+	return prev.Verdict
 }
 
 // recordFailure best-effort uploads a failure-meta sidecar to every

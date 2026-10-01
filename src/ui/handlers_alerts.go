@@ -34,7 +34,7 @@ func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 	list, err := s.cfg.AlertsProvider.List(r.Context())
 	if err != nil {
 		s.cfg.Logger.Error(err, "list alerts")
-		writeError(w, http.StatusBadGateway, codeInternal, "alerts source unavailable: " + sanitizeError(err))
+		writeError(w, http.StatusBadGateway, codeInternal, "alerts source unavailable: "+sanitizeError(err))
 		return
 	}
 

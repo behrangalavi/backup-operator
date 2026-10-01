@@ -23,15 +23,19 @@ import (
 type fakeUploadStorage struct {
 	name string
 
-	mu          sync.Mutex
-	uploads     map[string]int   // path → attempt count
-	sizes       map[string]int64 // path → last successfully-stored size
-	failUploads int              // fail this many initial uploads, then succeed
-	alwaysFail  bool
-	failErr     error // error returned while failing; nil → generic (retryable)
+	mu           sync.Mutex
+	uploads      map[string]int   // path → attempt count
+	sizes        map[string]int64 // path → last successfully-stored size
+	failUploads  int              // fail this many initial uploads, then succeed
+	alwaysFail   bool
+	failErr      error            // error returned while failing; nil → generic (retryable)
+	listErr      error            // when set, List fails with it
+	hideFromList bool             // when set, List omits the uploaded objects
+	listExtra    []storage.Object // appended to every listing (sibling objects)
 }
 
 func (f *fakeUploadStorage) Name() string { return f.name }
+func (f *fakeUploadStorage) Close() error { return nil }
 
 func (f *fakeUploadStorage) Upload(_ context.Context, p string, r io.Reader) error {
 	b, _ := io.ReadAll(r)
@@ -64,10 +68,16 @@ func (f *fakeUploadStorage) Upload(_ context.Context, p string, r io.Reader) err
 func (f *fakeUploadStorage) List(_ context.Context, _ string) ([]storage.Object, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	objs := make([]storage.Object, 0, len(f.sizes))
-	for p, s := range f.sizes {
-		objs = append(objs, storage.Object{Path: p, Size: s})
+	if f.listErr != nil {
+		return nil, f.listErr
 	}
+	objs := make([]storage.Object, 0, len(f.sizes)+len(f.listExtra))
+	if !f.hideFromList {
+		for p, s := range f.sizes {
+			objs = append(objs, storage.Object{Path: p, Size: s})
+		}
+	}
+	objs = append(objs, f.listExtra...)
 	return objs, nil
 }
 
@@ -321,3 +331,131 @@ func TestUploadDumpWithRetry_SuccessFirstTry(t *testing.T) {
 		t.Errorf("expected exactly 1 upload, got %d", got)
 	}
 }
+
+// uploadEventRecorder captures Events so tests can assert on reasons.
+type uploadEventRecorder struct {
+	mu     sync.Mutex
+	events []string // "Type/Reason"
+}
+
+func (r *uploadEventRecorder) Emit(typ, reason, _ string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, typ+"/"+reason)
+}
+
+func (r *uploadEventRecorder) has(s string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.events {
+		if e == s {
+			return true
+		}
+	}
+	return false
+}
+
+// TestFanOutDumps_RedactsErrorInMeta regresses C1: the per-destination error
+// string lands in the plaintext meta.json, so credentials embedded in a
+// storage error (URI userinfo, key=value) must be scrubbed first.
+func TestFanOutDumps_RedactsErrorInMeta(t *testing.T) {
+	bad := &fakeUploadStorage{name: "s3", alwaysFail: true,
+		failErr: fmt.Errorf("permission denied: PUT https://AKIA123:verysecret@bucket.example/x failed, secret-access-key=verysecret")}
+	p := newTestPipeline(t, map[string]storage.Storage{"s3": bad})
+	dumpFile := writeTempDump(t, "bytes")
+
+	results := p.fanOutDumps(context.Background(), []*secrets.Destination{dest("s3", "s3")},
+		"prod", dumpFile, "prod/dump-x.sql.gz.age", logr.Discard())
+
+	if results[0].Status != meta.StatusFailed || results[0].Error == "" {
+		t.Fatalf("expected a failed result with an error, got %+v", results[0])
+	}
+	for _, leak := range []string{"verysecret", "AKIA123"} {
+		if containsText(results[0].Error, leak) {
+			t.Errorf("meta error must not contain %q: %q", leak, results[0].Error)
+		}
+	}
+	if !containsText(results[0].Error, "permission denied") {
+		t.Errorf("diagnostic part of the error must survive redaction: %q", results[0].Error)
+	}
+}
+
+// TestVerifyUploadSize_ExactMatchAndSkips covers the round-5 finding: the
+// match is exact on the object path (a sibling with the same basename under
+// a different prefix is ignored), and when the check cannot run the run
+// continues but a Warning UploadVerifySkipped Event is emitted.
+func TestVerifyUploadSize_ExactMatchAndSkips(t *testing.T) {
+	objectPath := "prod/2026/05/01/dump-x.sql.gz.age"
+	mk := func(st *fakeUploadStorage) (*Pipeline, *uploadEventRecorder) {
+		rec := &uploadEventRecorder{}
+		p := newTestPipeline(t, map[string]storage.Storage{"d": st})
+		p.events = rec
+		return p, rec
+	}
+
+	// 1. Exact match with the right size → passes, no event.
+	st := &fakeUploadStorage{name: "d"}
+	_ = st.Upload(context.Background(), objectPath, bytesReader("12345"))
+	p, rec := mk(st)
+	if err := p.verifyUploadSize(context.Background(), st, "d", "prod", objectPath, 5); err != nil {
+		t.Fatalf("exact match must pass: %v", err)
+	}
+	if rec.has("Warning/UploadVerifySkipped") {
+		t.Error("a successful verification must not emit a skip event")
+	}
+
+	// 2. Exact match with the wrong size → RetryableError.
+	p, _ = mk(st)
+	err := p.verifyUploadSize(context.Background(), st, "d", "prod", objectPath, 99)
+	var retryable *RetryableError
+	if !errors.As(err, &retryable) {
+		t.Fatalf("size mismatch must be a RetryableError, got %v", err)
+	}
+
+	// 3. Only a same-basename sibling under another prefix is listed → the old
+	//    loose suffix match would have compared against it; now it's a skip.
+	sibling := &fakeUploadStorage{name: "d", hideFromList: true,
+		listExtra: []storage.Object{{Path: "other/2026/05/01/dump-x.sql.gz.age", Size: 99}}}
+	p, rec = mk(sibling)
+	if err := p.verifyUploadSize(context.Background(), sibling, "d", "prod", objectPath, 5); err != nil {
+		t.Fatalf("a sibling object must not be compared: %v", err)
+	}
+	if !rec.has("Warning/UploadVerifySkipped") {
+		t.Error("object missing from listing must emit UploadVerifySkipped")
+	}
+
+	// 4. List fails → skip with event, run continues.
+	broken := &fakeUploadStorage{name: "d", listErr: errors.New("550 not permitted for user:pw@host")}
+	p, rec = mk(broken)
+	if err := p.verifyUploadSize(context.Background(), broken, "d", "prod", objectPath, 5); err != nil {
+		t.Fatalf("list failure must not fail the upload: %v", err)
+	}
+	if !rec.has("Warning/UploadVerifySkipped") {
+		t.Error("list failure must emit UploadVerifySkipped")
+	}
+}
+
+func containsText(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
+type strReader struct {
+	s string
+	i int
+}
+
+func (r *strReader) Read(p []byte) (int, error) {
+	if r.i >= len(r.s) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.s[r.i:])
+	r.i += n
+	return n, nil
+}
+
+func bytesReader(s string) io.Reader { return &strReader{s: s} }

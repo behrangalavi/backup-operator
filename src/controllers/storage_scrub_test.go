@@ -57,6 +57,7 @@ type fakeScrubStorage struct {
 }
 
 func (f *fakeScrubStorage) Name() string { return f.name }
+func (f *fakeScrubStorage) Close() error { return nil }
 
 func (f *fakeScrubStorage) Upload(context.Context, string, io.Reader) error { return nil }
 

@@ -10,9 +10,13 @@ import (
 	"backup-operator/storage"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/go-logr/logr"
 )
+
+// Compile-time interface check. Azure Blob has no sessions and no directories.
+var _ storage.Storage = (*azureStorage)(nil)
 
 // accountNameRe is Azure's storage-account naming rule: 3-24 lowercase
 // letters/digits. We enforce it before interpolating the account into the
@@ -76,6 +80,10 @@ func New(name string, data storage.SecretData, logger logr.Logger) (storage.Stor
 }
 
 func (a *azureStorage) Name() string { return a.name }
+
+// Close is a no-op: the azblob client has no explicit close; its HTTP
+// pipeline is released by the GC.
+func (a *azureStorage) Close() error { return nil }
 
 // full joins the path-prefix to a caller path by plain concatenation, NOT
 // path.Join. path.Join runs path.Clean, which strips the trailing slash a
@@ -141,14 +149,18 @@ func (a *azureStorage) List(ctx context.Context, prefix string) ([]storage.Objec
 func (a *azureStorage) Get(ctx context.Context, p string) (io.ReadCloser, error) {
 	resp, err := a.client.DownloadStream(ctx, a.container, a.full(p), nil)
 	if err != nil {
+		if bloberror.HasCode(err, bloberror.BlobNotFound) {
+			return nil, fmt.Errorf("azure get %s: %w", p, storage.ErrNotFound)
+		}
 		return nil, fmt.Errorf("azure get %s: %w", p, err)
 	}
 	return resp.Body, nil
 }
 
+// Delete is idempotent: BlobNotFound is success.
 func (a *azureStorage) Delete(ctx context.Context, p string) error {
 	_, err := a.client.DeleteBlob(ctx, a.container, a.full(p), nil)
-	if err != nil {
+	if err != nil && !bloberror.HasCode(err, bloberror.BlobNotFound) {
 		return fmt.Errorf("azure delete %s: %w", p, err)
 	}
 	return nil

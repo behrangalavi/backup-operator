@@ -62,6 +62,11 @@ type MetricsRefresher struct {
 	Pool     *StoragePool
 	poolOnce sync.Once
 
+	// StorageFor overrides how a destination's storage client is resolved.
+	// nil = Pool.Get. Tests inject in-memory fakes here; production leaves
+	// it nil.
+	StorageFor func(*secrets.Destination) (storage.Storage, error)
+
 	// Broadcast is called when a per-target latest-meta timestamp
 	// changes between two refresh ticks — i.e. a new backup run has
 	// landed on a destination. Wired from main.go to ui.Server.Broadcast
@@ -259,7 +264,7 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 	rvUnchanged := srcRV != "" && srcRV == r.lastSrcRV && destRV == r.lastDestRV
 	forceRefresh := r.lastFullRefresh.IsZero() || now.Sub(r.lastFullRefresh) >= fullRefreshInterval
 	if rvUnchanged && !forceRefresh {
-		r.Logger.V(2).Info("refresh skipped: no secret changes", "srcRV", srcRV, "destRV", destRV)
+		r.Logger.V(2).Info("refresh skipped: no object changes", "sourceRV", srcRV, "destinationRV", destRV)
 		return
 	}
 	r.lastSrcRV = srcRV
@@ -269,7 +274,12 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 	sources, dests := res.Sources, res.Dests
 	r.Pool.Retain(dests)
 	r.retainDestSlots(dests)
-	r.Logger.V(1).Info("refresh tick", "sources", len(sources), "destinations", len(dests), "pooled_clients", r.Pool.Size())
+	r.Logger.V(1).Info("refresh tick", "sources", len(sources), "destinations", len(dests), "pooledClients", r.Pool.Size())
+
+	// One root listing per destination for the whole tick. Every source
+	// below reads its destinations from this map — no storage I/O happens
+	// inside the per-source loop any more.
+	listings := r.listDestinations(ctx, dests)
 
 	// Sources flow through a fixed-size global worker pool. The
 	// per-destination semaphore (see refreshSource) caps backend load
@@ -324,7 +334,7 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 			}
 			r.secretToTarget[sourceKey(&s)] = src.TargetName
 			r.mu.Unlock()
-			r.refreshSource(ctx, &s, src, dests, probes)
+			r.refreshSource(ctx, &s, src, dests, listings, probes)
 		}()
 	}
 	wg.Wait()
@@ -369,7 +379,7 @@ func sourceKey(s *v1alpha1.BackupSource) string {
 	return s.Namespace + "/" + s.Name
 }
 
-func (r *MetricsRefresher) refreshSource(ctx context.Context, bs *v1alpha1.BackupSource, src *secrets.Source, all []*secrets.Destination, probes *destProbes) {
+func (r *MetricsRefresher) refreshSource(ctx context.Context, bs *v1alpha1.BackupSource, src *secrets.Source, all []*secrets.Destination, listings map[string]*destListing, probes *destProbes) {
 	allowed := secrets.FilterDestinations(src, all)
 
 	// Reconcile the destination label-set up front (independent of whether
@@ -387,80 +397,49 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, bs *v1alpha1.Backu
 	//                even if it represents a failed run
 	//   - success:   dictates dump_size, table_count, last_success_timestamp —
 	//                fields that only make sense when a real artifact exists
+	//
+	// Pure in-memory aggregation over this tick's destination listings — the
+	// storage reads already happened once per destination in listDestinations.
 	var (
 		newest, success     *meta.MetaFile
 		newestTS, successTS time.Time
-		resultMu            sync.Mutex
-		wg                  sync.WaitGroup
 		runs                = make(map[string]destRun, len(allowed))
 	)
 	for _, d := range allowed {
-		// Acquire the per-destination slot BEFORE spawning the goroutine.
-		// The slot is shared across every source fanning out to this
-		// backend, so the backend sees at most defaultPerDestConcurrency
-		// in-flight calls. Acquiring before `go` means a slow/down backend
-		// blocks the (already globally-bounded) source goroutine here
-		// instead of accumulating one blocked goroutine per source×dest —
-		// the unbounded-queue growth the previous in-goroutine acquire had.
-		slot := r.destSlot(d.Name)
-		select {
-		case slot <- struct{}{}:
-		case <-ctx.Done():
-			// Shutdown mid-fan-out: wait for the destination goroutines already
-			// spawned to finish rather than detaching them (they hold slots and
-			// write metrics). Skip the aggregation below — the tick is aborting.
-			wg.Wait()
-			return
-		}
-		wg.Add(1)
-		go func(d *secrets.Destination) {
-			defer wg.Done()
-			defer safe.Goroutine(r.Logger, "metrics-refresh-destination", d.Name)
-			defer func() { <-slot }()
-
-			st, err := r.Pool.Get(d)
-			if err != nil {
-				r.Logger.V(1).Info("storage init failed; treating destination as failing",
-					"target", src.TargetName, "destination", d.Name, "err", err.Error())
-				metrics.SetDestinationFailed(src.TargetName, d.Name, true)
-				return
-			}
-			m, ts, outcome, perr := loadLatestMeta(ctx, st, src.TargetName)
-			probes.record(d.Name, outcome, perr)
-			switch outcome {
-			case metaError:
-				// Storage unreachable / unreadable (offline host, rotated
-				// credentials, corrupt payload). Raise the gauge so
-				// BackupDestinationFailing can fire — this is the failure mode
-				// the alert is documented to catch. Pool.Get succeeding only
-				// builds the client; the connect/auth happens here.
-				metrics.SetDestinationFailed(src.TargetName, d.Name, true)
-				return
-			case metaEmpty:
-				// Reachable but nothing uploaded yet (legitimate first run) —
-				// explicitly not failed, and no run data to fold in.
-				metrics.SetDestinationFailed(src.TargetName, d.Name, false)
-				return
-			}
+		m, ts, outcome, perr := listings[d.Name].lookup(src.TargetName)
+		probes.record(d.Name, outcome, perr)
+		switch outcome {
+		case metaError:
+			// Storage unreachable / unreadable (offline host, rotated
+			// credentials, corrupt payload). Raise the gauge so
+			// BackupDestinationFailing can fire — this is the failure mode
+			// the alert is documented to catch. Pool.Get succeeding only
+			// builds the client; the connect/auth happens in the listing.
+			metrics.SetDestinationFailed(src.TargetName, d.Name, true)
+			continue
+		case metaEmpty:
+			// Reachable but nothing uploaded yet (legitimate first run) —
+			// explicitly not failed, and no run data to fold in.
 			metrics.SetDestinationFailed(src.TargetName, d.Name, false)
-			if !m.IsFailure() {
-				metrics.SetLastSuccess(src.TargetName, d.Name, ts)
-			}
-
-			resultMu.Lock()
-			runs[d.Name] = destRun{ts: ts, m: m}
-			if newest == nil || ts.After(newestTS) {
-				newest = m
-				newestTS = ts
-			}
-			if !m.IsFailure() && (success == nil || ts.After(successTS)) {
-				success = m
-				successTS = ts
-			}
-			resultMu.Unlock()
-		}(d)
+			continue
+		}
+		metrics.SetDestinationFailed(src.TargetName, d.Name, false)
+		if !m.IsFailure() {
+			metrics.SetLastSuccess(src.TargetName, d.Name, ts)
+		}
+		runs[d.Name] = destRun{ts: ts, m: m}
+		if newest == nil || ts.After(newestTS) {
+			newest = m
+			newestTS = ts
+		}
+		if !m.IsFailure() && (success == nil || ts.After(successTS)) {
+			success = m
+			successTS = ts
+		}
 	}
-	wg.Wait()
+	if ctx.Err() != nil {
+		return // shutdown mid-tick: don't write metrics/status from a partial view
+	}
 
 	// Status mirrors the gauges; deferred so it sees the final pivots and
 	// still runs on the no-data-yet early return below (nextScheduleTime

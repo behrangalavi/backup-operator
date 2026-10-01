@@ -91,9 +91,17 @@ function connectSSE() {
   const dot = $('.status-dot');
   const txt = $('.status-text');
 
+  const status = $('#connectionStatus');
+  const setState = (state, label) => {
+    dot.className = 'status-dot ' + state;
+    dot.setAttribute('data-state', state);
+    txt.textContent = label;
+    // The label is hidden on narrow sidebars, so the state also travels as
+    // an accessible name + tooltip — never colour alone.
+    if (status) { status.setAttribute('aria-label', label); status.title = label; }
+  };
   eventSource.addEventListener('connected', () => {
-    dot.className = 'status-dot connected';
-    txt.textContent = tr('status.live');
+    setState('connected', trText('status.live'));
     _sseBackoff = 0;
   });
   // Each event re-renders only when the current page actually depends on
@@ -108,8 +116,7 @@ function connectSSE() {
     eventSource.addEventListener(ev, () => handleSSEEvent(ev));
   });
   eventSource.onerror = () => {
-    dot.className = 'status-dot error';
-    txt.textContent = tr('status.disconnected');
+    setState('error', trText('status.disconnected'));
     // EventSource can fire onerror repeatedly, and its own internal
     // auto-reconnect can race ours. Schedule at most one reconnect at a
     // time — otherwise a flapping server spawns overlapping EventSources,
@@ -129,7 +136,12 @@ function currentPage() {
 }
 function currentParam() {
   const parts = (location.hash.slice(2) || '').split('/');
-  return parts.length > 1 ? parts.slice(1).join('/') : null;
+  if (parts.length <= 1) return null;
+  const raw = parts.slice(1).join('/');
+  // Links are built with targetHref() (encodeURIComponent); decode here so a
+  // target named "my db%" or "a.b" round-trips. Malformed escapes fall back
+  // to the raw value rather than throwing inside the router.
+  try { return decodeURIComponent(raw); } catch (_) { return raw; }
 }
 
 // _renderGen is a monotonic counter bumped ONLY on user-initiated
@@ -214,7 +226,20 @@ window._currentPage = currentPage;
   connectSSE();
   renderPage(currentPage());
   // Sidebar alerts pill — refresh on init and every 30s in the background so
-  // the counter is current regardless of which page the user is on.
-  refreshAlertsPill();
-  setInterval(refreshAlertsPill, 30000);
+  // the counter is current regardless of which page the user is on. Polling
+  // pauses while the tab is hidden (no point hammering /api/alerts for a
+  // background tab) and resumes with an immediate refresh on return.
+  let alertsPillTimer = null;
+  const startAlertsPolling = () => {
+    if (alertsPillTimer) return;
+    refreshAlertsPill();
+    alertsPillTimer = setInterval(refreshAlertsPill, 30000);
+  };
+  const stopAlertsPolling = () => {
+    if (alertsPillTimer) { clearInterval(alertsPillTimer); alertsPillTimer = null; }
+  };
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopAlertsPolling(); else startAlertsPolling();
+  });
+  if (!document.hidden) startAlertsPolling();
 })();

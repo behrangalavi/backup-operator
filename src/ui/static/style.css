@@ -6,7 +6,7 @@
   --border: #2a2d3a;
   --border-focus: #5b6eef;
   --text: #e4e4e7;
-  --text-muted: #71717a;
+  --text-muted: #a1a1aa; /* ≥4.5:1 on --bg-card and --bg (WCAG AA) */
   --text-heading: #fafafa;
   --accent: #5b6eef;
   --accent-hover: #4f5fd6;
@@ -77,6 +77,13 @@ body {
 }
 .status-dot.connected { background: var(--success); }
 .status-dot.error { background: var(--danger); }
+/* Shape + glyph so the connection state is never colour-only: a square
+   with a cross while disconnected, a round dot while live. */
+.status-dot.error { border-radius: 2px; position: relative; width: 9px; height: 9px; }
+.status-dot.error::after {
+  content: '\00d7'; position: absolute; inset: 0; font-size: 9px; line-height: 9px;
+  color: #fff; text-align: center; font-weight: 700;
+}
 
 /* Main content */
 #content {
@@ -306,13 +313,14 @@ thead th.sortable {
   position: relative; padding-right: 28px;
 }
 thead th.sortable.num { padding-right: 28px; }
-thead th.sortable:hover { color: var(--text); }
+thead th.sortable:hover, thead th.sortable:focus-visible { color: var(--text); outline: 2px solid var(--border-focus); outline-offset: -2px; }
+[data-action][role="button"]:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 /* Position the indicator absolutely so it never participates in the
    header's baseline calculation — otherwise sortable vs non-sortable
    headers render text at slightly different vertical positions. */
 .sort-ind {
   position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
-  font-size: 10px; color: var(--text-muted); opacity: 0.4;
+  font-size: 10px; color: var(--text-muted); opacity: 0.8;
   line-height: 1; pointer-events: none;
 }
 .sort-ind.active { color: var(--accent); opacity: 1; }
@@ -352,7 +360,6 @@ thead th.sortable:hover { color: var(--text); }
 .badge-failed { background: var(--danger-bg); color: var(--danger); }
 .badge-warn { background: var(--warning-bg); color: var(--warning); }
 .badge-running { background: rgba(91,110,239,0.15); color: var(--accent); }
-.badge-pending { background: rgba(113,113,122,0.15); color: var(--text-muted); }
 .badge-succeeded { background: var(--success-bg); color: var(--success); }
 .badge-critical { background: var(--danger-bg); color: var(--danger); }
 .badge-warning  { background: var(--warning-bg); color: var(--warning); }
@@ -644,6 +651,14 @@ rect.hm-out    { fill: transparent; pointer-events: none; }
 .toast-success { background: #166534; color: #bbf7d0; }
 .toast-error { background: #991b1b; color: #fecaca; }
 .toast-info { background: #1e3a5f; color: #bfdbfe; }
+.toast-warning { background: #713f12; color: #fde68a; }
+.toast { display: flex; align-items: flex-start; gap: 10px; }
+.toast-text { flex: 1; }
+.toast-close {
+  background: none; border: none; color: inherit; cursor: pointer;
+  font-size: 16px; line-height: 1; padding: 0 2px; opacity: 0.8;
+}
+.toast-close:hover, .toast-close:focus-visible { opacity: 1; outline: 1px solid currentColor; border-radius: 3px; }
 @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
 /* Loading spinner */
@@ -796,7 +811,11 @@ rect.hm-out    { fill: transparent; pointer-events: none; }
 
 @media (max-width: 768px) {
   #sidebar { width: 60px; }
-  .logo span, .nav-link span:not(.status-dot), .nav-footer .status-text { display: none; }
+  /* Collapse labels, but keep the alerts count badge — a firing critical
+     alert must stay visible on a narrow sidebar. */
+  .logo span, .nav-link span:not(.status-dot):not(.alerts-pill), .nav-footer .status-text { display: none; }
+  .nav-link { position: relative; }
+  .nav-link .alerts-pill { position: absolute; top: 4px; right: 4px; }
   .nav-link { justify-content: center; padding: 12px; }
   /* Active border-left compensates with its 3 px on desktop; on mobile
      the nav-link is centred so the compensation is wrong — turn the

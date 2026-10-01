@@ -11,10 +11,10 @@ import (
 
 func TestWriteError_ShapeAndStatus(t *testing.T) {
 	cases := []struct {
-		name     string
-		status   int
-		code     string
-		message  string
+		name    string
+		status  int
+		code    string
+		message string
 	}{
 		{"validation", http.StatusBadRequest, codeValidation, "name is required"},
 		{"not_found", http.StatusNotFound, codeNotFound, "secret missing"},

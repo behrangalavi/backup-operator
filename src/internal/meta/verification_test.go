@@ -307,3 +307,38 @@ func TestBuildVerification_MySQLUnqualifiedNames(t *testing.T) {
 		}
 	}
 }
+
+// TestRedisMinRawBytes_Boundary pins the scaled floor: small legitimate
+// keysets must pass (the old flat 200-byte floor flagged them), header-only
+// dumps with a real key count must be caught, and the floor is exactly
+// 18 + 4·keys.
+func TestRedisMinRawBytes_Boundary(t *testing.T) {
+	cases := []struct {
+		name      string
+		keys      int64
+		rawBytes  int64
+		wantEmpty bool
+	}{
+		{"5 keys, 120B legit keyset (old floor false-positive)", 5, 120, false},
+		{"8 keys, 160B legit keyset", 8, 160, false},
+		{"1 key, 96B legit single key", 1, 96, false},
+		{"50 keys, 100B header-only", 50, 100, true},
+		{"50 keys, exactly at floor passes", 50, 18 + 4*50, false},
+		{"50 keys, one byte under floor flagged", 50, 18 + 4*50 - 1, true},
+		{"10000 keys, 40B header-only", 10000, 40, true},
+		{"10000 keys, 50kB real", 10000, 50_000, false},
+		{"0 keys, 40B (empty redis is legitimate)", 0, 40, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pre := &dumper.Stats{Tables: []dumper.TableStats{{Name: "db0", RowCount: c.keys}}, GeneratedAt: time.Now()}
+			v := BuildVerification(pre, nil, nil, "redis", 300, c.rawBytes)
+			if v.LooksEmpty != c.wantEmpty {
+				t.Errorf("LooksEmpty=%v, want %v (summary=%q)", v.LooksEmpty, c.wantEmpty, v.Summary)
+			}
+		})
+	}
+	if got := redisMinRawBytes(25); got != 118 {
+		t.Errorf("redisMinRawBytes(25) = %d, want 118", got)
+	}
+}

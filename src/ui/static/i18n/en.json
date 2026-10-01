@@ -11,7 +11,17 @@
     "alerts": "Alerts",
     "audit": "Audit",
     "ageKeys": "Age Keys",
-    "settings": "Settings"
+    "settings": "Settings",
+    "title": {
+      "dashboard": "Overview: targets, recent runs, destination health, consistency warnings",
+      "sources": "Database backup sources (BackupSource objects)",
+      "destinations": "Storage destinations (BackupDestination objects) — where encrypted dumps are uploaded",
+      "jobs": "Recent backup Jobs spawned by CronJobs (or triggered manually)",
+      "alerts": "Currently firing alerts — from Prometheus when configured, otherwise computed locally",
+      "audit": "Audit trail — every backup run, retention deletion, and configuration change emitted as a Kubernetes Event",
+      "ageKeys": "Age recipients (public keys) — every backup is encrypted to every recipient. Add a new one for rotation, remove an old one once verified no longer needed.",
+      "settings": "Operator-wide defaults: schedule, retention, timeouts, worker resources"
+    }
   },
   "status": {
     "connecting": "Connecting…",
@@ -45,7 +55,10 @@
     "auto": "auto",
     "off": "Off",
     "on": "On",
-    "none": "—"
+    "none": "—",
+    "dismiss": "Dismiss",
+    "sort": "Sort:",
+    "toggleDirection": "Toggle sort direction"
   },
   "buttons": {
     "runNow": "Run Now",
@@ -61,7 +74,10 @@
     "next": "Next",
     "applySettings": "Apply Settings",
     "sendTest": "Send Test Alert",
-    "addKey": "Add Key"
+    "addKey": "Add Key",
+    "download": "Download",
+    "copy": "Copy",
+    "backToDashboard": "Back to Dashboard"
   },
   "page": {
     "dashboard": {
@@ -219,7 +235,9 @@
     "alert": "Alert",
     "sinceFiring": "Firing since",
     "destination": "Destination",
-    "startTime": "Started"
+    "startTime": "Started",
+    "started": "Started",
+    "schema": "Schema"
   },
   "target": {
     "configuration": "Configuration",
@@ -246,7 +264,9 @@
     "runningTitle": "Backup currently running",
     "progressOverdue": "running {elapsed} — longer than usual (Ø {est}, n={n})",
     "progressNormal": "{elapsed} / ~{est} — {remaining} remaining (n={n})",
-    "progressNoEstimate": "running for {elapsed}"
+    "progressNoEstimate": "running for {elapsed}",
+    "missingNameTitle": "Missing target name in URL",
+    "missingNameBody": "Hash was {hash} — expected #/target/<name>."
   },
   "form": {
     "source": {
@@ -391,7 +411,8 @@
         "insecureSkipCertVerify": "Skips TLS certificate validation. Accept any server cert — vulnerable to MITM. Use only when the NAS ships a self-signed cert you cannot replace.",
         "endpoint": "Leave blank for AWS S3 (inferred from the region). Set this for S3-compatible providers: MinIO, Cloudflare R2, Backblaze B2, Hetzner Object Storage, Wasabi.",
         "pathStyle": "Enable for providers that require path-style addressing (e.g. MinIO). Leave off for AWS S3 and providers that use virtual-hosted-style buckets.",
-        "serviceAccountJson": "Paste the full JSON key file downloaded from the GCP console (IAM → Service Accounts → Keys → Add Key)."
+        "serviceAccountJson": "Paste the full JSON key file downloaded from the GCP console (IAM → Service Accounts → Keys → Add Key).",
+        "hetzner": "Hetzner Storage Box: use port 23."
       }
     }
   },
@@ -428,7 +449,10 @@
     "deleteFailed": "Delete failed: {error}",
     "triggerFailed": "Trigger failed: {error}",
     "paused": "Paused",
-    "resumed": "Resumed"
+    "resumed": "Resumed",
+    "copied": "Copied!",
+    "copyFailed": "Copy failed: {error}",
+    "destinationsLoadFailed": "Failed to load destinations: {error}"
   },
   "ageKeys": {
     "title": "Encryption Recipients (age public keys)",
@@ -447,7 +471,8 @@
     "removeConfirm": "Remove recipient {name}? Worker pods will no longer encrypt to this key. Existing dumps remain decryptable with the corresponding private key.",
     "readOnly": "Read-only mode — recipient mutation is disabled.",
     "subtitle": "Age recipient public keys the operator encrypts backups to.",
-    "merged": "Merged Secret"
+    "merged": "Merged Secret",
+    "confirmRemove": "Remove this age recipient?\n\nFingerprint: {hash}\n\nFuture backups will no longer encrypt to this recipient. Make sure you still hold a private key for one of the other listed recipients — otherwise future backups become un-decryptable.\n\nExisting dumps in storage are not affected."
   },
   "hero": {
     "status": {
@@ -734,5 +759,18 @@
   },
   "auditPage": {
     "showingMostRecent": "Showing the most recent {shown} of {total} events. Older events: kubectl -n <ns> get events --sort-by=.lastTimestamp"
+  },
+  "a11y": {
+    "closeModal": "Close (Esc)"
+  },
+  "apiError": {
+    "forbidden": "Not allowed",
+    "notFound": "Not found",
+    "notAllowed": "Operation not allowed",
+    "server": "Server error: {error}",
+    "tryAgain": "try again",
+    "timeout": "Request timed out — the destination may be slow or unreachable",
+    "network": "Network error — check your connection",
+    "generic": "Request failed"
   }
 }

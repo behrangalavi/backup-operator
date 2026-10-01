@@ -50,8 +50,13 @@ const (
 )
 
 // Compile-time interface checks.
-var _ storage.Storage = (*ftpsStorage)(nil)
-var _ storage.BatchStorage = (*ftpsStorage)(nil)
+var (
+	_ storage.Storage          = (*ftpsStorage)(nil)
+	_ storage.BatchStorage     = (*ftpsStorage)(nil)
+	_ storage.DirectoryRemover = (*ftpsStorage)(nil)
+	_ storage.Storage          = (*ftpsSession)(nil)
+	_ storage.DirectoryRemover = (*ftpsSession)(nil)
+)
 
 type ftpsStorage struct {
 	name        string
@@ -135,6 +140,20 @@ func New(name string, data storage.SecretData, logger logr.Logger) (storage.Stor
 }
 
 func (s *ftpsStorage) Name() string { return s.name }
+
+// Close is a no-op: every operation dials its own control connection (or
+// runs inside a WithSession whose closer owns it).
+func (s *ftpsStorage) Close() error { return nil }
+
+// wrapNotFound maps a 550 "no such file" reply onto storage.ErrNotFound.
+// FTP's 550 is ambiguous (also "permission denied"), so only clear
+// non-existence phrasing is mapped — see isNotExistFTPError.
+func wrapNotFound(op, p string, err error) error {
+	if isNotExistFTPError(err) {
+		return fmt.Errorf("%s %s: %w", op, p, storage.ErrNotFound)
+	}
+	return fmt.Errorf("%s %s: %w", op, p, err)
+}
 
 // dial opens a fresh FTPS control connection and authenticates. The PROT P
 // command is sent so the data channel is encrypted too — without it the FTP
@@ -265,7 +284,7 @@ func (s *ftpsStorage) Upload(ctx context.Context, p string, r io.Reader) error {
 		return err
 	}
 
-	if err := c.Stor(full, r); err != nil {
+	if err := c.Stor(full, storage.ContextReader(ctx, r)); err != nil {
 		// Best-effort cleanup of any partial file the server may have created.
 		_ = c.Delete(full)
 		return fmt.Errorf("store %s: %w", full, err)
@@ -373,7 +392,7 @@ func (s *ftpsStorage) Get(ctx context.Context, p string) (io.ReadCloser, error) 
 	resp, err := c.Retr(s.full(p))
 	if err != nil {
 		_ = c.Quit()
-		return nil, fmt.Errorf("retr %s: %w", p, err)
+		return nil, wrapNotFound("retr", p, err)
 	}
 	return &ftpsReader{r: resp, c: c}, nil
 }
@@ -395,7 +414,7 @@ func (s *ftpsStorage) Delete(ctx context.Context, p string) error {
 		return err
 	}
 	defer func() { _ = c.Quit() }()
-	if err := c.Delete(s.full(p)); err != nil {
+	if err := c.Delete(s.full(p)); err != nil && !isNotExistFTPError(err) {
 		return fmt.Errorf("delete %s: %w", p, err)
 	}
 	return nil
@@ -436,12 +455,19 @@ type ftpsSession struct {
 
 func (s *ftpsSession) Name() string { return s.parent.name }
 
-func (s *ftpsSession) Upload(_ context.Context, p string, r io.Reader) error {
+// Close on a session is a no-op; the closer returned by WithSession owns
+// the connection.
+func (s *ftpsSession) Close() error { return nil }
+
+func (s *ftpsSession) Upload(ctx context.Context, p string, r io.Reader) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	full := s.parent.full(p)
 	if err := mkdirAll(s.c, path.Dir(full)); err != nil {
 		return err
 	}
-	if err := s.c.Stor(full, r); err != nil {
+	if err := s.c.Stor(full, storage.ContextReader(ctx, r)); err != nil {
 		_ = s.c.Delete(full)
 		return fmt.Errorf("store %s: %w", full, err)
 	}
@@ -452,22 +478,31 @@ func (s *ftpsSession) List(ctx context.Context, prefix string) ([]storage.Object
 	return walkList(ctx, s.c, s.parent.full(prefix), s.parent.stripPrefix)
 }
 
-func (s *ftpsSession) Get(_ context.Context, p string) (io.ReadCloser, error) {
+func (s *ftpsSession) Get(ctx context.Context, p string) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	resp, err := s.c.Retr(s.parent.full(p))
 	if err != nil {
-		return nil, fmt.Errorf("retr %s: %w", p, err)
+		return nil, wrapNotFound("retr", p, err)
 	}
 	// Don't wrap with ftpsReader — the session owns the connection.
 	return resp, nil
 }
 
-func (s *ftpsSession) Delete(_ context.Context, p string) error {
-	if err := s.c.Delete(s.parent.full(p)); err != nil {
+func (s *ftpsSession) Delete(ctx context.Context, p string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := s.c.Delete(s.parent.full(p)); err != nil && !isNotExistFTPError(err) {
 		return fmt.Errorf("delete %s: %w", p, err)
 	}
 	return nil
 }
 
-func (s *ftpsSession) RemoveDirectory(_ context.Context, p string) error {
+func (s *ftpsSession) RemoveDirectory(ctx context.Context, p string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return s.c.RemoveDir(s.parent.full(p))
 }

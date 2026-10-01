@@ -54,12 +54,12 @@ type DestinationResult struct {
 // dashboards can answer "are we trimming actual data or just stale meta
 // sidecars".
 type RetentionResult struct {
-	Name          string `json:"name"`
-	Status        string `json:"status"`
-	DeletedDumps  int    `json:"deletedDumps,omitempty"`
-	DeletedMetas  int    `json:"deletedMetas,omitempty"`
-	DeletedOther  int    `json:"deletedOther,omitempty"`
-	Error         string `json:"error,omitempty"`
+	Name         string `json:"name"`
+	Status       string `json:"status"`
+	DeletedDumps int    `json:"deletedDumps,omitempty"`
+	DeletedMetas int    `json:"deletedMetas,omitempty"`
+	DeletedOther int    `json:"deletedOther,omitempty"`
+	Error        string `json:"error,omitempty"`
 }
 
 // Verification verdict constants.
@@ -75,12 +75,12 @@ const (
 // it finishes. Dump row counts are parsed from the dump stream itself. The
 // Verdict summarises whether the three sources agree.
 type DumpVerification struct {
-	Verdict  string              `json:"verdict"`
-	Summary  string              `json:"summary"`
-	PreStats *dumper.Stats       `json:"preStats,omitempty"`
-	PostStats *dumper.Stats      `json:"postStats,omitempty"`
-	DumpRowCounts map[string]int64 `json:"dumpRowCounts,omitempty"`
-	Tables   []TableVerification `json:"tables,omitempty"`
+	Verdict       string              `json:"verdict"`
+	Summary       string              `json:"summary"`
+	PreStats      *dumper.Stats       `json:"preStats,omitempty"`
+	PostStats     *dumper.Stats       `json:"postStats,omitempty"`
+	DumpRowCounts map[string]int64    `json:"dumpRowCounts,omitempty"`
+	Tables        []TableVerification `json:"tables,omitempty"`
 
 	// LooksEmpty is true when the dump appears to contain no data despite the
 	// source DB having rows. Set when dump row counting is available, the
@@ -92,12 +92,12 @@ type DumpVerification struct {
 
 // TableVerification records per-table row counts from three sources.
 type TableVerification struct {
-	Name          string `json:"name"`
-	PreDumpRows   int64  `json:"preDumpRows"`
-	PostDumpRows  int64  `json:"postDumpRows"`
-	DumpRows      int64  `json:"dumpRows"`
-	Verdict       string `json:"verdict"`
-	Detail        string `json:"detail,omitempty"`
+	Name         string `json:"name"`
+	PreDumpRows  int64  `json:"preDumpRows"`
+	PostDumpRows int64  `json:"postDumpRows"`
+	DumpRows     int64  `json:"dumpRows"`
+	Verdict      string `json:"verdict"`
+	Detail       string `json:"detail,omitempty"`
 }
 
 // RestoreVerificationResult records the outcome of a single
@@ -132,33 +132,33 @@ const SchemaVersion = 2
 // alongside it — that's how the UI surfaces failures that never produced
 // a dump (e.g. wrong DB password, unreachable host).
 type MetaFile struct {
-	SchemaVersion      int              `json:"schemaVersion,omitempty"`
-	Target             string           `json:"target"`
-	Timestamp          string           `json:"timestamp"`
-	DBType             string           `json:"dbType"`
-	Status             string           `json:"status,omitempty"`
-	Error              string           `json:"error,omitempty"`
-	Phase              string           `json:"phase,omitempty"`
-	EncryptedSizeBytes int64            `json:"encryptedSizeBytes,omitempty"`
-	SHA256             string           `json:"sha256,omitempty"`
-	Compression        string           `json:"compression,omitempty"`
+	SchemaVersion      int    `json:"schemaVersion,omitempty"`
+	Target             string `json:"target"`
+	Timestamp          string `json:"timestamp"`
+	DBType             string `json:"dbType"`
+	Status             string `json:"status,omitempty"`
+	Error              string `json:"error,omitempty"`
+	Phase              string `json:"phase,omitempty"`
+	EncryptedSizeBytes int64  `json:"encryptedSizeBytes,omitempty"`
+	SHA256             string `json:"sha256,omitempty"`
+	Compression        string `json:"compression,omitempty"`
 	// SchemaChangedAt is the timestamp of the most recent run where the
 	// schema fingerprint differed from the prior run. Carried forward from
 	// the previous meta when the schema is unchanged, so any single meta
 	// alone tells you "schema was last touched at ...". Lets PromQL queries
 	// like `time() - last_change_timestamp > 86400 * 180` flag backups whose
 	// schema is so old the application has likely diverged.
-	SchemaChangedAt    time.Time        `json:"schemaChangedAt,omitempty"`
+	SchemaChangedAt time.Time `json:"schemaChangedAt,omitempty"`
 	// CompletedAt and DurationSeconds describe the run's wall-clock duration.
 	// Timestamp is the run's start; CompletedAt is when the meta was written
 	// (after dump + fan-out + retention). DurationSeconds == CompletedAt -
 	// Timestamp's parsed value, persisted explicitly so callers don't have to
 	// recompute and so legacy metas (where these fields are absent) are
 	// distinguishable from genuinely-zero durations.
-	CompletedAt          time.Time        `json:"completedAt,omitempty"`
-	DurationSeconds      float64          `json:"durationSeconds,omitempty"`
-	DumpDurationSeconds  float64          `json:"dumpDurationSeconds,omitempty"`
-	Stats                *dumper.Stats    `json:"stats,omitempty"`
+	CompletedAt         time.Time     `json:"completedAt,omitempty"`
+	DurationSeconds     float64       `json:"durationSeconds,omitempty"`
+	DumpDurationSeconds float64       `json:"dumpDurationSeconds,omitempty"`
+	Stats               *dumper.Stats `json:"stats,omitempty"`
 	// StatsError records the sanitized message from a failed pre-dump
 	// CollectStats call. Without it, a permission / connect failure on
 	// pg_stat_user_tables (or its MySQL / Mongo equivalents) leaves
@@ -166,18 +166,18 @@ type MetaFile struct {
 	// is a "skipped" restore-verification verdict (no preTables to
 	// compare). Empty when stats collection succeeded or the analyzer
 	// is disabled by annotation.
-	StatsError         string           `json:"statsError,omitempty"`
-	Report             *analyzer.Report `json:"report,omitempty"`
-	Verification       *DumpVerification `json:"verification,omitempty"`
+	StatsError   string            `json:"statsError,omitempty"`
+	Report       *analyzer.Report  `json:"report,omitempty"`
+	Verification *DumpVerification `json:"verification,omitempty"`
 	// RestoreVerification is set when a restore-verifier ran for this run.
 	// Absent when verification was off or not yet due. Distinct field from
 	// Verification (dump-stream check) — both can coexist on the same run.
 	RestoreVerification *RestoreVerificationResult `json:"restoreVerification,omitempty"`
-	Destinations       []DestinationResult `json:"destinations,omitempty"`
+	Destinations        []DestinationResult        `json:"destinations,omitempty"`
 	// Retention captures the pre-upload retention sweep's outcome per
 	// destination. Empty when retention is disabled (Days==0) or the run
 	// failed before retention ran. See RetentionResult for details.
-	Retention          []RetentionResult `json:"retention,omitempty"`
+	Retention []RetentionResult `json:"retention,omitempty"`
 
 	// Path within the destination, populated when fetched via List+Get so
 	// callers can deep-link or correlate to the encrypted dump alongside.
@@ -221,10 +221,30 @@ func (m *MetaFile) ParsedTimestamp() time.Time {
 	return t
 }
 
+// ListOptions bounds a List. Zero values mean unbounded.
+type ListOptions struct {
+	// Since drops runs whose path-encoded timestamp is older than this. The
+	// filter is applied to the listing BEFORE any meta file is fetched, so a
+	// 30-day dashboard window over a target with years of history costs 30
+	// days' worth of Gets, not the whole history.
+	Since time.Time
+	// Limit keeps only the newest N runs (after Since). Same pre-fetch
+	// filtering: a duration estimate over the last 10 runs costs 10 Gets.
+	Limit int
+}
+
 // List enumerates every meta.json under target/ in the storage and
 // returns them parsed and sorted newest-first. Errors on individual
 // files are skipped — one corrupt meta should not blank the UI.
 func List(ctx context.Context, st storage.Storage, target string) ([]*MetaFile, error) {
+	return ListWithOptions(ctx, st, target, ListOptions{})
+}
+
+// ListWithOptions is List with a Since / Limit bound applied to the listing
+// before the per-file fetches. The timestamp is parsed from the object path
+// (dump-<ts>.meta.json), which is authoritative — the same ordering key the
+// refresher and the retention selector use.
+func ListWithOptions(ctx context.Context, st storage.Storage, target string, opts ListOptions) ([]*MetaFile, error) {
 	// Share one connection across the List + per-file Gets on SFTP/FTPS.
 	// Without it, every meta file is a fresh SSH/TLS handshake (~100-300ms),
 	// so a 30-day history is one List dial plus N Get dials — the dominant
@@ -243,13 +263,11 @@ func List(ctx context.Context, st storage.Storage, target string) ([]*MetaFile, 
 	if err != nil {
 		return nil, fmt.Errorf("list %q: %w", target, err)
 	}
+	paths := SelectMetaPaths(objs, opts)
 	destName := st.Name()
-	out := make([]*MetaFile, 0, len(objs))
-	for _, o := range objs {
-		if path.Ext(o.Path) != ".json" || !strings.HasSuffix(o.Path, ".meta.json") {
-			continue
-		}
-		m, err := fetchOne(ctx, active, o.Path)
+	out := make([]*MetaFile, 0, len(paths))
+	for _, p := range paths {
+		m, err := fetchOne(ctx, active, p)
 		if err != nil {
 			continue
 		}
@@ -260,6 +278,65 @@ func List(ctx context.Context, st storage.Storage, target string) ([]*MetaFile, 
 		return out[i].Timestamp > out[j].Timestamp
 	})
 	return out, nil
+}
+
+// SelectMetaPaths picks the meta.json object paths a List should fetch:
+// filtered by opts.Since, sorted newest-first by path-encoded timestamp,
+// truncated to opts.Limit. Pure function so the bounding logic is testable
+// without storage.
+func SelectMetaPaths(objs []storage.Object, opts ListOptions) []string {
+	type cand struct {
+		path string
+		ts   string
+	}
+	var since string
+	if !opts.Since.IsZero() {
+		since = opts.Since.UTC().Format("20060102T150405Z")
+	}
+	cands := make([]cand, 0, len(objs))
+	for _, o := range objs {
+		if path.Ext(o.Path) != ".json" || !strings.HasSuffix(o.Path, ".meta.json") {
+			continue
+		}
+		ts := pathTimestamp(o.Path)
+		// A meta whose name does not carry a timestamp cannot be ordered or
+		// windowed; keep it when unbounded (legacy tolerance), drop it when
+		// the caller asked for a bound.
+		if ts == "" && (since != "" || opts.Limit > 0) {
+			continue
+		}
+		if since != "" && ts < since {
+			continue
+		}
+		cands = append(cands, cand{path: o.Path, ts: ts})
+	}
+	sort.Slice(cands, func(i, j int) bool {
+		if cands[i].ts != cands[j].ts {
+			return cands[i].ts > cands[j].ts
+		}
+		return cands[i].path > cands[j].path
+	})
+	if opts.Limit > 0 && len(cands) > opts.Limit {
+		cands = cands[:opts.Limit]
+	}
+	out := make([]string, len(cands))
+	for i, c := range cands {
+		out[i] = c.path
+	}
+	return out
+}
+
+// pathTimestamp extracts the compact timestamp from a meta object path like
+// "target/2026/05/01/dump-20260501T020000Z.meta.json". Empty when the name
+// does not follow the dump-<ts>.meta.json convention.
+func pathTimestamp(p string) string {
+	base := path.Base(p)
+	base = strings.TrimPrefix(base, "dump-")
+	base = strings.TrimSuffix(base, ".meta.json")
+	if len(base) == 16 && base[8] == 'T' && base[15] == 'Z' {
+		return base
+	}
+	return ""
 }
 
 // LatestPerTarget walks every target prefix in the destination and

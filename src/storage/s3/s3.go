@@ -2,6 +2,7 @@ package s3
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -13,8 +14,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/go-logr/logr"
 )
+
+// Compile-time interface check. S3 has no sessions and no directories, so
+// BatchStorage and DirectoryRemover are deliberately not implemented.
+var _ storage.Storage = (*s3Storage)(nil)
 
 // Required Secret keys: bucket, access-key-id, secret-access-key.
 // Optional: endpoint (for non-AWS providers), region, path-style, path-prefix.
@@ -81,11 +87,23 @@ func New(name string, data storage.SecretData, logger logr.Logger) (storage.Stor
 			// cuts per-part overhead and avoids the S3 10,000-part limit.
 			u.PartSize = 64 * 1024 * 1024
 		}),
-		logger:     logger,
+		logger: logger,
 	}, nil
 }
 
 func (s *s3Storage) Name() string { return s.name }
+
+// Close is a no-op: the AWS SDK client holds no connections of its own
+// beyond the shared HTTP transport.
+func (s *s3Storage) Close() error { return nil }
+
+// isNotFound maps the SDK's typed not-found errors (GetObject returns
+// NoSuchKey; HeadObject-style calls return NotFound) onto storage.ErrNotFound.
+func isNotFound(err error) bool {
+	var nsk *s3types.NoSuchKey
+	var nf *s3types.NotFound
+	return errors.As(err, &nsk) || errors.As(err, &nf)
+}
 
 // full joins the path-prefix to a caller path by plain concatenation, NOT
 // path.Join. path.Join runs path.Clean, which strips the trailing slash a
@@ -159,19 +177,23 @@ func (s *s3Storage) Get(ctx context.Context, p string) (io.ReadCloser, error) {
 		Key:    aws.String(s.full(p)),
 	})
 	if err != nil {
+		if isNotFound(err) {
+			return nil, fmt.Errorf("s3 get %s: %w", p, storage.ErrNotFound)
+		}
 		return nil, fmt.Errorf("s3 get %s: %w", p, err)
 	}
 	return resp.Body, nil
 }
 
+// Delete is idempotent: S3 itself answers 204 for a missing key, and any
+// provider that reports NoSuchKey/NotFound instead is normalised to success.
 func (s *s3Storage) Delete(ctx context.Context, p string) error {
 	_, err := s.client.DeleteObject(ctx, &awss3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(s.full(p)),
 	})
-	if err != nil {
+	if err != nil && !isNotFound(err) {
 		return fmt.Errorf("s3 delete %s: %w", p, err)
 	}
 	return nil
 }
-

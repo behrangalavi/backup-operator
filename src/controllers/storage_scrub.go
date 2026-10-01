@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,22 @@ type StorageScrubber struct {
 	// nil. Production wiring shares one pool with MetricsRefresher.
 	Pool     *StoragePool
 	poolOnce sync.Once
+
+	// MaxPairsPerTick caps how many (target, destination) pairs one tick
+	// re-hashes; 0 = defaultScrubMaxPairsPerTick. Each pair re-streams a
+	// full encrypted dump, so without a cap a fleet of 10k sources × 3
+	// destinations is 30k dump downloads per tick — far more than fits in
+	// the interval. Pairs are walked round-robin across ticks (cursor), so
+	// every pair is eventually scrubbed; the effective per-pair cadence is
+	// Interval × ceil(pairs / MaxPairsPerTick).
+	MaxPairsPerTick int
+	cursor          int
+}
+
+// scrubPair is one (source, destination) unit of scrub work.
+type scrubPair struct {
+	src  *secrets.Source
+	dest *secrets.Destination
 }
 
 // ensurePool lazy-builds the pool exactly once. scrubSource fans out to
@@ -67,6 +84,11 @@ const (
 	// egress) keeps the tick bounded by the slowest single dump, not the sum.
 	defaultScrubSourceWorkers = 8
 	defaultScrubInterval      = 24 * time.Hour
+	// defaultScrubMaxPairsPerTick bounds a tick to a few hundred full-dump
+	// re-streams. At 2 concurrent streams and a typical 1–10 GiB dump that
+	// is still hours of egress per tick, but it is bounded — the previous
+	// "walk everything" tick had no upper bound at all.
+	defaultScrubMaxPairsPerTick = 500
 )
 
 // Start runs the scrub loop until ctx is cancelled. Satisfies manager.Runnable.
@@ -110,12 +132,10 @@ func (s *StorageScrubber) scrub(ctx context.Context) {
 	}
 	s.Logger.V(1).Info("scrub tick", "sources", len(res.Sources), "destinations", len(res.Dests))
 
-	// One stream semaphore shared across all sources bounds total concurrent
-	// dump re-streams (egress); a separate worker pool bounds how many sources
-	// are walked at once so the tick doesn't serialise into a multi-hour run.
-	streamSlots := make(chan struct{}, defaultScrubConcurrency)
-	workers := make(chan struct{}, defaultScrubSourceWorkers)
-	var wg sync.WaitGroup
+	// Expand to (source, destination) pairs in a deterministic order, then
+	// take the next window after the cursor so successive ticks cover the
+	// whole fleet round-robin even when one tick cannot.
+	var pairs []scrubPair
 	for i := range res.Sources {
 		// Schedule is irrelevant for scrubbing; pass "" rather than plumb
 		// the operator default through a controller that never uses it.
@@ -123,47 +143,86 @@ func (s *StorageScrubber) scrub(ctx context.Context) {
 		if err != nil {
 			continue
 		}
+		for _, d := range secrets.FilterDestinations(src, res.Dests) {
+			pairs = append(pairs, scrubPair{src: src, dest: d})
+		}
+	}
+	window := s.nextWindow(pairs)
+	if len(window) < len(pairs) {
+		s.Logger.Info("scrub tick bounded; remaining pairs continue next tick",
+			"pairs", len(pairs), "thisTick", len(window), "maxPairsPerTick", s.maxPairs())
+	}
+
+	// One stream semaphore shared across all pairs bounds total concurrent
+	// dump re-streams (egress); a separate worker pool bounds how many pairs
+	// are in flight at once so the tick doesn't serialise into a multi-hour
+	// run on one slow destination.
+	streamSlots := make(chan struct{}, defaultScrubConcurrency)
+	workers := make(chan struct{}, defaultScrubSourceWorkers)
+	var wg sync.WaitGroup
+	for _, p := range window {
+		p := p
 		wg.Add(1)
-		go func(src *secrets.Source) {
+		go func() {
 			defer wg.Done()
-			defer safe.Goroutine(s.Logger, "storage-scrub-source", src.TargetName)
+			defer safe.Goroutine(s.Logger, "storage-scrub", p.src.TargetName+"@"+p.dest.Name)
 			select {
 			case workers <- struct{}{}:
 				defer func() { <-workers }()
 			case <-ctx.Done():
 				return
 			}
-			s.scrubSource(ctx, src, res.Dests, streamSlots)
-		}(src)
-	}
-	wg.Wait()
-}
-
-func (s *StorageScrubber) scrubSource(ctx context.Context, src *secrets.Source, all []*secrets.Destination, streamSlots chan struct{}) {
-	allowed := secrets.FilterDestinations(src, all)
-	if len(allowed) == 0 {
-		return
-	}
-	var wg sync.WaitGroup
-	for _, d := range allowed {
-		wg.Add(1)
-		go func(d *secrets.Destination) {
-			defer wg.Done()
-			defer safe.Goroutine(s.Logger, "storage-scrub", d.Name)
 			// Gate on the shared stream semaphore so total in-flight dump
-			// re-streams stay bounded regardless of how many sources are
-			// being walked concurrently. Bail promptly on shutdown rather
-			// than blocking for a slot.
+			// re-streams stay bounded. Bail promptly on shutdown rather than
+			// blocking for a slot.
 			select {
 			case streamSlots <- struct{}{}:
 				defer func() { <-streamSlots }()
 			case <-ctx.Done():
 				return
 			}
-			s.scrubOne(ctx, src.TargetName, d)
-		}(d)
+			s.scrubOne(ctx, p.src.TargetName, p.dest)
+		}()
 	}
 	wg.Wait()
+}
+
+func (s *StorageScrubber) maxPairs() int {
+	if s.MaxPairsPerTick > 0 {
+		return s.MaxPairsPerTick
+	}
+	return defaultScrubMaxPairsPerTick
+}
+
+// nextWindow returns up to maxPairs() pairs starting at the round-robin
+// cursor (wrapping), and advances the cursor. Pairs are sorted by target
+// then destination so the cursor is stable across ticks even though the
+// list is rebuilt from a fresh listing each time; a fleet change shifts
+// the window by at most the number of added/removed pairs.
+func (s *StorageScrubber) nextWindow(pairs []scrubPair) []scrubPair {
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].src.TargetName != pairs[j].src.TargetName {
+			return pairs[i].src.TargetName < pairs[j].src.TargetName
+		}
+		return pairs[i].dest.Name < pairs[j].dest.Name
+	})
+	n := len(pairs)
+	if n == 0 {
+		s.cursor = 0
+		return nil
+	}
+	limit := s.maxPairs()
+	if limit >= n {
+		s.cursor = 0
+		return pairs
+	}
+	start := s.cursor % n
+	window := make([]scrubPair, 0, limit)
+	for i := 0; i < limit; i++ {
+		window = append(window, pairs[(start+i)%n])
+	}
+	s.cursor = (start + limit) % n
+	return window
 }
 
 // scrubOne fetches the latest meta.json for the target on a single
@@ -212,7 +271,7 @@ func (s *StorageScrubber) scrubOne(ctx context.Context, target string, d *secret
 			for _, o := range objs {
 				if o.Path == dumpPath && o.Size != m.EncryptedSizeBytes {
 					log.Error(fmt.Errorf("size mismatch"), "scrub: storage corruption detected (size pre-check)",
-						"path", dumpPath, "want_bytes", m.EncryptedSizeBytes, "got_bytes", o.Size)
+						"path", dumpPath, "wantBytes", m.EncryptedSizeBytes, "gotBytes", o.Size)
 					metrics.SetStorageScrubPassed(target, d.Name, false)
 					metrics.IncStorageScrubFailed(target, d.Name)
 					metrics.SetStorageScrubLastCheck(target, d.Name, time.Now())

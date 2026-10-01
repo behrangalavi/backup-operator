@@ -2,6 +2,7 @@ package gcs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -22,6 +23,9 @@ const (
 	keySAJSON = "service-account-json"
 	keyPrefix = "path-prefix"
 )
+
+// Compile-time interface check. GCS has no sessions and no directories.
+var _ storage.Storage = (*gcsStorage)(nil)
 
 type gcsStorage struct {
 	name       string
@@ -65,6 +69,12 @@ func New(name string, data storage.SecretData, logger logr.Logger) (storage.Stor
 }
 
 func (g *gcsStorage) Name() string { return g.name }
+
+// Close releases the gRPC/HTTP connections the GCS client keeps open. The
+// pool calls it when a destination is evicted or its credentials rotate;
+// before Close existed the old client was dropped to the GC with its
+// connections still established.
+func (g *gcsStorage) Close() error { return g.client.Close() }
 
 // full joins the path-prefix to a caller path by plain concatenation, NOT
 // path.Join. path.Join runs path.Clean, which strips the trailing slash a
@@ -130,14 +140,18 @@ func (g *gcsStorage) List(ctx context.Context, prefix string) ([]storage.Object,
 func (g *gcsStorage) Get(ctx context.Context, p string) (io.ReadCloser, error) {
 	r, err := g.client.Bucket(g.bucket).Object(g.full(p)).NewReader(ctx)
 	if err != nil {
+		if errors.Is(err, gcstorage.ErrObjectNotExist) {
+			return nil, fmt.Errorf("gcs get %s: %w", p, storage.ErrNotFound)
+		}
 		return nil, fmt.Errorf("gcs get %s: %w", p, err)
 	}
 	return r, nil
 }
 
+// Delete is idempotent: a missing object (ErrObjectNotExist) is success.
 func (g *gcsStorage) Delete(ctx context.Context, p string) error {
 	err := g.client.Bucket(g.bucket).Object(g.full(p)).Delete(ctx)
-	if err != nil {
+	if err != nil && !errors.Is(err, gcstorage.ErrObjectNotExist) {
 		return fmt.Errorf("gcs delete %s: %w", p, err)
 	}
 	return nil

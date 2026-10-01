@@ -50,6 +50,23 @@ type WorkerSpec struct {
 	DefaultSchedule  string
 	ImagePullSecrets []corev1.LocalObjectReference
 	Resources        corev1.ResourceRequirements
+
+	// Scheduling / pod-shape knobs for the worker pod, all optional. Helm
+	// passes them as JSON env vars (WORKER_NODE_SELECTOR, WORKER_TOLERATIONS,
+	// WORKER_AFFINITY, WORKER_PRIORITY_CLASS_NAME, WORKER_POD_ANNOTATIONS,
+	// WORKER_EXTRA_ENV, WORKER_EXTRA_VOLUMES, WORKER_EXTRA_VOLUME_MOUNTS);
+	// cmd/main.go parses them. Worker pods do the heavy dump work and run
+	// on whatever node the scheduler picks — without these a cluster with
+	// tainted or spot nodes cannot pin backups anywhere, and a CA bundle or
+	// client cert for the database has no way into the pod.
+	NodeSelector      map[string]string
+	Tolerations       []corev1.Toleration
+	Affinity          *corev1.Affinity
+	PriorityClassName string
+	PodAnnotations    map[string]string
+	ExtraEnv          []corev1.EnvVar
+	ExtraVolumes      []corev1.Volume
+	ExtraVolumeMounts []corev1.VolumeMount
 }
 
 // CronJobReconciler keeps a managed K8s CronJob in sync with each
@@ -138,7 +155,7 @@ func (r *CronJobReconciler) ensureCronJob(ctx context.Context, bs *v1alpha1.Back
 		// Log the materialised schedule (post-jitter), not the spec value —
 		// operators inspecting the log need to know what actually runs.
 		log.Info("cronjob reconciled", "operation", op, "target", src.TargetName,
-			"schedule", desired.Spec.Schedule, "schedule_spec", src.Schedule)
+			"schedule", desired.Spec.Schedule, "scheduleSpec", src.Schedule)
 	}
 
 	return updateSourceStatus(ctx, r.Client, client.ObjectKeyFromObject(bs), func(st *v1alpha1.BackupSourceStatus) {
@@ -197,10 +214,10 @@ func (r *CronJobReconciler) buildCronJob(bs *v1alpha1.BackupSource, src *secrets
 			"--namespace", bs.Namespace,
 		},
 		ImagePullPolicy: r.Worker.ImagePullPolicy,
-		Env:             r.workerEnv(),
+		Env:             append(r.workerEnv(), r.Worker.ExtraEnv...),
 		SecurityContext: workerSecCtx,
 		Resources:       r.Worker.Resources,
-		VolumeMounts:    r.workerVolumeMounts(),
+		VolumeMounts:    append(r.workerVolumeMounts(), r.Worker.ExtraVolumeMounts...),
 	}}
 
 	tempVolume := corev1.Volume{
@@ -253,11 +270,15 @@ func (r *CronJobReconciler) buildCronJob(bs *v1alpha1.BackupSource, src *secrets
 					// K8s to keep stale Job objects around for audit.
 					TTLSecondsAfterFinished: ptrInt32(86400),
 					Template: corev1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{Labels: managedLabels},
+						ObjectMeta: metav1.ObjectMeta{Labels: managedLabels, Annotations: r.Worker.PodAnnotations},
 						Spec: corev1.PodSpec{
 							RestartPolicy:      corev1.RestartPolicyNever,
 							ServiceAccountName: r.Worker.ServiceAccountName,
 							ImagePullSecrets:   r.Worker.ImagePullSecrets,
+							NodeSelector:       r.Worker.NodeSelector,
+							Tolerations:        r.Worker.Tolerations,
+							Affinity:           r.Worker.Affinity,
+							PriorityClassName:  r.Worker.PriorityClassName,
 							SecurityContext: &corev1.PodSecurityContext{
 								RunAsNonRoot:   ptr(true),
 								RunAsUser:      ptrInt64(1000),
@@ -266,7 +287,7 @@ func (r *CronJobReconciler) buildCronJob(bs *v1alpha1.BackupSource, src *secrets
 								SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 							},
 							Containers: containers,
-							Volumes:    r.workerVolumes(tempVolume),
+							Volumes:    append(r.workerVolumes(tempVolume), r.Worker.ExtraVolumes...),
 						},
 					},
 				},

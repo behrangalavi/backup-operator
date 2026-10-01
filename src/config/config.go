@@ -51,7 +51,9 @@ func InitializeConfigModule(configs []ConfigItemDescription) error {
 
 		if decl.Validate != nil {
 			if err := decl.Validate(value); err != nil {
-				return err
+				// Name the key: a bare "must be an integer" from a shared
+				// validator is useless in a crash log with 40 config keys.
+				return fmt.Errorf("config %s: %w", decl.Key, err)
 			}
 		}
 
@@ -75,15 +77,22 @@ func GetValue(key string) string {
 	return mod.settings[key].Value
 }
 
-// GetInt returns the config value parsed as int. Returns 0 on parse error.
+// GetInt returns the config value parsed as int. A value that does not parse
+// is a programming error — every integer key must carry a Validate at
+// declaration time — so this panics rather than silently returning 0 (which
+// for keys like DEFAULT_MIN_KEEP would quietly remove a safety floor).
 func GetInt(key string) int {
-	v, _ := strconv.Atoi(GetValue(key))
+	raw := GetValue(key)
+	v, err := strconv.Atoi(raw)
+	assert.NoError(err, fmt.Sprintf("config %s=%q is not an integer (missing Validate at declaration?)", key, raw))
 	return v
 }
 
-// GetInt64 returns the config value parsed as int64. Returns 0 on parse error.
+// GetInt64 is GetInt for int64 values. Same panic-on-garbage contract.
 func GetInt64(key string) int64 {
-	v, _ := strconv.ParseInt(GetValue(key), 10, 64)
+	raw := GetValue(key)
+	v, err := strconv.ParseInt(raw, 10, 64)
+	assert.NoError(err, fmt.Sprintf("config %s=%q is not an integer (missing Validate at declaration?)", key, raw))
 	return v
 }
 

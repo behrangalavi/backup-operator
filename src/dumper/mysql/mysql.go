@@ -21,80 +21,61 @@ import (
 	gomysql "github.com/go-sql-driver/mysql"
 )
 
-// supportsColumnStatistics reports whether the given dump binary
-// recognises `--column-statistics`. Oracle's MySQL-8 `mysqldump` does
-// (and uses it to silence its column_statistics probe against older
-// MySQL / MariaDB targets); `mariadb-dump` does not and aborts with
-// "unknown variable 'column-statistics=0'" when given the flag.
-//
-// Detection runs `<binary> --version` once per binary path per worker
-// process and looks for the literal "MariaDB" — present in MariaDB's
-// version banner ("Distrib 10.11.x-MariaDB"), absent in Oracle's. We
-// invert from there: anything that does not self-identify as MariaDB
-// is treated as Oracle and gets the flag. Probing --version (vs --help)
-// is robust against future MariaDB versions adding compatibility
-// mentions of "column-statistics" to their help text.
-//
-// Probe failure (binary missing, exec error) returns false — the dump
-// call that follows will surface the real error if the tool is
-// unreachable. Result is cached per binary path; the worker is
-// one-shot so this is "once per backup run".
-var binaryProbeCache sync.Map // key: binary path, value: bool
-
-// mariadbProbeCache mirrors binaryProbeCache for the "is this MariaDB?"
-// question, which decides TLS flag syntax (see tlsDumpArgs).
-var mariadbProbeCache sync.Map // key: binary path, value: bool
-
-// binaryIsMariaDB reports whether the dump binary self-identifies as MariaDB
-// in its --version banner. Oracle's mysqldump and MariaDB's mariadb-dump
-// diverge on TLS flags (--ssl-mode vs --ssl), so we must know which we drive.
-// Probe failure defaults to false (Oracle-style), matching
-// supportsColumnStatistics's fail-safe — the subsequent dump surfaces the
-// real error if the binary is genuinely unreachable.
-func binaryIsMariaDB(binary string) bool {
-	if v, ok := mariadbProbeCache.Load(binary); ok {
-		return v.(bool)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, binary, "--version").CombinedOutput()
-	isMaria := err == nil && strings.Contains(strings.ToLower(string(out)), "mariadb")
-	mariadbProbeCache.Store(binary, isMaria)
-	return isMaria
+// binaryProbe is what one `<binary> --version` run tells us about the dump
+// tool: whether it self-identifies as MariaDB (decides TLS flag syntax, see
+// tlsDumpArgs) and whether it accepts `--column-statistics` (Oracle's
+// MySQL-8 mysqldump does; mariadb-dump aborts with "unknown variable").
+// Both questions used to be answered by two independent probes with two
+// caches, which ran `--version` twice per binary — one probe, one cache.
+type binaryProbe struct {
+	isMariaDB                bool
+	supportsColumnStatistics bool
 }
 
-func supportsColumnStatistics(binary string) bool {
+// binaryProbeCache caches the probe per binary path. The worker is one-shot,
+// so this is "once per backup run"; the cache mostly saves the stats and dump
+// paths from re-execing the tool.
+var binaryProbeCache sync.Map // key: binary path, value: binaryProbe
+
+// probeBinary runs `<binary> --version` once and derives both answers from
+// the banner. "MariaDB" in the banner ("Distrib 10.11.x-MariaDB") → MariaDB,
+// no column-statistics support. Otherwise the binary is treated as Oracle's
+// and we additionally verify it accepts the flag, which guards against a
+// future banner change. Probing --version (vs --help) is robust against
+// MariaDB mentioning "column-statistics" in its help text one day.
+//
+// Probe failure (binary missing, exec error) yields the zero probe
+// (Oracle-style, no flag) — the dump call that follows surfaces the real
+// error if the tool is unreachable.
+func probeBinary(binary string) binaryProbe {
 	if v, ok := binaryProbeCache.Load(binary); ok {
-		return v.(bool)
+		return v.(binaryProbe)
 	}
+	var p binaryProbe
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	// Primary check: probe --version for "MariaDB" in the banner.
 	out, err := exec.CommandContext(ctx, binary, "--version").CombinedOutput()
-	if err != nil {
-		binaryProbeCache.Store(binary, false)
-		return false
+	if err == nil {
+		if strings.Contains(strings.ToLower(string(out)), "mariadb") {
+			p.isMariaDB = true
+		} else {
+			ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel2()
+			testOut, testErr := exec.CommandContext(ctx2, binary, "--column-statistics=0", "--version").CombinedOutput()
+			p.supportsColumnStatistics = testErr == nil && !strings.Contains(string(testOut), "unknown variable")
+		}
 	}
-	banner := string(out)
+	binaryProbeCache.Store(binary, p)
+	return p
+}
 
-	// Case-insensitive check catches future banner variations
-	// (e.g. "mariadb", "MARIADB", "MariaDB").
-	if strings.Contains(strings.ToLower(banner), "mariadb") {
-		binaryProbeCache.Store(binary, false)
-		return false
-	}
+// binaryIsMariaDB reports whether the dump binary self-identifies as MariaDB.
+func binaryIsMariaDB(binary string) bool { return probeBinary(binary).isMariaDB }
 
-	// Secondary check: verify the binary actually accepts the flag.
-	// This catches edge cases where the version banner changes format
-	// in future releases.
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel2()
-	testOut, testErr := exec.CommandContext(ctx2, binary, "--column-statistics=0", "--version").CombinedOutput()
-	supports := testErr == nil && !strings.Contains(string(testOut), "unknown variable")
-
-	binaryProbeCache.Store(binary, supports)
-	return supports
+// supportsColumnStatistics reports whether the dump binary accepts
+// `--column-statistics`.
+func supportsColumnStatistics(binary string) bool {
+	return probeBinary(binary).supportsColumnStatistics
 }
 
 type mysqlDumper struct {
@@ -142,28 +123,29 @@ const defaultMaxAllowedPacket = "1G"
 // Dump so the flag set is unit-testable without exec'ing the binary.
 //
 // Flag rationale:
-//   --single-transaction: InnoDB-consistent snapshot without locking.
-//   --quick: stream rows without buffering — required for large tables.
-//   --max-allowed-packet: raise the client packet ceiling well above
-//     mysqldump's ~24 MiB default so wide rows don't trip the server
-//     into dropping the connection (the Error 2026 above). Note the
-//     server's own max_allowed_packet must also be large enough to send
-//     such a row; if rows are genuinely huge, raise it server-side too.
-//   --routines / --triggers / --events: include stored procs, triggers,
-//     and the MySQL Event Scheduler. Without these, restore loses
-//     server-side logic the application may depend on.
-//   --default-character-set=utf8mb4: emit dump in utf8mb4 so umlauts
-//     and emoji round-trip correctly. The pre-utf8mb4 default ("utf8"
-//     in MySQL <8) is actually 3-byte and silently truncates 4-byte
-//     characters at restore time.
-//   --column-statistics=0: Oracle's MySQL-8 mysqldump probes
-//     information_schema.column_statistics by default and fails
-//     when the target lacks the table (older MySQL, MariaDB).
-//     Setting =0 disables the probe — Oracle's documented compat
-//     flag. mariadb-dump does not know the flag and aborts with
-//     "unknown variable" if given it. supportsColumnStatistics()
-//     probes `<binary> --help` once per binary so we pass the flag
-//     only when it's actually accepted.
+//
+//	--single-transaction: InnoDB-consistent snapshot without locking.
+//	--quick: stream rows without buffering — required for large tables.
+//	--max-allowed-packet: raise the client packet ceiling well above
+//	  mysqldump's ~24 MiB default so wide rows don't trip the server
+//	  into dropping the connection (the Error 2026 above). Note the
+//	  server's own max_allowed_packet must also be large enough to send
+//	  such a row; if rows are genuinely huge, raise it server-side too.
+//	--routines / --triggers / --events: include stored procs, triggers,
+//	  and the MySQL Event Scheduler. Without these, restore loses
+//	  server-side logic the application may depend on.
+//	--default-character-set=utf8mb4: emit dump in utf8mb4 so umlauts
+//	  and emoji round-trip correctly. The pre-utf8mb4 default ("utf8"
+//	  in MySQL <8) is actually 3-byte and silently truncates 4-byte
+//	  characters at restore time.
+//	--column-statistics=0: Oracle's MySQL-8 mysqldump probes
+//	  information_schema.column_statistics by default and fails
+//	  when the target lacks the table (older MySQL, MariaDB).
+//	  Setting =0 disables the probe — Oracle's documented compat
+//	  flag. mariadb-dump does not know the flag and aborts with
+//	  "unknown variable" if given it. supportsColumnStatistics()
+//	  probes `<binary> --help` once per binary so we pass the flag
+//	  only when it's actually accepted.
 func (d *mysqlDumper) buildDumpArgs(bin string) []string {
 	maxPacket := d.cfg.Extra["max-allowed-packet"]
 	if maxPacket == "" {

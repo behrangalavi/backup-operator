@@ -19,7 +19,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"syscall"
 
 	corev1 "k8s.io/api/core/v1"
@@ -89,11 +88,11 @@ func run() int {
 
 	err := config.InitializeConfigModule([]config.ConfigItemDescription{
 		{Key: "AGE_PUBLIC_KEYS", Optional: false},
-		{Key: "RUN_TIMEOUT_SECONDS", Optional: true, Default: "3600", Validate: validatePositiveInt},
-		{Key: "TEMP_DIR", Optional: true, Default: "/tmp/backup-operator"},
-		{Key: "DEFAULT_RETENTION_DAYS", Optional: true, Default: "30", Validate: validateNonNegInt},
-		{Key: "DEFAULT_MIN_KEEP", Optional: true, Default: "3", Validate: validateNonNegInt},
-		{Key: "DEFAULT_SCHEDULE", Optional: true, Default: "0 2 * * *"}, // unused here, but the flattener needs it
+		{Key: "RUN_TIMEOUT_SECONDS", Optional: true, Default: config.DefaultRunTimeoutSeconds, Validate: config.ValidatePositiveInt},
+		{Key: "TEMP_DIR", Optional: true, Default: config.DefaultTempDir},
+		{Key: "DEFAULT_RETENTION_DAYS", Optional: true, Default: config.DefaultRetentionDays, Validate: config.ValidateNonNegInt},
+		{Key: "DEFAULT_MIN_KEEP", Optional: true, Default: config.DefaultMinKeep, Validate: config.ValidateNonNegInt},
+		{Key: "DEFAULT_SCHEDULE", Optional: true, Default: config.DefaultSchedule}, // unused here, but the flattener needs it
 		{Key: "POD_NAMESPACE", Optional: true},
 		// POD_NAME / POD_UID come from the Downward API in the CronJob
 		// pod-spec; the restore-verifier uses them as OwnerReference
@@ -279,32 +278,6 @@ func loadKubeConfig() (*rest.Config, error) {
 		clientcmd.NewDefaultClientConfigLoadingRules(),
 		&clientcmd.ConfigOverrides{},
 	).ClientConfig()
-}
-
-// validatePositiveInt validates an integer with a > 0 floor, for values that
-// become timeouts/deadlines where 0 or negative is nonsensical (e.g.
-// RUN_TIMEOUT_SECONDS flows into the pipeline context deadline; <= 0 cancels
-// the run instantly).
-func validatePositiveInt(v string) error {
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return fmt.Errorf("must be integer: %w", err)
-	}
-	if n <= 0 {
-		return fmt.Errorf("must be > 0")
-	}
-	return nil
-}
-
-func validateNonNegInt(v string) error {
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return fmt.Errorf("must be integer: %w", err)
-	}
-	if n < 0 {
-		return fmt.Errorf("must be >= 0")
-	}
-	return nil
 }
 
 // workerOwnerRef builds the OwnerReference the restore-verifier uses

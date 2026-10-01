@@ -165,4 +165,3 @@ func jobStatusEqual(a, b *batchv1.Job) bool {
 	}
 	return true
 }
-

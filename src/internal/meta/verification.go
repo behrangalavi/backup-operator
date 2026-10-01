@@ -194,9 +194,10 @@ func BuildVerification(
 // certainly broken. Threshold tuned conservatively to avoid false-positives
 // on highly compressible / mostly-empty databases.
 //
-// Redis: RDB has a fixed 50-byte header + per-key serialisation. With any
-// keys present, the encrypted dump should clear ~200 bytes easily; anything
-// smaller means redis-cli emitted only the header.
+// Redis: a header-only RDB (what redis-cli --rdb emits when the server
+// returns no keys) is ~40–100 bytes depending on the aux fields the server
+// version writes. The floor scales with the key count — see
+// redisMinRawBytes — so small legitimate keysets are never flagged.
 func looksEmptyByHeuristic(dbType string, preStats *dumper.Stats, encryptedSize, rawDumpSize int64) string {
 	if preStats == nil {
 		return ""
@@ -221,21 +222,46 @@ func looksEmptyByHeuristic(dbType string, preStats *dumper.Stats, encryptedSize,
 			preTotalKeys += t.RowCount
 		}
 		// Check the RAW (pre-compression, pre-encryption) RDB size, not the
-		// encrypted size: age+gzip overhead alone is a few hundred bytes, so
-		// the old `encryptedSize < 200` could never fire — a header-only RDB
-		// (source has keys, dump is just the "REDIS00xx" preamble) was reported
-		// as a successful backup. A real RDB carrying even one key is far larger
-		// than a bare header; 200 raw bytes is comfortably below any real
-		// keyset yet above the ~9-40 byte header.
-		const minRawBytesWithKeys = 200
-		if preTotalKeys > 0 && rawDumpSize < minRawBytesWithKeys {
+		// encrypted size: age+gzip overhead alone is a few hundred bytes, so a
+		// check on encryptedSize could never fire for a header-only RDB.
+		if floor := redisMinRawBytes(preTotalKeys); preTotalKeys > 0 && rawDumpSize < floor {
 			return fmt.Sprintf(
-				"empty dump heuristic: source has %d keys but raw RDB is only %d bytes (header-only)",
-				preTotalKeys, rawDumpSize,
+				"empty dump heuristic: source has %d keys but raw RDB is only %d bytes (below the %d-byte floor a %d-key RDB must exceed; header-only)",
+				preTotalKeys, rawDumpSize, floor, preTotalKeys,
 			)
 		}
 	}
 	return ""
+}
+
+// RDB size floor constants for redisMinRawBytes.
+//
+// rdbMinimalHeaderBytes is the smallest RDB redis can emit at all: the
+// "REDIS0011" magic (9 bytes), the EOF opcode (1) and the CRC64 trailer (8).
+// Real servers add aux fields (redis-ver, redis-bits, ctime, used-mem,
+// aof-base) and land at ~80–100 bytes, but the floor must never exceed what a
+// legitimate dump can be, so the bare minimum is used.
+//
+// rdbMinBytesPerKey is the smallest on-disk footprint of one key: a value-type
+// opcode (1), a length-prefixed key (1-byte length + at least 1 byte) and a
+// length-prefixed value (at least the 1-byte length of an empty string). Four
+// bytes is therefore physically impossible to undercut — a real key with a
+// realistic name and value is 15–40 bytes — which is what makes the floor a
+// safe lower bound rather than a tuned threshold.
+const (
+	rdbMinimalHeaderBytes = 18
+	rdbMinBytesPerKey     = 4
+)
+
+// redisMinRawBytes is the size a raw RDB holding `keys` keys cannot be below.
+// A dump smaller than this with keys > 0 is a header-only artifact. The
+// previous flat 200-byte floor false-positived legitimate 5–10-key keysets
+// (~120–160 raw bytes); the trade-off accepted now is that for very small
+// keysets (roughly < 20 keys) a header-only dump can slip through, because
+// its ~40–100 bytes may exceed 18 + 4·keys — the project prefers a rare miss
+// over a false hard-fail on a healthy backup.
+func redisMinRawBytes(keys int64) int64 {
+	return rdbMinimalHeaderBytes + rdbMinBytesPerKey*keys
 }
 
 func collectTableNames(pre, post *dumper.Stats, dumpCounts map[string]int64) []string {

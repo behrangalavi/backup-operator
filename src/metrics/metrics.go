@@ -6,12 +6,46 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// Metric names as constants so consumers that read the registry back
+// (internal/alerts.LocalProvider, the UI scrub decoration) match on the same
+// identifiers the collectors are registered under. A rename here fails to
+// compile at every consumer instead of silently matching nothing.
+const (
+	NameDumpDurationSeconds                     = "backup_operator_dump_duration_seconds"
+	NameUploadDurationSeconds                   = "backup_operator_upload_duration_seconds"
+	NameRunDurationSeconds                      = "backup_operator_run_duration_seconds"
+	NameDumpSizeBytes                           = "backup_operator_dump_size_bytes"
+	NameDumpSizeChangeRatio                     = "backup_operator_dump_size_change_ratio"
+	NameTableCount                              = "backup_operator_table_count"
+	NameTableRowCount                           = "backup_operator_table_row_count"
+	NameSchemaChanged                           = "backup_operator_schema_changed"
+	NameCharsetChanged                          = "backup_operator_charset_changed"
+	NameSchemaLastChangeTimestampSeconds        = "backup_operator_schema_last_change_timestamp_seconds"
+	NameLastRunAnomalies                        = "backup_operator_last_run_anomalies"
+	NameLastRunStatus                           = "backup_operator_last_run_status"
+	NameLastRunDurationSeconds                  = "backup_operator_last_run_duration_seconds"
+	NameLastDumpDurationSeconds                 = "backup_operator_last_dump_duration_seconds"
+	NameLastSuccessTimestampSeconds             = "backup_operator_last_success_timestamp_seconds"
+	NameAnalyzerBaselineUnavailable             = "backup_operator_analyzer_baseline_unavailable"
+	NameDestinationFailed                       = "backup_operator_destination_failed"
+	NameRetentionLastStatus                     = "backup_operator_retention_last_status"
+	NameRetentionLastDeletedCount               = "backup_operator_retention_last_deleted_count"
+	NameSourceParseErrorsTotal                  = "backup_operator_source_parse_errors_total"
+	NameStorageScrubPassed                      = "backup_operator_storage_scrub_passed"
+	NameStorageScrubLastCheckTimestampSeconds   = "backup_operator_storage_scrub_last_check_timestamp_seconds"
+	NameStorageScrubFailedTotal                 = "backup_operator_storage_scrub_failed_total"
+	NameRestoreVerificationPassed               = "backup_operator_restore_verification_passed"
+	NameRestoreVerificationLastTimestampSeconds = "backup_operator_restore_verification_last_timestamp_seconds"
+	NameRestoreVerificationDurationSeconds      = "backup_operator_restore_verification_duration_seconds"
+	NameHttpRequestDurationSeconds              = "backup_operator_http_request_duration_seconds"
+)
+
 // All metrics are scoped to backup target (db) and where useful, destination.
 // These are the signals Alertmanager rules will fire on — keep them stable.
 var (
 	dumpDurationSeconds = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "backup_operator_dump_duration_seconds",
+			Name:    NameDumpDurationSeconds,
 			Help:    "Time spent dumping a database (excludes encryption and upload)",
 			Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600},
 		},
@@ -20,7 +54,7 @@ var (
 
 	uploadDurationSeconds = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "backup_operator_upload_duration_seconds",
+			Name:    NameUploadDurationSeconds,
 			Help:    "Time spent uploading a single dump to a single destination",
 			Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600},
 		},
@@ -29,7 +63,7 @@ var (
 
 	runDurationSeconds = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "backup_operator_run_duration_seconds",
+			Name:    NameRunDurationSeconds,
 			Help:    "Total end-to-end backup run time including dump, upload, and retention",
 			Buckets: []float64{5, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200},
 		},
@@ -38,7 +72,7 @@ var (
 
 	dumpSizeBytes = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "backup_operator_dump_size_bytes",
+			Name: NameDumpSizeBytes,
 			Help: "Encrypted dump size of the most recent successful run",
 		},
 		[]string{"target"},
@@ -46,7 +80,7 @@ var (
 
 	dumpSizeChangeRatio = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "backup_operator_dump_size_change_ratio",
+			Name: NameDumpSizeChangeRatio,
 			Help: "current/previous dump size; <0.5 = suspicious shrinkage",
 		},
 		[]string{"target"},
@@ -54,7 +88,7 @@ var (
 
 	tableCount = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "backup_operator_table_count",
+			Name: NameTableCount,
 			Help: "Number of tables/collections found in the current dump",
 		},
 		[]string{"target"},
@@ -62,7 +96,7 @@ var (
 
 	tableRowCount = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "backup_operator_table_row_count",
+			Name: NameTableRowCount,
 			Help: "Row count per table at the most recent run",
 		},
 		[]string{"target", "table"},
@@ -70,7 +104,7 @@ var (
 
 	schemaChanged = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "backup_operator_schema_changed",
+			Name: NameSchemaChanged,
 			Help: "1 if the schema hash differs from the previous run, 0 otherwise",
 		},
 		[]string{"target"},
@@ -78,7 +112,7 @@ var (
 
 	charsetChanged = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "backup_operator_charset_changed",
+			Name: NameCharsetChanged,
 			Help: "1 if database character_set or collation differs from the previous run, 0 otherwise",
 		},
 		[]string{"target"},
@@ -86,7 +120,7 @@ var (
 
 	schemaLastChange = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "backup_operator_schema_last_change_timestamp_seconds",
+			Name: NameSchemaLastChangeTimestampSeconds,
 			Help: "Unix timestamp of the most recent run where the schema fingerprint changed (carried forward across unchanged runs)",
 		},
 		[]string{"target"},
@@ -100,7 +134,7 @@ var (
 	// the scrape arrives.
 	lastRunAnomalies = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "backup_operator_last_run_anomalies",
+			Name: NameLastRunAnomalies,
 			Help: "Number of analyzer anomalies recorded in the most recent run",
 		},
 		[]string{"target"},
@@ -108,7 +142,7 @@ var (
 
 	lastRunStatus = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "backup_operator_last_run_status",
+			Name: NameLastRunStatus,
 			Help: "Outcome of the most recent run: 1 = success, 0 = failure",
 		},
 		[]string{"target"},
@@ -121,7 +155,7 @@ var (
 	// that actually reaches Prometheus today.
 	lastRunDurationSeconds = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "backup_operator_last_run_duration_seconds",
+			Name: NameLastRunDurationSeconds,
 			Help: "Wall-clock duration of the most recent successful run, reconstructed from meta.json",
 		},
 		[]string{"target", "db_type"},
@@ -132,7 +166,7 @@ var (
 	// short-lived worker process and is never scraped by Prometheus.
 	lastDumpDurationSeconds = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "backup_operator_last_dump_duration_seconds",
+			Name: NameLastDumpDurationSeconds,
 			Help: "Duration of the dump phase in the most recent successful run, reconstructed from meta.json",
 		},
 		[]string{"target", "db_type"},
@@ -140,7 +174,7 @@ var (
 
 	lastSuccessTimestamp = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "backup_operator_last_success_timestamp_seconds",
+			Name: NameLastSuccessTimestampSeconds,
 			Help: "Unix timestamp of the last successful run for a target/destination",
 		},
 		[]string{"target", "destination"},
@@ -155,7 +189,7 @@ var (
 	// schema/size drift detection is dark.
 	analyzerBaselineUnavailable = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "backup_operator_analyzer_baseline_unavailable",
+			Name: NameAnalyzerBaselineUnavailable,
 			Help: "1 if every destination failed when loading the analyzer baseline; 0 otherwise (including first run)",
 		},
 		[]string{"target"},
@@ -163,7 +197,7 @@ var (
 
 	destinationFailed = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "backup_operator_destination_failed",
+			Name: NameDestinationFailed,
 			Help: "1 if the most recent upload to this destination failed, 0 otherwise",
 		},
 		[]string{"target", "destination"},
@@ -176,7 +210,7 @@ var (
 	// failures were invisible until storage filled up.
 	retentionLastStatus = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "backup_operator_retention_last_status",
+			Name: NameRetentionLastStatus,
 			Help: "1 if the most recent pre-upload retention sweep for this pair succeeded, 0 otherwise",
 		},
 		[]string{"target", "destination"},
@@ -184,7 +218,7 @@ var (
 
 	retentionLastDeleted = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "backup_operator_retention_last_deleted_count",
+			Name: NameRetentionLastDeletedCount,
 			Help: "Number of dumps deleted by the most recent retention sweep (excludes meta sidecars)",
 		},
 		[]string{"target", "destination"},
@@ -192,7 +226,7 @@ var (
 
 	sourceParseErrors = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "backup_operator_source_parse_errors_total",
+			Name: NameSourceParseErrorsTotal,
 			Help: "BackupSources whose spec could not be flattened into a runnable source during reconciliation",
 		},
 		[]string{"source"},
@@ -204,7 +238,7 @@ var (
 	// (unlike the worker-side counters which need Gauge reconstruction).
 	storageScrubPassed = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "backup_operator_storage_scrub_passed",
+			Name: NameStorageScrubPassed,
 			Help: "1 if the most recent storage scrub of the pair (target, destination) matched the recorded SHA256, 0 if it failed",
 		},
 		[]string{"target", "destination"},
@@ -212,7 +246,7 @@ var (
 
 	storageScrubLastCheck = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "backup_operator_storage_scrub_last_check_timestamp_seconds",
+			Name: NameStorageScrubLastCheckTimestampSeconds,
 			Help: "Unix timestamp of the most recent scrub attempt for the pair (target, destination)",
 		},
 		[]string{"target", "destination"},
@@ -220,7 +254,7 @@ var (
 
 	storageScrubFailedTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "backup_operator_storage_scrub_failed_total",
+			Name: NameStorageScrubFailedTotal,
 			Help: "Cumulative storage scrub failures (checksum mismatch or unreachable dump) per pair",
 		},
 		[]string{"target", "destination"},
@@ -234,7 +268,7 @@ var (
 	// without losing history when a source switches modes.
 	restoreVerificationPassed = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "backup_operator_restore_verification_passed",
+			Name: NameRestoreVerificationPassed,
 			Help: "1 if the most recent restore-verification of this target succeeded, 0 if it found a mismatch, absent if never verified",
 		},
 		[]string{"target", "mode"},
@@ -242,7 +276,7 @@ var (
 
 	restoreVerificationLastTimestamp = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "backup_operator_restore_verification_last_timestamp_seconds",
+			Name: NameRestoreVerificationLastTimestampSeconds,
 			Help: "Unix timestamp of the most recent restore-verification attempt for this target",
 		},
 		[]string{"target", "mode"},
@@ -253,7 +287,7 @@ var (
 	// observability surface can read it from the worker process if needed.
 	restoreVerificationDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "backup_operator_restore_verification_duration_seconds",
+			Name:    NameRestoreVerificationDurationSeconds,
 			Help:    "Time spent in the restore-verification phase",
 			Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600},
 		},
@@ -262,7 +296,7 @@ var (
 
 	HTTPRequestDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "backup_operator_http_request_duration_seconds",
+			Name:    NameHttpRequestDurationSeconds,
 			Help:    "Latency of HTTP requests served by the UI/API server",
 			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 		},

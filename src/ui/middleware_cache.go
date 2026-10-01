@@ -206,7 +206,7 @@ func (b *bufferedRecorder) Flush() {
 // writer. ETag-cached endpoints fire on every SSE-driven UI refresh; the
 // pool turns those into stable steady-state allocations.
 var (
-	bufPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+	bufPool  = sync.Pool{New: func() any { return new(bytes.Buffer) }}
 	gzipPool = sync.Pool{New: func() any {
 		// Default compression — speed/size tradeoff is fine for JSON of
 		// the sizes we serve. If a future endpoint serves much larger

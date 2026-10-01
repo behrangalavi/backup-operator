@@ -160,7 +160,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// no-cache forces the browser to revalidate on every load so new deploys
 	// are picked up immediately (embedded files change on rebuild).
 	staticSub, _ := fs.Sub(staticFS, "static")
-	mux.Handle("/static/", noCacheMiddleware(http.StripPrefix("/static/", http.FileServer(http.FS(staticSub)))))
+	mux.Handle("/static/", noCacheMiddleware(http.StripPrefix("/static/", noDirListing(http.FileServer(http.FS(staticSub))))))
 
 	// Legacy template routes (kept for backward compatibility)
 	mux.HandleFunc("/legacy", s.handleIndex)
@@ -232,7 +232,12 @@ func (s *Server) Start(ctx context.Context) error {
 		// accept large uploads — the worst case is a few KiB of JSON or an
 		// SSH key blob. Without this an unauthenticated POST of a multi-GB
 		// body OOMs the operator.
-		Handler:           latencyMiddleware(readOnlyMiddleware(s.cfg.ReadOnly, csrfMiddleware(limitBodyMiddleware(s.cfg.MaxBodyBytes, mux)))),
+		// Outermost first: request id + caller identity + access log, then
+		// the response-hardening headers, then metrics, read-only gate, CSRF
+		// and body cap. New middleware goes in this chain, never per-route.
+		Handler: requestContextMiddleware(s.cfg.Logger.WithName("http"),
+			securityHeadersMiddleware(
+				latencyMiddleware(readOnlyMiddleware(s.cfg.ReadOnly, csrfMiddleware(limitBodyMiddleware(s.cfg.MaxBodyBytes, mux)))))),
 		ReadHeaderTimeout: 5 * time.Second,
 		// MaxHeaderBytes defaults to 1MB which is fine; lower would require
 		// careful audit of cookies/auth-proxy headers downstream users add.

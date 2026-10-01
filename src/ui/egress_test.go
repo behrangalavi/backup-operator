@@ -12,19 +12,19 @@ func TestIsBlockedEgressIP(t *testing.T) {
 		ip      string
 		blocked bool
 	}{
-		{"169.254.169.254", true},  // AWS/GCP IMDS
-		{"169.254.0.1", true},      // link-local
-		{"127.0.0.1", true},        // loopback
-		{"::1", true},              // loopback v6
-		{"0.0.0.0", true},          // unspecified
-		{"fe80::1", true},          // link-local v6
-		{"fd00:ec2::254", true},    // AWS IPv6 IMDS (ULA)
-		{"224.0.0.1", true},        // multicast
-		{"10.0.0.5", false},        // RFC1918 — internal MinIO/NAS is allowed
-		{"192.168.1.10", false},    // RFC1918
-		{"172.16.0.1", false},      // RFC1918
-		{"1.2.3.4", false},         // public
-		{"fd12:3456::1", false},    // generic ULA — allowed (internal v6 storage)
+		{"169.254.169.254", true}, // AWS/GCP IMDS
+		{"169.254.0.1", true},     // link-local
+		{"127.0.0.1", true},       // loopback
+		{"::1", true},             // loopback v6
+		{"0.0.0.0", true},         // unspecified
+		{"fe80::1", true},         // link-local v6
+		{"fd00:ec2::254", true},   // AWS IPv6 IMDS (ULA)
+		{"224.0.0.1", true},       // multicast
+		{"10.0.0.5", false},       // RFC1918 — internal MinIO/NAS is allowed
+		{"192.168.1.10", false},   // RFC1918
+		{"172.16.0.1", false},     // RFC1918
+		{"1.2.3.4", false},        // public
+		{"fd12:3456::1", false},   // generic ULA — allowed (internal v6 storage)
 	}
 	for _, c := range cases {
 		ip := net.ParseIP(c.ip)

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/go-logr/logr"
 
@@ -34,7 +35,21 @@ type StoragePool struct {
 	mu      sync.Mutex
 	clients map[string]pooledClient
 	log     logr.Logger
+	// closeGrace is how long an evicted or superseded client stays open
+	// before Close is called on it. Get hands out the Storage value without
+	// reference counting, so a refresher goroutine that fetched the client
+	// just before a credential rotation may still be mid-List when the pool
+	// replaces it. One grace window comfortably outlives any single
+	// List+Get (bounded by the callers' per-op timeouts); after it, the
+	// client — and for GCS its gRPC connections — is released instead of
+	// leaking until the GC happens to collect it.
+	closeGrace time.Duration
 }
+
+// defaultCloseGrace is longer than the longest bounded storage call the
+// refresher/scrubber/UI issue (the scrubber's full-dump re-stream is the
+// outlier and runs under its own context deadline).
+const defaultCloseGrace = 2 * time.Minute
 
 type pooledClient struct {
 	sig     string
@@ -45,15 +60,50 @@ type pooledClient struct {
 // messages; per-destination lookups never log on the hot path.
 func NewStoragePool(log logr.Logger) *StoragePool {
 	return &StoragePool{
-		clients: make(map[string]pooledClient),
-		log:     log.WithName("storage-pool"),
+		clients:    make(map[string]pooledClient),
+		log:        log.WithName("storage-pool"),
+		closeGrace: defaultCloseGrace,
 	}
+}
+
+// retire schedules Close on a client that is no longer handed out. Called
+// with p.mu held; the close itself runs later, off the lock.
+func (p *StoragePool) retire(c pooledClient) {
+	st := c.storage
+	if st == nil {
+		return
+	}
+	closeIt := func() {
+		if err := st.Close(); err != nil {
+			p.log.V(1).Info("closing retired storage client failed", "destination", st.Name(), "err", err.Error())
+		}
+	}
+	if p.closeGrace <= 0 {
+		closeIt()
+		return
+	}
+	time.AfterFunc(p.closeGrace, closeIt)
+}
+
+// Close retires every cached client immediately. Intended for operator
+// shutdown and tests; concurrent Get callers get a fresh client afterwards.
+func (p *StoragePool) Close() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	grace := p.closeGrace
+	p.closeGrace = 0
+	for name, c := range p.clients {
+		p.retire(c)
+		delete(p.clients, name)
+	}
+	p.closeGrace = grace
 }
 
 // Get returns a pooled Storage for the destination, building one on
 // demand. Signature drift transparently rebuilds the client; in-flight
 // callers holding the previous reference are unaffected — they finish
-// against the old client, then the next tick gets the new one.
+// against the old client (closed after closeGrace), then the next tick
+// gets the new one.
 func (p *StoragePool) Get(d *secrets.Destination) (storage.Storage, error) {
 	sig := destSignature(d)
 	p.mu.Lock()
@@ -64,6 +114,9 @@ func (p *StoragePool) Get(d *secrets.Destination) (storage.Storage, error) {
 	st, err := storageFactory.NewStorage(d.StorageType, d.Name, d.Data, p.log)
 	if err != nil {
 		return nil, err
+	}
+	if old, ok := p.clients[d.Name]; ok {
+		p.retire(old)
 	}
 	p.clients[d.Name] = pooledClient{sig: sig, storage: st}
 	return st, nil
@@ -79,8 +132,9 @@ func (p *StoragePool) Retain(current []*secrets.Destination) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for name := range p.clients {
+	for name, c := range p.clients {
 		if _, ok := keep[name]; !ok {
+			p.retire(c)
 			delete(p.clients, name)
 		}
 	}

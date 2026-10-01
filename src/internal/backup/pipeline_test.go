@@ -28,6 +28,7 @@ type mockStorage struct {
 }
 
 func (m *mockStorage) Name() string                                          { return m.name }
+func (m *mockStorage) Close() error                                          { return nil }
 func (m *mockStorage) Upload(_ context.Context, _ string, _ io.Reader) error { return nil }
 func (m *mockStorage) Get(_ context.Context, _ string) (io.ReadCloser, error) {
 	return io.NopCloser(&bytes.Buffer{}), nil

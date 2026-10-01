@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -219,7 +220,38 @@ type k8sData struct {
 	// without ever blocking the original request that triggered the
 	// refresh. Optional — nil disables the broadcast.
 	onRefresh func()
+
+	// listMu guards the two RV-keyed list caches below. Every UI request
+	// used to list and re-flatten every BackupSource / BackupDestination —
+	// and for destinations that means one uncached Secret GET each. The
+	// CR lists come from the informer cache and carry a ResourceVersion, so
+	// when the RV is unchanged the flattened result is reused. Destinations
+	// additionally expire after listCacheMaxAge: a rotated credentials
+	// Secret does not bump the CR list's RV, and the storage pool keys on
+	// the flattened Data, so the resolve must be redone periodically.
+	listMu    sync.Mutex
+	srcCache  listCache[sourceListing]
+	destCache listCache[[]*secrets.Destination]
 }
+
+// listCache is one RV-keyed memo of a flattened object list.
+type listCache[V any] struct {
+	rv    string
+	at    time.Time
+	value V
+	ok    bool
+}
+
+// sourceListing pairs the flattened sources with their creation timestamps.
+type sourceListing struct {
+	sources   []*secrets.Source
+	createdAt map[string]time.Time
+}
+
+// listCacheMaxAge bounds how long an RV-keyed list memo is trusted even when
+// the RV has not moved — the window within which a rotated destination
+// Secret is still served with the old credentials by the UI.
+const listCacheMaxAge = 15 * time.Second
 
 // storageFor resolves a destination's client via the data layer's pool,
 // sharing storageForPool with Server.storageFor. The data layer is wired
@@ -396,7 +428,11 @@ func (d *k8sData) estimateDuration(ctx context.Context, name string, n int) (tim
 	byTimestamp := map[string]*meta.MetaFile{}
 	for _, dest := range dests {
 		dest := dest // capture for the goroutine closure
-		key := name + "@" + dest.Name
+		// Bounded listing: the median needs n successful runs, so fetching
+		// the newest 4n covers a run of failures without pulling the whole
+		// history. Own cache key — target() keeps the unbounded history under
+		// the plain name@dest key for the detail page.
+		key := name + "@" + dest.Name + "#latest" + strconv.Itoa(n*4)
 		got, _ := d.runsCache.getOrRefreshAsync(key, func() ([]*meta.MetaFile, error) {
 			// Background refresh runs in its own goroutine with a bounded
 			// context — the request's ctx has likely returned to the client
@@ -408,7 +444,7 @@ func (d *k8sData) estimateDuration(ctx context.Context, name string, n int) (tim
 			if err != nil {
 				return nil, err
 			}
-			return meta.List(rctx, st, name)
+			return meta.ListWithOptions(rctx, st, name, meta.ListOptions{Limit: n * 4})
 		}, d.onRefresh)
 		for _, m := range got {
 			if _, ok := byTimestamp[m.Timestamp]; !ok {
@@ -554,6 +590,7 @@ func (d *k8sData) fleetHeatmap(ctx context.Context, days int) (*dashboardSummary
 		dayAxis[i] = t.Format("2006-01-02")
 	}
 	earliestDay := dayAxis[0]
+	windowStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -(days - 1))
 
 	rows := make([]heatmapRow, 0, len(sources))
 	// Fleet-wide daily byte totals, keyed by day then target name. The
@@ -567,8 +604,10 @@ func (d *k8sData) fleetHeatmap(ctx context.Context, days int) (*dashboardSummary
 		bytesByDayTarget[d] = make(map[string]int64)
 	}
 	// Anomalies are streamed as a flat list — the frontend buckets per
-	// day at render time. Capped after the loop to keep payload sane.
-	var anomalies []anomalyEntry
+	// day at render time. Bounded while collecting (newest maxAnomalies
+	// kept) so a busy fleet's history never materialises an unbounded slice
+	// just to be truncated afterwards.
+	anomalies := newBoundedNewest(maxAnomalies)
 
 	// Verification: per-day pass/fail counters fleet-wide. Only runs
 	// with a RestoreVerification block contribute; runs with mode=off
@@ -600,7 +639,11 @@ func (d *k8sData) fleetHeatmap(ctx context.Context, days int) (*dashboardSummary
 		// back to a dial via getOrRefreshAsync (non-blocking).
 		dests := secrets.FilterDestinations(src, allDests)
 		for _, dest := range dests {
-			key := src.TargetName + "@" + dest.Name
+			// Own cache key per day window: the heatmap only needs runs
+			// inside its window, so the listing is bounded with Since and
+			// the cached metas are slimmed to the fields the charts read.
+			// target() keeps the full history under the plain name@dest key.
+			key := src.TargetName + "@" + dest.Name + "#since" + earliestDay
 			dest := dest
 			got, _ := d.runsCache.getOrRefreshAsync(key, func() ([]*meta.MetaFile, error) {
 				rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -609,7 +652,14 @@ func (d *k8sData) fleetHeatmap(ctx context.Context, days int) (*dashboardSummary
 				if err != nil {
 					return nil, err
 				}
-				return meta.List(rctx, st, src.TargetName)
+				runs, err := meta.ListWithOptions(rctx, st, src.TargetName, meta.ListOptions{Since: windowStart})
+				if err != nil {
+					return nil, err
+				}
+				for _, m := range runs {
+					slimForHeatmap(m)
+				}
+				return runs, nil
 			}, d.onRefresh)
 			if got == nil {
 				continue
@@ -658,7 +708,7 @@ func (d *k8sData) fleetHeatmap(ctx context.Context, days int) (*dashboardSummary
 				// renders them as dots on a timeline.
 				if m.Report != nil {
 					for _, a := range m.Report.Anomalies {
-						anomalies = append(anomalies, anomalyEntry{
+						anomalies.add(anomalyEntry{
 							Target:   src.TargetName,
 							DBType:   src.DBType,
 							Time:     ts.UTC().Format(time.RFC3339),
@@ -701,14 +751,10 @@ func (d *k8sData) fleetHeatmap(ctx context.Context, days int) (*dashboardSummary
 		storage[i] = storageDayPoint{Day: d, PerTarget: bytesByDayTarget[d]}
 	}
 
-	// Anomalies: newest first, cap at 200 so the JSON stays under a
-	// few hundred KiB even on busy fleets. A 30-day timeline visualises
-	// fine with that many; older entries are still on the per-target
-	// detail page.
-	sort.Slice(anomalies, func(i, j int) bool { return anomalies[i].Time > anomalies[j].Time })
-	if len(anomalies) > 200 {
-		anomalies = anomalies[:200]
-	}
+	// Anomalies: newest first. The collector already kept only the newest
+	// maxAnomalies so the JSON stays under a few hundred KiB even on busy
+	// fleets; older entries are still on the per-target detail page.
+	anomalyList := anomalies.sorted()
 
 	// Duration stats per target — median + p95 + min + max. Sort the
 	// per-target slice once, compute percentiles inline (Go has no
@@ -748,7 +794,7 @@ func (d *k8sData) fleetHeatmap(ctx context.Context, days int) (*dashboardSummary
 	return &dashboardSummary{
 		Heatmap:           rows,
 		Storage:           storage,
-		Anomalies:         anomalies,
+		Anomalies:         anomalyList,
 		Durations:         durations,
 		VerificationDaily: verification,
 	}, nil
@@ -768,6 +814,12 @@ func (d *k8sData) listSourcesWithMeta(ctx context.Context) ([]*secrets.Source, m
 	if err := d.client.List(ctx, &list, client.InNamespace(d.namespace)); err != nil {
 		return nil, nil, err
 	}
+	d.listMu.Lock()
+	if c := d.srcCache; c.ok && c.rv == list.ResourceVersion && list.ResourceVersion != "" && time.Since(c.at) < listCacheMaxAge {
+		d.listMu.Unlock()
+		return c.value.sources, c.value.createdAt, nil
+	}
+	d.listMu.Unlock()
 	out := make([]*secrets.Source, 0, len(list.Items))
 	createdAt := make(map[string]time.Time, len(list.Items))
 	for i := range list.Items {
@@ -779,6 +831,9 @@ func (d *k8sData) listSourcesWithMeta(ctx context.Context) ([]*secrets.Source, m
 		out = append(out, src)
 		createdAt[list.Items[i].Name] = list.Items[i].CreationTimestamp.Time
 	}
+	d.listMu.Lock()
+	d.srcCache = listCache[sourceListing]{rv: list.ResourceVersion, at: time.Now(), value: sourceListing{sources: out, createdAt: createdAt}, ok: true}
+	d.listMu.Unlock()
 	return out, createdAt, nil
 }
 
@@ -792,6 +847,12 @@ func (d *k8sData) listDestinations(ctx context.Context) ([]*secrets.Destination,
 	if err := d.client.List(ctx, &list, client.InNamespace(d.namespace)); err != nil {
 		return nil, err
 	}
+	d.listMu.Lock()
+	if c := d.destCache; c.ok && c.rv == list.ResourceVersion && list.ResourceVersion != "" && time.Since(c.at) < listCacheMaxAge {
+		d.listMu.Unlock()
+		return c.value, nil
+	}
+	d.listMu.Unlock()
 	out := make([]*secrets.Destination, 0, len(list.Items))
 	for i := range list.Items {
 		dest, err := d.resolveDestination(ctx, &list.Items[i])
@@ -801,6 +862,9 @@ func (d *k8sData) listDestinations(ctx context.Context) ([]*secrets.Destination,
 		}
 		out = append(out, dest)
 	}
+	d.listMu.Lock()
+	d.destCache = listCache[[]*secrets.Destination]{rv: list.ResourceVersion, at: time.Now(), value: out, ok: true}
+	d.listMu.Unlock()
 	return out, nil
 }
 
@@ -857,4 +921,69 @@ func destinationsAllowedFor(src *secrets.Source, all []*secrets.Destination) []s
 	}
 	sort.Strings(names)
 	return names
+}
+
+// maxAnomalies caps the anomaly stream in the dashboard payload.
+const maxAnomalies = 200
+
+// boundedNewest keeps the newest `capacity` anomaly entries by Time while
+// they are collected, replacing the oldest kept entry when full. Capacity is
+// small (200), so a linear re-scan for the new oldest on each replacement is
+// cheaper than a heap and keeps the code obvious.
+type boundedNewest struct {
+	capacity int
+	items    []anomalyEntry
+	oldest   int // index of the oldest item while full; -1 when unknown
+}
+
+func newBoundedNewest(capacity int) *boundedNewest {
+	return &boundedNewest{capacity: capacity, items: make([]anomalyEntry, 0, capacity), oldest: -1}
+}
+
+func (b *boundedNewest) add(e anomalyEntry) {
+	if len(b.items) < b.capacity {
+		b.items = append(b.items, e)
+		return
+	}
+	if b.oldest < 0 {
+		b.oldest = b.findOldest()
+	}
+	if e.Time <= b.items[b.oldest].Time {
+		return // older than everything kept
+	}
+	b.items[b.oldest] = e
+	b.oldest = b.findOldest()
+}
+
+func (b *boundedNewest) findOldest() int {
+	idx := 0
+	for i := range b.items {
+		if b.items[i].Time < b.items[idx].Time {
+			idx = i
+		}
+	}
+	return idx
+}
+
+// sorted returns the kept entries newest-first. Never nil, so the JSON
+// renders [] rather than null.
+func (b *boundedNewest) sorted() []anomalyEntry {
+	out := make([]anomalyEntry, len(b.items))
+	copy(out, b.items)
+	sort.Slice(out, func(i, j int) bool { return out[i].Time > out[j].Time })
+	return out
+}
+
+// slimForHeatmap drops the per-table payload the dashboard never reads. The
+// heatmap cache holds `days` runs per (target, destination); a wide schema
+// would otherwise keep thousands of TableStats per source resident in the
+// operator for the cache TTL. Report.Anomalies, size, duration, status and
+// the verification block are kept — those are what the charts consume.
+func slimForHeatmap(m *meta.MetaFile) {
+	m.Stats = nil
+	if m.Report != nil {
+		m.Report.Current = nil
+		m.Report.Previous = nil
+		m.Report.TableDiffs = nil
+	}
 }

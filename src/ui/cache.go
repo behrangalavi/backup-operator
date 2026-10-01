@@ -37,6 +37,14 @@ type cache[V any] struct {
 	// recovery still happens even when log is unset.
 	log  logr.Logger
 	name string
+
+	// lastSweep gates the expired-entry sweep so it runs at most once per
+	// TTL. Keys are destination / target names; under destination churn
+	// (test destinations created and deleted, renamed targets) the map
+	// otherwise grows for the operator's lifetime, one entry per key ever
+	// seen. Entries are kept for one extra TTL past expiry because the
+	// stale-while-revalidate contract serves them while a refresh runs.
+	lastSweep time.Time
 }
 
 type cacheEntry[V any] struct {
@@ -52,12 +60,29 @@ func newCache[V any](ttl time.Duration) *cache[V] {
 	}
 }
 
+// sweepLocked drops entries that expired more than one TTL ago. Caller holds
+// c.mu. Cheap enough to run inline on access: it is rate-limited to once per
+// TTL and the map holds one entry per (target, destination), not per request.
+func (c *cache[V]) sweepLocked(now time.Time) {
+	if now.Sub(c.lastSweep) < c.ttl {
+		return
+	}
+	c.lastSweep = now
+	cutoff := now.Add(-c.ttl)
+	for k, e := range c.m {
+		if e.exp.Before(cutoff) && !c.loading[k] {
+			delete(c.m, k)
+		}
+	}
+}
+
 // getOrLoad returns a cached value or, on miss/expiry, calls load and stores
 // the result. load is invoked outside the lock. Blocks the caller for the
 // full load duration — use getOrRefreshAsync where blocking the request is
 // not acceptable (UI render paths).
 func (c *cache[V]) getOrLoad(key string, load func() (V, error)) (V, error) {
 	c.mu.Lock()
+	c.sweepLocked(time.Now())
 	if e, ok := c.m[key]; ok && time.Now().Before(e.exp) {
 		c.mu.Unlock()
 		return e.v, nil
@@ -88,6 +113,7 @@ func (c *cache[V]) getOrLoad(key string, load func() (V, error)) (V, error) {
 // used to broadcast an SSE event so clients know fresh data is ready.
 func (c *cache[V]) getOrRefreshAsync(key string, load func() (V, error), onRefresh func()) (V, bool) {
 	c.mu.Lock()
+	c.sweepLocked(time.Now())
 	e, ok := c.m[key]
 	fresh := ok && time.Now().Before(e.exp)
 	if fresh || c.loading[key] {
@@ -152,4 +178,11 @@ func (c *cache[V]) invalidate(key string) { //nolint:unused // reserved for futu
 	c.mu.Lock()
 	delete(c.m, key)
 	c.mu.Unlock()
+}
+
+// size returns the number of stored entries (tests).
+func (c *cache[V]) size() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.m)
 }

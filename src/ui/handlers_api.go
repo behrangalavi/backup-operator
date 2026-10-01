@@ -502,7 +502,7 @@ func collectScrubStatus() map[string]scrubInfo {
 	}
 	for _, fam := range families {
 		switch fam.GetName() {
-		case "backup_operator_storage_scrub_passed":
+		case metrics.NameStorageScrubPassed:
 			for _, m := range fam.Metric {
 				target, dest := scrubLabels(m.Label)
 				if target == "" {
@@ -516,7 +516,7 @@ func collectScrubStatus() map[string]scrubInfo {
 				}
 				put(target, dest, info)
 			}
-		case "backup_operator_storage_scrub_last_check_timestamp_seconds":
+		case metrics.NameStorageScrubLastCheckTimestampSeconds:
 			for _, m := range fam.Metric {
 				target, dest := scrubLabels(m.Label)
 				if target == "" {
@@ -528,7 +528,7 @@ func collectScrubStatus() map[string]scrubInfo {
 				}
 				put(target, dest, info)
 			}
-		case "backup_operator_storage_scrub_failed_total":
+		case metrics.NameStorageScrubFailedTotal:
 			for _, m := range fam.Metric {
 				target, dest := scrubLabels(m.Label)
 				if target == "" {
@@ -766,9 +766,11 @@ func (s *Server) emitUIEvent(ctx context.Context, ref corev1.ObjectReference, re
 			GenerateName: ref.Name + ".",
 			Namespace:    ref.Namespace,
 		},
-		InvolvedObject:      ref,
-		Reason:              reason,
-		Message:             message,
+		InvolvedObject: ref,
+		Reason:         reason,
+		// The auth-proxy identity and request id ride along in the message
+		// (Event has no principal field), so the audit trail answers "who".
+		Message:             message + auditSuffix(ctx),
 		Type:                corev1.EventTypeNormal,
 		Source:              corev1.EventSource{Component: "backup-operator-ui"},
 		EventTime:           metav1.NewMicroTime(time.Now()),

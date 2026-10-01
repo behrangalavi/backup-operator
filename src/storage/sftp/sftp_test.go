@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
+	"net"
 	"strings"
 	"testing"
 
@@ -140,5 +141,77 @@ func TestBuildAuthMethods_BadKeyIsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "parse private key") {
 		t.Errorf("error should mention parse private key, got: %v", err)
+	}
+}
+
+// knownHostsLine renders an authorized-keys style known_hosts entry for the
+// given host pattern and public key, exactly like `ssh-keyscan -p 22 host`.
+func knownHostsLine(hostPattern string, pub ssh.PublicKey) string {
+	return hostPattern + " " + string(ssh.MarshalAuthorizedKey(pub))
+}
+
+func generateHostKey(t *testing.T) ssh.PublicKey {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate ed25519: %v", err)
+	}
+	sshPub, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		t.Fatalf("ssh.NewPublicKey: %v", err)
+	}
+	return sshPub
+}
+
+// TestBuildHostKeyCallback_AcceptsMatchingRejectsMismatching is the actual
+// MITM guard: a callback that merely parsed would also "pass" an
+// accept-everything implementation. The pinned key must be accepted for the
+// pinned host, and a different key for the same host must be rejected.
+func TestBuildHostKeyCallback_AcceptsMatchingRejectsMismatching(t *testing.T) {
+	pinned := generateHostKey(t)
+	impostor := generateHostKey(t)
+	remote := &net.TCPAddr{IP: net.ParseIP("203.0.113.7"), Port: 22}
+
+	cb, err := buildHostKeyCallback("test", []byte(knownHostsLine("example.com", pinned)), false, logr.Discard())
+	if err != nil {
+		t.Fatalf("buildHostKeyCallback: %v", err)
+	}
+	if err := cb("example.com:22", remote, pinned); err != nil {
+		t.Fatalf("pinned host key must be accepted, got %v", err)
+	}
+	if err := cb("example.com:22", remote, impostor); err == nil {
+		t.Fatal("a different host key for the pinned host must be REJECTED — this is the MITM protection")
+	}
+	// An unknown host is rejected too: strict known_hosts, not TOFU.
+	if err := cb("other.example.com:22", remote, pinned); err == nil {
+		t.Fatal("a host absent from known_hosts must be rejected")
+	}
+}
+
+// Non-22 ports use the [host]:port form in known_hosts; the callback must
+// match on that form (Hetzner Storage Boxes live on port 23).
+func TestBuildHostKeyCallback_NonStandardPort(t *testing.T) {
+	pinned := generateHostKey(t)
+	remote := &net.TCPAddr{IP: net.ParseIP("203.0.113.7"), Port: 23}
+	cb, err := buildHostKeyCallback("test", []byte(knownHostsLine("[u1.your-storagebox.de]:23", pinned)), false, logr.Discard())
+	if err != nil {
+		t.Fatalf("buildHostKeyCallback: %v", err)
+	}
+	if err := cb("u1.your-storagebox.de:23", remote, pinned); err != nil {
+		t.Fatalf("pinned key on port 23 must be accepted, got %v", err)
+	}
+	if err := cb("u1.your-storagebox.de:22", remote, pinned); err == nil {
+		t.Fatal("the same host on a different port is a different known_hosts entry and must be rejected")
+	}
+}
+
+// Insecure opt-in accepts anything — that is the documented, logged trade-off.
+func TestBuildHostKeyCallback_InsecureAcceptsAnything(t *testing.T) {
+	cb, err := buildHostKeyCallback("test", nil, true, logr.Discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cb("anything:22", &net.TCPAddr{IP: net.ParseIP("203.0.113.7"), Port: 22}, generateHostKey(t)); err != nil {
+		t.Fatalf("insecure mode must accept any key, got %v", err)
 	}
 }

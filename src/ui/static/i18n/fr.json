@@ -11,7 +11,17 @@
     "alerts": "Alertes",
     "audit": "Audit",
     "ageKeys": "Clés age",
-    "settings": "Paramètres"
+    "settings": "Paramètres",
+    "title": {
+      "dashboard": "Vue d’ensemble : cibles, derniers runs, santé des destinations, avertissements de cohérence",
+      "sources": "Sources de sauvegarde (objets BackupSource)",
+      "destinations": "Destinations de stockage (objets BackupDestination) — où les dumps chiffrés sont envoyés",
+      "jobs": "Jobs de sauvegarde récents lancés par les CronJobs (ou manuellement)",
+      "alerts": "Alertes actives — depuis Prometheus si configuré, sinon calculées localement",
+      "audit": "Journal d’audit — chaque run, suppression de rétention et changement de configuration émis comme Event Kubernetes",
+      "ageKeys": "Destinataires age (clés publiques) — chaque sauvegarde est chiffrée pour chaque destinataire. Ajoutez-en un pour la rotation, retirez l’ancien une fois inutile.",
+      "settings": "Valeurs par défaut de l’opérateur : planification, rétention, délais, ressources des workers"
+    }
   },
   "status": {
     "connecting": "Connexion…",
@@ -45,7 +55,10 @@
     "auto": "auto",
     "off": "Désactivé",
     "on": "Activé",
-    "none": "—"
+    "none": "—",
+    "dismiss": "Fermer",
+    "sort": "Tri :",
+    "toggleDirection": "Inverser l’ordre de tri"
   },
   "buttons": {
     "runNow": "Lancer maintenant",
@@ -61,7 +74,10 @@
     "next": "Suivant",
     "applySettings": "Appliquer",
     "sendTest": "Envoyer une alerte de test",
-    "addKey": "Ajouter une clé"
+    "addKey": "Ajouter une clé",
+    "download": "Télécharger",
+    "copy": "Copier",
+    "backToDashboard": "Retour au tableau de bord"
   },
   "page": {
     "dashboard": {
@@ -219,7 +235,9 @@
     "alert": "Alerte",
     "sinceFiring": "Active depuis",
     "destination": "Destination",
-    "startTime": "Démarré"
+    "startTime": "Démarré",
+    "started": "Démarré",
+    "schema": "Schéma"
   },
   "target": {
     "configuration": "Configuration",
@@ -246,7 +264,9 @@
     "runningTitle": "Sauvegarde en cours",
     "progressOverdue": "en cours {elapsed} — plus long que d'habitude (Ø {est}, n={n})",
     "progressNormal": "{elapsed} / ~{est} — {remaining} restant (n={n})",
-    "progressNoEstimate": "en cours depuis {elapsed}"
+    "progressNoEstimate": "en cours depuis {elapsed}",
+    "missingNameTitle": "Nom de cible manquant dans l’URL",
+    "missingNameBody": "Le hash était {hash} — attendu #/target/<nom>."
   },
   "form": {
     "source": {
@@ -391,7 +411,8 @@
         "insecureSkipCertVerify": "Ignore la validation du certificat TLS. Accepte n'importe quel certificat serveur — vulnérable au MITM. Uniquement quand le NAS fournit un certificat auto-signé que tu ne peux pas remplacer.",
         "endpoint": "Laisser vide pour AWS S3 (déduit de la région). À renseigner pour les fournisseurs compatibles S3 : MinIO, Cloudflare R2, Backblaze B2, Hetzner Object Storage, Wasabi.",
         "pathStyle": "Activer pour les fournisseurs qui exigent l'adressage path-style (p. ex. MinIO). Laisser désactivé pour AWS S3 et les fournisseurs utilisant des buckets virtual-hosted-style.",
-        "serviceAccountJson": "Collez le fichier de clé JSON complet téléchargé depuis la console GCP (IAM → Comptes de service → Clés → Ajouter une clé)."
+        "serviceAccountJson": "Collez le fichier de clé JSON complet téléchargé depuis la console GCP (IAM → Comptes de service → Clés → Ajouter une clé).",
+        "hetzner": "Hetzner Storage Box : utilisez le port 23."
       }
     }
   },
@@ -428,7 +449,10 @@
     "deleteFailed": "Échec de la suppression : {error}",
     "triggerFailed": "Échec du déclenchement : {error}",
     "paused": "Suspendu",
-    "resumed": "Repris"
+    "resumed": "Repris",
+    "copied": "Copié !",
+    "copyFailed": "Échec de la copie : {error}",
+    "destinationsLoadFailed": "Impossible de charger les destinations : {error}"
   },
   "ageKeys": {
     "title": "Destinataires de chiffrement (clés publiques age)",
@@ -447,7 +471,8 @@
     "removeConfirm": "Supprimer le destinataire {name} ? Les pods worker ne chiffreront plus pour cette clé. Les dumps existants restent déchiffrables avec la clé privée correspondante.",
     "readOnly": "Mode lecture seule — la modification des destinataires est désactivée.",
     "subtitle": "Clés publiques des destinataires age auxquelles l'opérateur chiffre les sauvegardes.",
-    "merged": "Secret fusionné"
+    "merged": "Secret fusionné",
+    "confirmRemove": "Retirer ce destinataire age ?\n\nEmpreinte : {hash}\n\nLes prochaines sauvegardes ne seront plus chiffrées pour ce destinataire. Assurez-vous de posséder encore une clé privée pour l’un des autres destinataires — sinon les prochaines sauvegardes seront indéchiffrables.\n\nLes dumps existants ne sont pas affectés."
   },
   "hero": {
     "status": {
@@ -734,5 +759,18 @@
   },
   "auditPage": {
     "showingMostRecent": "Affichage des {shown} événements les plus récents sur {total}. Plus anciens : kubectl -n <ns> get events --sort-by=.lastTimestamp"
+  },
+  "a11y": {
+    "closeModal": "Fermer (Échap)"
+  },
+  "apiError": {
+    "forbidden": "Non autorisé",
+    "notFound": "Introuvable",
+    "notAllowed": "Opération non autorisée",
+    "server": "Erreur serveur : {error}",
+    "tryAgain": "réessayez",
+    "timeout": "Délai dépassé — la destination est lente ou injoignable",
+    "network": "Erreur réseau — vérifiez votre connexion",
+    "generic": "Requête échouée"
   }
 }

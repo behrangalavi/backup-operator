@@ -11,7 +11,17 @@
     "alerts": "Alarme",
     "audit": "Audit",
     "ageKeys": "Age-Schlüssel",
-    "settings": "Einstellungen"
+    "settings": "Einstellungen",
+    "title": {
+      "dashboard": "Überblick: Ziele, letzte Läufe, Destination-Health, Konsistenzwarnungen",
+      "sources": "Datenbank-Backup-Quellen (BackupSource-Objekte)",
+      "destinations": "Speicherziele (BackupDestination-Objekte) — dorthin werden verschlüsselte Dumps hochgeladen",
+      "jobs": "Letzte Backup-Jobs aus CronJobs (oder manuell ausgelöst)",
+      "alerts": "Aktuell feuernde Alerts — aus Prometheus, falls konfiguriert, sonst lokal berechnet",
+      "audit": "Audit-Trail — jeder Backup-Lauf, jede Retention-Löschung und jede Konfigurationsänderung als Kubernetes-Event",
+      "ageKeys": "Age-Empfänger (Public Keys) — jedes Backup wird für jeden Empfänger verschlüsselt. Für die Rotation einen neuen hinzufügen und den alten entfernen, sobald er nicht mehr gebraucht wird.",
+      "settings": "Operator-weite Defaults: Zeitplan, Retention, Timeouts, Worker-Ressourcen"
+    }
   },
   "status": {
     "connecting": "Verbinde…",
@@ -45,7 +55,10 @@
     "auto": "automatisch",
     "off": "Aus",
     "on": "An",
-    "none": "—"
+    "none": "—",
+    "dismiss": "Ausblenden",
+    "sort": "Sortierung:",
+    "toggleDirection": "Sortierrichtung umschalten"
   },
   "buttons": {
     "runNow": "Jetzt starten",
@@ -61,7 +74,10 @@
     "next": "Weiter",
     "applySettings": "Einstellungen übernehmen",
     "sendTest": "Testalarm senden",
-    "addKey": "Schlüssel hinzufügen"
+    "addKey": "Schlüssel hinzufügen",
+    "download": "Herunterladen",
+    "copy": "Kopieren",
+    "backToDashboard": "Zurück zum Dashboard"
   },
   "page": {
     "dashboard": {
@@ -219,7 +235,9 @@
     "alert": "Alarm",
     "sinceFiring": "Aktiv seit",
     "destination": "Ziel",
-    "startTime": "Gestartet"
+    "startTime": "Gestartet",
+    "started": "Gestartet",
+    "schema": "Schema"
   },
   "target": {
     "configuration": "Konfiguration",
@@ -246,7 +264,9 @@
     "runningTitle": "Backup läuft gerade",
     "progressOverdue": "läuft {elapsed} — länger als üblich (Ø {est}, n={n})",
     "progressNormal": "{elapsed} / ~{est} — {remaining} verbleibend (n={n})",
-    "progressNoEstimate": "läuft seit {elapsed}"
+    "progressNoEstimate": "läuft seit {elapsed}",
+    "missingNameTitle": "Kein Zielname in der URL",
+    "missingNameBody": "Hash war {hash} — erwartet #/target/<name>."
   },
   "form": {
     "source": {
@@ -391,7 +411,8 @@
         "insecureSkipCertVerify": "Überspringt die TLS-Zertifikatsprüfung. Akzeptiert jedes Server-Zertifikat — anfällig für MITM. Nur wenn das NAS ein selbst-signiertes Zertifikat liefert, das du nicht ersetzen kannst.",
         "endpoint": "Für AWS S3 leer lassen (wird aus der Region abgeleitet). Für S3-kompatible Anbieter setzen: MinIO, Cloudflare R2, Backblaze B2, Hetzner Object Storage, Wasabi.",
         "pathStyle": "Für Anbieter aktivieren, die Path-Style-Adressierung erfordern (z. B. MinIO). Für AWS S3 und Anbieter mit Virtual-Hosted-Style-Buckets deaktiviert lassen.",
-        "serviceAccountJson": "Die vollständige JSON-Schlüsseldatei aus der GCP-Konsole einfügen (IAM → Dienstkonten → Schlüssel → Schlüssel hinzufügen)."
+        "serviceAccountJson": "Die vollständige JSON-Schlüsseldatei aus der GCP-Konsole einfügen (IAM → Dienstkonten → Schlüssel → Schlüssel hinzufügen).",
+        "hetzner": "Hetzner Storage Box: Port 23 verwenden."
       }
     }
   },
@@ -428,7 +449,10 @@
     "deleteFailed": "Löschen fehlgeschlagen: {error}",
     "triggerFailed": "Auslösen fehlgeschlagen: {error}",
     "paused": "Pausiert",
-    "resumed": "Fortgesetzt"
+    "resumed": "Fortgesetzt",
+    "copied": "Kopiert!",
+    "copyFailed": "Kopieren fehlgeschlagen: {error}",
+    "destinationsLoadFailed": "Destinations konnten nicht geladen werden: {error}"
   },
   "ageKeys": {
     "title": "Verschlüsselungs-Empfänger (age Public Keys)",
@@ -447,7 +471,8 @@
     "removeConfirm": "Empfänger {name} entfernen? Worker-Pods verschlüsseln nicht mehr für diesen Key. Vorhandene Dumps bleiben mit dem zugehörigen Private Key entschlüsselbar.",
     "readOnly": "Nur-Lese-Modus — Änderung von Empfängern deaktiviert.",
     "subtitle": "Age-Empfänger-Public-Keys, für die der Operator Backups verschlüsselt.",
-    "merged": "Zusammengeführtes Secret"
+    "merged": "Zusammengeführtes Secret",
+    "confirmRemove": "Diesen Age-Empfänger entfernen?\n\nFingerprint: {hash}\n\nKünftige Backups werden nicht mehr für diesen Empfänger verschlüsselt. Stelle sicher, dass du noch einen privaten Schlüssel für einen der anderen Empfänger besitzt — sonst sind künftige Backups nicht entschlüsselbar.\n\nBestehende Dumps im Storage sind nicht betroffen."
   },
   "hero": {
     "status": {
@@ -734,5 +759,18 @@
   },
   "auditPage": {
     "showingMostRecent": "Zeige die neuesten {shown} von {total} Events. Ältere: kubectl -n <ns> get events --sort-by=.lastTimestamp"
+  },
+  "a11y": {
+    "closeModal": "Schließen (Esc)"
+  },
+  "apiError": {
+    "forbidden": "Nicht erlaubt",
+    "notFound": "Nicht gefunden",
+    "notAllowed": "Operation nicht erlaubt",
+    "server": "Serverfehler: {error}",
+    "tryAgain": "erneut versuchen",
+    "timeout": "Zeitüberschreitung — die Destination ist langsam oder nicht erreichbar",
+    "network": "Netzwerkfehler — Verbindung prüfen",
+    "generic": "Anfrage fehlgeschlagen"
   }
 }

@@ -213,8 +213,13 @@ helm install backup-operator ./backup-operator/charts/backup-operator \
 | `ui.enabled` | `false` | Enable the management UI on port 8081 |
 | `workerResources.limits.cpu` | `2000m` | CPU limit for worker pods |
 | `workerResources.limits.memory` | `2Gi` | Memory limit for worker pods |
-| `networkPolicy.enabled` | `false` | Restrict operator egress to known ports |
+| `networkPolicy.enabled` | `false` | Ingress + egress policy for the operator (metrics from the monitoring namespace, UI only from `networkPolicy.ui.allowedFrom`) plus a worker-pod policy (`networkPolicy.worker.*`) |
+| `worker.nodeSelector` / `tolerations` / `affinity` / `priorityClassName` / `extraEnv` / `extraVolumes` | (empty) | Scheduling and pod knobs for the CronJob worker pods |
+| `nodeSelector` / `tolerations` / `affinity` / `topologySpreadConstraints` / `priorityClassName` / `extraEnv` / `extraVolumes` / `probes.*` | (empty / hardened defaults) | Operator Deployment knobs |
+| `config.metricsRefreshIntervalSeconds` | `30` | Metrics refresher tick |
 | `image.digest` | (empty) | Pin image by SHA256 digest for supply-chain security |
+
+Every value is typed in `values.schema.json`; `helm install` rejects typos and out-of-range numbers.
 
 See `charts/backup-operator/values.yaml` for the full list.
 
@@ -557,6 +562,7 @@ kubectl -n backup port-forward svc/backup-operator 8081:8081
 ### Security model
 
 - **Typed CRUD, owned credentials.** The API addresses `BackupSource` / `BackupDestination` / `BackupRecipient` objects, never arbitrary Secrets. The only Secrets it writes are credentials Secrets that carry an `OwnerReference` to the object being edited; a Secret you manage yourself (for example the one your database chart created) is reported as a conflict instead of being overwritten.
+- **Hardened headers.** Strict `Content-Security-Policy` (`script-src 'self'`, no inline handlers in the SPA, `frame-ancestors 'none'`), `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`. Every request carries an `X-Request-Id`; Events emitted by the UI record the identity your auth proxy forwards (`X-Forwarded-User` / `X-Auth-Request-Email`) as an audit hint.
 - **No built-in auth.** Cluster-internal use is the assumed default. To expose externally, put `oauth2-proxy`, an Ingress with basic-auth annotation, or your platform's SSO in front of the Service (see CLAUDE.md §3.1 for examples).
 - **Sensitive data masked.** Passwords, SSH keys, and access keys are returned as `***` in API responses. They are only written, never read back.
 - **Pass-through downloads.** The operator streams encrypted bytes from the destination to the client without decrypting. The age private key never enters the cluster.
@@ -619,7 +625,7 @@ gunzip dump.sql.gz   # or pipe `--decompress` directly
 
 | Flag | Required | Default |
 |---|---|---|
-| `--destination` | yes | — |
+| `--destination` | yes | — (repeatable or comma-separated; list/latest merge across all, `--purge` deletes from all) |
 | `--target` | yes | — |
 | `--namespace` (`-n`) | no | `default` |
 | `--age-key` | yes (for download) | — |
@@ -627,7 +633,10 @@ gunzip dump.sql.gz   # or pipe `--decompress` directly
 | `--list` | no | false |
 | `--decompress` | no | false |
 | `-o` | no | `-` (stdout) |
-| `--purge` + `--before` + `--dry-run` | no | right-to-erasure: delete every artifact of a target (optionally older than a date) |
+| `--purge` + `--before` + `--dry-run` | no | right-to-erasure: delete every artifact of a target (optionally older than a date) from every `--destination` given; exits non-zero with `ERASURE INCOMPLETE` if anything could not be deleted |
+| `--compression` | no | auto: dump filename suffix, then `meta.json`, then gzip |
+
+The downloaded ciphertext is checked against the `sha256` recorded in `meta.json`; a mismatch exits non-zero and removes the output file. Decrypt errors carry a hint (wrong private key vs. damaged object).
 
 `backup-restore migrate ...` converts legacy labelled Secrets into CRs — see [Migrating from the labelled-Secret model](#migrating-from-the-labelled-secret-model).
 
@@ -961,20 +970,24 @@ Runs on every pull request to `main`:
 
 | Job | Steps |
 |---|---|
-| `test` | `go build ./...` → `go test ./...` → `go vet ./...` |
-| `helm-lint` | `helm lint charts/backup-operator --set agePublicKeys="age1test"` |
+| `test` | `go build ./...` → `go test -race ./...` (coverage artifact) → `go vet ./...` |
+| `generate-check` | regenerates DeepCopy + CRD YAML with the pinned controller-gen and fails on drift |
+| `lint` | golangci-lint (pinned) |
+| `govulncheck` | pinned govulncheck over `./...` |
+| `ui-test` | `node --check` on every SPA file + `node --test 'src/ui/static/js/tests/*.test.mjs'` |
+| `helm` | `helm lint --strict`, helm-unittest suites, two `helm template` variants (defaults / all features incl. worker knobs + NetworkPolicy), kubeconform |
+| `docker-build` | native-arch smoke build + DB-client tool check |
 
 ### Release (`release.yaml`)
 
 Triggered automatically on every push to `main` via [Semantic Release](https://github.com/semantic-release/semantic-release). The version is determined from commit messages — no manual tagging required.
 
-1. Run `go test` to gate the release.
+1. Re-run the full CI gate (`ci.yaml` via `workflow_call`).
 2. Analyze commits since the last release to determine the next version.
-3. Create a GitHub Release with auto-generated release notes.
-4. Build a multi-arch Docker image (`linux/amd64` + `linux/arm64`).
-5. Push the image to `ghcr.io/behrangalavi/backup-operator:<version>` and `:latest`.
-6. Package the Helm chart with the matching version.
-7. Push the chart to `oci://ghcr.io/behrangalavi/charts/backup-operator`.
+3. Build a multi-arch Docker image (`linux/amd64` + `linux/arm64`, base images digest-pinned), scan it with Trivy (fails on HIGH/CRITICAL; `.trivyignore` honoured) and sign the digest with cosign (keyless).
+4. Push the image to `ghcr.io/behrangalavi/backup-operator:<version>` and `:latest`.
+5. Package the Helm chart with the matching version, push it to `oci://ghcr.io/behrangalavi/charts/backup-operator` and sign the chart digest.
+6. Create a GitHub Release with auto-generated release notes.
 
 ### Commit conventions
 

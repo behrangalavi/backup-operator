@@ -221,7 +221,9 @@ spec:
                   number: 8081
 ```
 
-The operator UI exposes a full management interface: CRUD for BackupSources, BackupDestinations and BackupRecipients (plus the credentials Secrets it creates for them), manual backup triggers, job status, and live SSE updates. Passwords and SSH keys are masked in API responses (`***`). Authentication prevents unauthorized users from modifying backup configurations or browsing backup history.
+The operator UI exposes a full management interface: CRUD for BackupSources, BackupDestinations and BackupRecipients (plus the credentials Secrets it creates for them), manual backup triggers, job status, and live SSE updates. Passwords and SSH keys are masked in API responses (`***`).
+
+The UI server ships hardened response headers on every route (`ui/middleware_security.go`): a strict `Content-Security-Policy` (`default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and a minimal `Permissions-Policy`. The SPA has no inline event handlers (everything is `data-action` + delegated listeners), which is what makes `script-src 'self'` possible. Every request gets an `X-Request-Id` (passed through or generated) and a V(1) access log; when the auth proxy forwards an identity (`X-Forwarded-User`, `X-Forwarded-Email`, `X-Auth-Request-User/Email`) it is recorded, sanitised and length-capped, in the Kubernetes Events the UI emits (`… (by alice@example.com, request 7f3a…)`). That identity is an audit hint only — the operator never authorises on it; the proxy does. Authentication prevents unauthorized users from modifying backup configurations or browsing backup history.
 
 ---
 
@@ -236,10 +238,11 @@ src/
 │   ├── main.go          # Operator binary — pure reconciler
 │   ├── worker/          # Worker binary — one-shot backup runner
 │   └── restore/         # Restore CLI — out-of-cluster; also `backup-restore migrate` (legacy Secrets → CRs)
-├── config/              # Singleton env-var config with schema validation
+├── config/              # Singleton env-var config with schema validation; validate.go holds the shared validators + default constants used by operator and worker
 ├── controllers/
 │   ├── cronjob_controller.go  # BackupSource → batch/v1.CronJob + Ready condition / materialised schedule in status
 │   ├── list.go                # Lists BackupSources + BackupDestinations and resolves destination credentials Secrets
+│   ├── dest_listing.go        # One root listing per destination per refresher tick → newest meta per target (replaces per-source List+Get)
 │   ├── metrics_refresher.go   # Reconstructs run-level Gauges from each destination's latest meta.json
 │   ├── status.go / status_writer.go # Change-only status writers: run-level BackupSource status, Reachable on BackupDestination
 │   ├── recipient_reconciler.go # BackupRecipient objects → merged Secret AGE_PUBLIC_KEYS; Bootstrap() seeds chart-provided keys
@@ -261,7 +264,8 @@ src/
 │   ├── scheduler/       # Cron jitter + next-run computation shared by reconciler, status writer and UI
 │   └── secrets/         # Flattens BackupSource/BackupDestination (+ credentials Secret) into Source/Destination; FilterDestinations
 ├── metrics/             # Prometheus metrics — semantic signals for Alertmanager
-├── storage/             # Upload destination abstraction
+├── storage/             # Upload destination abstraction (Storage + optional BatchStorage / DirectoryRemover, ErrNotFound, Close)
+│   ├── storagetest/     # In-memory fake + conformance suite every backend's semantics are checked against
 │   ├── factory/         # Creates the right Storage from storage-type label
 │   ├── sftp/            # Hetzner Storage Box and generic SFTP
 │   ├── ftps/            # FTP over TLS (QNAP, Synology, FreeNAS-style NAS firmware)
@@ -285,11 +289,12 @@ src/
 │   ├── handlers_age_keys.go  # Age recipient CRUD (`/api/age-keys`), backed by BackupRecipient objects
 │   ├── handlers_settings.go  # Settings API: GET /api/settings (effective operator defaults, read-only), values.yaml export
 │   ├── middleware_cache.go   # cachedJSON: ETag + gzip + short Cache-Control on high-volume read endpoints
+│   ├── middleware_security.go # CSP + security headers, X-Request-Id, auth-proxy identity extraction, V(1) access log
 │   ├── server.go        # HTTP server, routing, SPA handler, SSE broker, StoragePool interface + storageFor helper
 │   ├── static/          # SPA frontend (vanilla JS, no build step)
 │   │   ├── index.html   # SPA shell with sidebar (Dashboard / Sources / Destinations / Jobs / Alerts / Audit / Age Keys / Settings), modal, toast containers
 │   │   ├── style.css    # Dark theme, responsive layout, chart-svg + chart-svg-tall variants, gantt + heatmap + loading-spinner styles
-│   │   ├── js/          # ES-module split of the former monolithic app.js
+│   │   ├── js/          # ES-module split of the former monolithic app.js; js/tests/*.test.mjs run with `node --test` (escaping, helpers, data-action registry)
 │   │   │   ├── core.js  # DOM helpers ($, $$), i18n, API, toast, modal, escape/format, sort state
 │   │   │   ├── charts.js # SVG chart renderers (heatmap, donut, gantt, growth, anomaly, duration, verification, sparkline, tables)
 │   │   │   ├── pages.js # Page renderers (dashboard, sources, destinations, alerts, jobs, audit, target detail, settings, age keys)
@@ -362,7 +367,7 @@ The pipeline performs (in order):
 
 ### 5.3 Restore (`cmd/restore/main.go` → `backup-restore`)
 
-Local CLI. Uses your `~/.kube/config` to read the `BackupDestination` and its credentials Secret, downloads the chosen artifact, decrypts with the offline private key, streams to stdout (or a file). A failed download removes the partial output file so a truncated dump can never pass for a good one.
+Local CLI. Uses your `~/.kube/config` to read the `BackupDestination`(s) and their credentials Secrets, downloads the chosen artifact, decrypts with the offline private key, streams to stdout (or a file). The ciphertext is hashed while streaming and compared with the `sha256` in `meta.json` (mismatch → non-zero exit, `-o` file removed; no sidecar → "integrity not verified" log). A failed download removes the partial output file so a truncated dump can never pass for a good one. Compression is resolved `--compression` flag > dump filename suffix > `meta.json` > gzip. Decrypt failures carry a hint (`NoIdentityMatch` → "wrong private key? see kubectl get backuprecipients").
 
 ```bash
 # Show what's available
@@ -375,6 +380,12 @@ backup-restore --destination hetzner -n backup --target prod-users \
 # Specific timestamp to file
 backup-restore --destination hetzner -n backup --target prod-users \
   --age-key ~/age.key --timestamp 20260428T020000Z -o dump.sql.gz
+
+# Several destinations: --destination is repeatable / comma-separated. --list merges
+# runs by timestamp (DESTINATIONS column), latest is picked across all of them and the
+# chosen destination is printed to stderr; a Get that fails falls through to the next
+# destination holding the same run.
+backup-restore --destination hetzner,minio -n backup --target prod-users --list
 
 # Convert a namespace from the legacy labelled-Secret model to CRs
 backup-restore migrate -n backup --age-secret backup-operator-age            # print manifests
@@ -432,7 +443,7 @@ generated schema in `charts/backup-operator/files/crds`.
 | `analyzer.anonymizeTables` | `false` | Hash table names in `meta.json` with SHA256 (16 hex chars). Row counts preserved. |
 | `analyzer.emptyDumpCheck` | `true` | Hard-fail when the dump appears empty although the source has data (§14). Disable for intentionally schema-only sources. |
 | `restoreVerification.mode` | `off` | `off`, `stream-validate` (Phase 1, no DB-pod-spawn), `schema-only` / `sample` / `full` (Phase 2: spawn an ephemeral DB pod + restore; needs `restoreVerification.enableEphemeralPodSpawn` in the chart). Enum — a typo is rejected at admission, it cannot silently enable a heavyweight mode. |
-| `restoreVerification.interval` | `168h` | Minimum gap between verifier runs (Go duration). State-driven: the worker reads `latestMeta.restoreVerification.completedAt`. The very first verification runs as soon as a baseline meta exists. |
+| `restoreVerification.interval` | `168h` | Minimum gap between verifier runs (Go duration). State-driven: the worker reads `latestMeta.restoreVerification.completedAt`. The very first verification runs as soon as a baseline meta exists. A verifier that exceeds its time budget re-stamps `completedAt` (carrying the previous verdict forward, or `skipped` + explanatory error on the very first attempt), so the interval clock advances and a chronically slow Phase-2 verification does not re-spawn a DB pod on every run. |
 | `restoreVerification.image` | per type | Verifier DB pod image (Phase 2 only). Defaults in `verifier/restore/engine.go`; the image's DB-user UID must match what the spawner runs the pod as (`runAsUIDForImage`). |
 | `restoreVerification.volumeSize` | per mode | `emptyDir.sizeLimit` of the verifier pod (`1Gi` / `5Gi` / `50Gi`). Kubernetes quantity. |
 
@@ -522,7 +533,7 @@ The operator and the worker have separate (overlapping) config schemas. All valu
 | `WATCH_NAMESPACE` | no | release namespace | Namespace the operator watches for `BackupSource` / `BackupDestination` / `BackupRecipient` objects |
 | `POD_NAMESPACE` | no | (downward API) | Lease namespace for leader election |
 | `LEADER_ELECTION_ID` | no | — | Empty = leader election disabled |
-| `DEFAULT_SCHEDULE` | no | `0 2 * * *` | Fallback schedule for sources without annotation |
+| `DEFAULT_SCHEDULE` | no | `0 2 * * *` | Fallback schedule for sources without `spec.schedule`. Validated at startup with the CronJob parser — an invalid default fails the operator loudly instead of failing every CronJob create. |
 | `RUN_TIMEOUT_SECONDS` | no | `3600` | Set as `activeDeadlineSeconds` on every Job |
 | `TEMP_DIR` | no | `/tmp/backup-operator` | Mount path inside worker pods |
 | `TEMP_DIR_SIZE` | no | `10Gi` | `emptyDir.sizeLimit` on worker pods |
@@ -538,10 +549,18 @@ The operator and the worker have separate (overlapping) config schemas. All valu
 | `WORKER_MEMORY_LIMIT` | no | `2Gi` | Memory limit for worker pods |
 | `WORKER_CPU_REQUEST` | no | `250m` | CPU request for worker pods |
 | `WORKER_MEMORY_REQUEST` | no | `256Mi` | Memory request for worker pods |
+| `WORKER_NODE_SELECTOR` | no | — | JSON object → `nodeSelector` on worker pods (chart: `worker.nodeSelector`). Strict JSON: unknown fields fail startup. |
+| `WORKER_TOLERATIONS` | no | — | JSON `[]corev1.Toleration` (chart: `worker.tolerations`) |
+| `WORKER_AFFINITY` | no | — | JSON `corev1.Affinity` (chart: `worker.affinity`) |
+| `WORKER_PRIORITY_CLASS_NAME` | no | — | `priorityClassName` for worker pods |
+| `WORKER_POD_ANNOTATIONS` | no | — | JSON object merged into worker pod annotations |
+| `WORKER_EXTRA_ENV` | no | — | JSON `[]corev1.EnvVar` appended to the worker container (e.g. proxy settings) |
+| `WORKER_EXTRA_VOLUMES` / `WORKER_EXTRA_VOLUME_MOUNTS` | no | — | JSON `[]corev1.Volume` / `[]corev1.VolumeMount` appended to the worker pod — the way to mount a CA bundle or a cloud credential file |
 | `WORKER_BACKOFF_LIMIT` | no | `2` | K8s-native Job retry limit on failure. Initial attempt + N retries with exponential backoff (10s, 20s, 40s, ..., capped at 6m). Catches transient failures (DB blips, brief network partitions) so a 30-second outage during the cron tick doesn't cost a full cron interval of missing backups. `0` disables. Range: 0–10. |
-| `METRICS_REFRESH_INTERVAL_SECONDS` | no | `30` | Tick interval of the `MetricsRefresher`. Floor: 5. Trade off frequency against destination read load. |
+| `METRICS_REFRESH_INTERVAL_SECONDS` | no | `30` | Tick interval of the `MetricsRefresher` (chart: `config.metricsRefreshIntervalSeconds`). Floor: 5. Trade off frequency against destination read load. |
 | `STORAGE_SCRUB_ENABLED` | no | `false` | Enables the periodic storage scrubber that re-hashes the most recent dump per (target, destination) and compares with `meta.json`'s SHA256. Off by default because each scrub re-streams a full encrypted dump. Surfaces as `backup_operator_storage_scrub_passed` and the `BackupStorageCorrupted` alert. |
 | `STORAGE_SCRUB_INTERVAL_HOURS` | no | `24` | How often the scrubber runs. Lower bound: 1. Multiply by `(targets × destinations)` to estimate egress; for a fleet with large dumps that's a real bandwidth budget. |
+| `STORAGE_SCRUB_MAX_PAIRS_PER_TICK` | no | `500` | Upper bound on `(target, destination)` pairs re-hashed per tick; the remainder is picked up round-robin on following ticks, so a tick can never outlast the interval. Effective per-pair cadence is `interval × ceil(pairs / 500)`. |
 | `UI_ENABLED` | no | `false` | Enable the built-in web dashboard and management API on `UI_ADDR`. |
 | `UI_ADDR` | no | `:8081` | Listen address for the UI HTTP server. |
 | `UI_MAX_BODY_BYTES` | no | `1048576` | Per-request body cap applied via `http.MaxBytesReader` to every UI route. Without this an unauthenticated POST of a multi-GB body OOMs the operator. |
@@ -575,7 +594,7 @@ CLI flags only. Worker flags are `--source <BackupSource name>` and `--namespace
 
 | Flag | Required | Default |
 |---|---|---|
-| `--destination` | **yes** | — (name of the `BackupDestination`) |
+| `--destination` | **yes** | — (name of the `BackupDestination`; repeatable or comma-separated — list/latest merge across all, `--purge` deletes from all) |
 | `--target` | **yes** | — |
 | `--namespace` | no | `default` |
 | `--age-key` | yes (for download) | — |
@@ -583,7 +602,7 @@ CLI flags only. Worker flags are `--source <BackupSource name>` and `--namespace
 | `--list` | no | `false` |
 | `-o` | no | `-` (stdout) |
 | `--decompress` | no | `false` |
-| `--purge` / `--before` / `--dry-run` | no | right-to-erasure (§17.5) |
+| `--purge` / `--before` / `--dry-run` | no | right-to-erasure (§17.5); runs against every `--destination` given, per-destination counts on stderr, non-zero exit (`ERASURE INCOMPLETE`) if any delete or listing failed |
 
 `backup-restore migrate --namespace <ns> [--age-secret <name>] [--apply [--delete-legacy]]` converts legacy labelled Secrets into CRs + credentials Secrets. Without `--apply` it prints the manifests (including plaintext credentials — review before committing).
 
@@ -600,7 +619,7 @@ Existing extension points:
 | Interface | When to extend |
 |---|---|
 | `dumper.Dumper` | Adding a new database engine |
-| `storage.Storage` | Adding a new upload backend |
+| `storage.Storage` | Adding a new upload backend. Contract: `Upload`/`List`/`Get`/`Delete`/`Close`; `Get`/`Delete` on a missing object wrap `storage.ErrNotFound` and `Delete` of a missing object succeeds (idempotent). Optional: `storage.BatchStorage` (one session for many calls — SFTP/FTPS) and `storage.DirectoryRemover` (retention prunes empty date dirs — SFTP/FTPS). `storage/storagetest.Run` is the conformance suite every backend's semantics are measured against. |
 | `crypto.Encryptor` / `crypto.Decryptor` | If we ever support a non-`age` scheme |
 | `analyzer.Analyzer` | Stricter or more flexible diff rules |
 | `backup.DestinationProvider` | Currently the worker uses a static list; the interface exists to keep the pipeline testable |
@@ -697,8 +716,10 @@ The DB driver is consumed only by `CollectStats`; if you can live without semant
    - `List(ctx, prefix string) ([]Object, error)` — **must return prefix-stripped logical paths**
    - `Get(ctx, path string) (io.ReadCloser, error)`
    - `Delete(ctx, path string) error`
-2. Register the type-constant in `src/storage/factory/factory.go`.
-3. Document the data-key schema in section 6.5.
+2. Map the provider's not-found error to `storage.ErrNotFound` in `Get`/`Delete`, make `Delete` of a missing object return nil, implement `Close` (no-op if there is no persistent client), and add the compile-time assertions (`var _ storage.Storage = (*myStorage)(nil)`; plus `BatchStorage`/`DirectoryRemover` if implemented).
+3. Run the conformance suite against it where it can run without network (`storagetest.Run`), and add the prefix-bleed regression test for string-prefix stores.
+4. Register the type-constant in `src/storage/factory/factory.go`, extend `secrets.CredentialKeys` with the backend's credential keys, add the spec block to `BackupDestination` (`just generate`).
+5. Document the data-key schema in sections 6.4/6.5.
 
 If your backend has its own native encryption (e.g. server-side S3 encryption), still go through `age` first. The whole point of public-key encryption is that the cluster can't read its own backups; relying on the storage provider's keys breaks that.
 
@@ -772,6 +793,8 @@ Exposed by the operator pod on `:8080/metrics`. **Worker pods are short-lived** 
 
 The histograms (`dump_duration_seconds`, `upload_duration_seconds`, `run_duration_seconds`) are kept in the worker for code-coupling reasons but their samples never reach Prometheus. For run-level timing, the operator-side aggregator now reconstructs `last_run_duration_seconds` as a Gauge from each successful run's meta.json — that is the metric to query for trend alerts. The dump and per-destination upload phase histograms remain a known gap; if you need per-phase distribution, see the §18 ADR on OTel as a future second-track export.
 
+Metric names are exported constants (`metrics.Name*`); the local alert evaluator and the UI's scrub-status reader match on those constants, never on string literals, so a rename cannot silently break a consumer.
+
 `metrics.Register(reg)` also stashes the registry as a `prometheus.Gatherer` (`metrics.Gatherer()`), which the alerts package's `LocalProvider` reads to re-evaluate the chart's PrometheusRule conditions inline — this is the no-Prometheus-configured fallback path for the UI's `/api/alerts` endpoint (see §13 and the §18 ADR on alerts providers).
 
 | Metric | Type | Labels | Meaning |
@@ -817,7 +840,7 @@ Shipped in the Helm chart's `values.yaml` under `prometheusRule.rules`. The char
 | `BackupDumpSizeCollapsed` | `dump_size_change_ratio < 0.5` for 5m | **critical** |
 | `BackupSchemaChanged` | `schema_changed == 1` | info |
 | `BackupCharsetChanged` | `charset_changed == 1` | warning |
-| `BackupStorageCorrupted` | `storage_scrub_passed == 0` | **critical** |
+| `BackupStorageCorrupted` | `storage_scrub_passed == 0` for 15m | **critical** |
 | `BackupRetentionFailing` | `retention_last_status == 0` for 24h | warning |
 | `BackupAnomaliesAppearing` | `last_run_anomalies > 0` for 5m | warning |
 | `BackupLastRunFailed` | `last_run_status == 0` for 5m | warning |
@@ -846,10 +869,12 @@ These same conditions also surface in the operator UI under `/api/alerts` and `#
 | Schema changed | Run succeeds | `BackupSchemaChanged` fires; `schema_last_change_timestamp_seconds` jumps to current run |
 | Charset/collation drift | Run succeeds | `BackupCharsetChanged` fires (warning) — restore may silently truncate multibyte chars |
 | `mysqldump` exits 0 with empty data (perm denial) | Pipeline detects dump rows == 0 vs pre-stats > 0, fails with `dump-empty-content`, persists failure-meta | `BackupLastRunFailed` fires; Verification has `looksEmpty=true`; opt out per source via `backup.mogenius.io/empty-dump-check=false` |
-| `mongodump` / `redis-cli --rdb` exit 0 with tiny output | Heuristic: encrypted size < 1% of preStats source size (mongo) or < 200 bytes with > 0 keys (redis) → `dump-empty-content` failure | Same as above; opt-out annotation works identically |
-| Stored dump bit-rots | Scrubber re-hash mismatches meta SHA256 | `storage_scrub_passed=0` → `BackupStorageCorrupted` (critical); only fires when `STORAGE_SCRUB_ENABLED=true` |
+| `mongodump` / `redis-cli --rdb` exit 0 with tiny output | Heuristic: encrypted size < 1% of preStats source size (mongo) or raw RDB smaller than `18 + 4·keys` bytes (redis: minimal header + the physically smallest possible key entry each — a flat 200-byte floor used to false-fail 5–10-key keysets) → `dump-empty-content` failure | Same as above; `spec.analyzer.emptyDumpCheck=false` opts out. Trade-off: keysets under ~20 keys can let a header-only dump through |
+| Stored dump bit-rots | Scrubber re-hash mismatches meta SHA256 (at most `STORAGE_SCRUB_MAX_PAIRS_PER_TICK` pairs per tick, round-robin) | `storage_scrub_passed=0` → `BackupStorageCorrupted` (critical, 15m); only fires when `STORAGE_SCRUB_ENABLED=true` |
 | Encrypted dump won't decrypt+parse (verification due) | Worker generates ephemeral keypair, encrypts with DR+ephemeral recipients, re-streams the local file through age-decrypt → gunzip → parser, finds garbage / wrong header / empty content | `restore_verification_passed=0`, `BackupRestoreVerificationFailed` (critical). Run still succeeds — verification is observability, not a gate. The DR recipient remains valid; the offline restore path is unaffected. |
 | Verifier itself dies (decryptor init / open file) | `RestoreVerificationResult` written with `Verdict=skipped` and `Error` populated | Same alert path; treated same as a hard mismatch from an operator's perspective (something needs investigation). |
+| Verifier exceeds its time budget (`context.DeadlineExceeded` on the verifier context while the run itself is still alive) | Previous verdict is carried forward with `completedAt=now` and a note; the very first verification yields `skipped` + "raise RUN_TIMEOUT_SECONDS or pick a cheaper mode" | No false critical; the interval clock advances so a Phase-2 DB pod is not re-spawned on every run. Alerts only when the first attempt can never fit its budget |
+| Post-upload size verification cannot run (List failed, object not in the listing) | Run continues; Info log + Warning Event `UploadVerifySkipped` | Visible in `kubectl describe backupsource`; a size mismatch when the check does run still fails the destination |
 | Run takes >`RUN_TIMEOUT_SECONDS` | K8s kills the pod via `activeDeadlineSeconds` | Job failed; configure higher timeout for big DBs |
 | Two cron ticks overlap (long run) | Second tick is **skipped** by `concurrencyPolicy: Forbid` | No second Job created; run continues |
 | `BackupSource` deleted | `OwnerReference` cascades; CronJob (and a UI-created credentials Secret) deleted by GC | No more runs; existing artifacts in storage untouched |
@@ -948,11 +973,14 @@ just build           # operator
 just build-worker    # worker
 just build-restore   # restore CLI
 
-# Tidy + vet + lint + test
+# Generate check + lint + Go tests (-race) + frontend tests + chart tests
 just check
 
-# Just tests
-just test-unit
+# Individual gates
+just test-unit     # go test -race via pinned gotestsum
+just test-ui       # node --test on src/ui/static/js/tests/*.test.mjs
+just test-chart    # helm unittest + helm lint --strict + kubeconform
+just build-linux amd64   # operator + worker + restore for one arch
 
 # Module hygiene
 just tidy
@@ -1079,6 +1107,8 @@ This section documents the complete data lifecycle for compliance audits (DSGVO/
 | `RetentionFailed` | Worker pod | Same; Warning. Emitted when a retention step (`init storage`, `open session`, `list`) fails for one destination. Carries the phase so post-upload failures (which can't reach `meta.json`) are still auditable. |
 | `BackupMetaPartial` | Worker pod | Same; Warning. The `meta.json` sidecar reached some but not all destinations whose dump succeeded — run is still discoverable, but per-destination history diverges. |
 | `BackupEmptyCheckDegraded` | Worker pod | Same; Warning. `empty-dump-check` is on but no pre-dump stats baseline was available, so the empty-dump heuristic could not run for this run. |
+| `UploadVerifySkipped` | Worker pod | Same; Warning. The post-upload size verification could not run for a destination (listing failed / object absent from the listing). |
+| `SourceCreated` / `DestinationUpdated` / `AgeKeyAdded` … | Operator UI | `kubectl describe backupsource|backupdestination|backuprecipient`. Message carries the auth-proxy identity and request id when available (`… (by alice@example.com, request 7f3a…)`). |
 | CronJob/Job status | Kubernetes | `kubectl get jobs`, kube-state-metrics |
 | Prometheus alerts | Alertmanager | Alert history, notification channels |
 
@@ -1086,14 +1116,14 @@ This section documents the complete data lifecycle for compliance audits (DSGVO/
 
 - **Automated**: Retention policy deletes dumps older than `retention-days`, respecting `min-keep` safety floor. Deletion events are recorded as Kubernetes Events.
 - **Manual**: Delete the `BackupSource` → OwnerReference cascades to the CronJob (and a UI-created credentials Secret) → no new backups. Existing dumps in storage must be deleted manually from the backend.
-- **Right to erasure (DSGVO Art. 17)**: Use `backup-restore --purge --target X --before YYYY-MM-DD` to delete all artifacts for a target from storage. Add `--dry-run` to preview. Without the private key, the dump is cryptographically inaccessible, but storage-level deletion may still be required by your DPO.
+- **Right to erasure (DSGVO Art. 17)**: Use `backup-restore --purge --target X --before YYYY-MM-DD --destination a,b,c` to delete all artifacts for a target. The purge covers exactly the destinations you pass — list every destination the source fans out to, or the erasure is partial; the CLI exits non-zero with `ERASURE INCOMPLETE` when any delete or listing fails. Add `--dry-run` to preview. Without the private key, the dump is cryptographically inaccessible, but storage-level deletion may still be required by your DPO.
 
 ### 17.6 Access Control Summary
 
 | Principal | Can access | Cannot access |
 |---|---|---|
-| Operator pod | BackupSources/BackupDestinations/BackupRecipients (get/list/watch + status; create/update/delete only with a writable UI), Secrets (get by name, create/update for the merged age Secret and UI-created credentials — never list/watch, read uncached), CronJobs (CRUD), Jobs (get/list/watch/create), Leases, Events, SubjectAccessReviews (create — cluster-scoped, only rendered with the UI), Prometheus query API (read), Alertmanager API (read status + write test alerts) | Private key, dump contents, the namespace's other Secrets (no list) |
-| Worker pod | Its BackupSource (get), BackupDestinations (get/list), the referenced credentials Secrets (get by name — no list), Events (create), **Pods (create/delete) when `restoreVerification.enableEphemeralPodSpawn=true`** | CronJobs, Leases, private key, enumeration of Secrets |
+| Operator pod | BackupSources/BackupDestinations/BackupRecipients (get/list/watch + status; create/update/delete only with a writable UI), Secrets (get by name, create/update for the merged age Secret and UI-created credentials — never list/watch, read uncached), CronJobs (CRUD), Jobs (get/list/watch/create), Leases (create, plus get/update restricted to the election lease by `resourceNames`), Events, SubjectAccessReviews (create — cluster-scoped, only rendered with the UI), Prometheus query API (read), Alertmanager API (read status + write test alerts) | Private key, dump contents, the namespace's other Secrets (no list) |
+| Worker pod | Its BackupSource (get), BackupDestinations (get/list), the referenced credentials Secrets (get by name — no list), Events (create), **Pods (create/delete) when `restoreVerification.enableEphemeralPodSpawn=true`**. Network: with `networkPolicy.enabled` a second NetworkPolicy limits worker egress to DNS, the configured DB ports (default 5432/3306/27017/6379), 443/22/23 and `networkPolicy.worker.extraEgressRules` | CronJobs, Leases, private key, enumeration of Secrets |
 | Storage backend | Encrypted dumps, unencrypted meta.json | Private key, DB credentials |
 | Restore operator (human) | Private key, storage backend | Cluster Secrets (unless they have kubectl access) |
 | Prometheus/Alertmanager | Metrics (sizes, counts, anomalies); operator reads status + posts test alerts | Dump contents, credentials |
@@ -1401,6 +1431,22 @@ The notable ones, with the reasoning that future readers should preserve.
 
 ---
 
+- **Storage backends are measured against one conformance suite; `ErrNotFound` and `Close` joined the interface.** Five hand-written fakes and five backends had drifted on the details that matter for retention and purge: S3 `Delete` of a missing key succeeded, GCS/Azure/SFTP/FTPS returned provider errors, and there was no way to tell "object gone" from "transport broken" on `Get`. `storage/storagetest` now holds an in-memory, prefix-aware fake plus `Run(t, newFn)` covering round-trips, the `db/` vs `db-archive/` prefix-bleed class (regression tests for azure and gcs mirror the s3 one), `Get`-missing → `ErrNotFound`, idempotent `Delete`, logical-path listing, ctx cancellation and session semantics. Every backend maps its provider's not-found to `storage.ErrNotFound` (FTPS maps only the clear "no such file" 550, never a permission 550) and treats delete-of-missing as success; retention does the same, so a re-run after a partial purge no longer flags healthy backends as failed. `Close()` was added because the GCS client holds gRPC/HTTP connections that the pool used to drop to GC on credential rotation; the pool retires replaced/evicted clients with a 2-minute `time.AfterFunc` grace instead of refcounting — `Get` hands out bare values, every bounded caller timeout is well under 2 min, and refcounting every call site for a rotation that happens a few times a year was judged not worth the surface. `DirectoryRemover` replaced the anonymous duck-typed interface in retention so a renamed method is a compile error, and compile-time `var _ storage.X = (*impl)(nil)` assertions pin which backend implements which optional capability.
+
+- **Verifier budget timeout advances the interval clock.** The earlier fix (carry the previous verdict on budget timeout, no false critical) left `completedAt` untouched, so `ShouldVerify` saw the verification as still overdue and a chronically slow Phase-2 restore spawned a full DB pod on *every* run. The carried verdict is now re-stamped `completedAt=now` with a note; a first-ever verification that cannot fit the budget writes `skipped` with an explanatory error and a fresh clock, so it alerts once per interval instead of silently burning a pod per run. Budget exhaustion is detected as `errors.Is(vctx.Err(), context.DeadlineExceeded)` while the run context is still alive — a verifier that fails for its own reasons near the deadline stays a hard failure.
+
+- **Redis empty-dump floor scales with the key count.** The flat 200-byte raw floor false-failed legitimate 5–10-key keysets (~120–160 B). The floor is now `18 + 4·keys`: the minimal RDB framing (9-byte magic/version + EOF + 8-byte CRC64) plus the physically smallest encodable key entry (type opcode, 1-byte length, 1-byte key, 1-byte empty value). Real dumps are ~5× that per key, so the floor never exceeds a legitimate dump; the accepted trade-off is that keysets under ~20 keys can let a header-only dump through — false hard-fails were judged worse (the project's standing heuristic-threshold principle).
+
+- **Restore CLI operates on all given destinations.** `--purge` on one destination made the DSGVO erasure story in §17.5 misleading, and `--list`/latest on one destination could silently restore an older run when destinations had diverged. `--destination` is repeatable; runs are merged by timestamp, the chosen destination is printed, a failing `Get` falls through to the next destination holding the same run, and purge reports per destination and exits non-zero on any failure (an unlistable destination counts). The streamed ciphertext is hashed and compared with `meta.json`'s `sha256` (B6), compression is resolved suffix-first (the authoritative source when the sidecar is lost in a DR), and the dump-suffix list is exported once from `internal/labels` instead of being duplicated in the CLI.
+
+- **Strict CSP by removing inline handlers, not by `'unsafe-inline'`.** Seventy-five string-built `on*=` attributes made `script-src 'self'` impossible and were the enabling condition for every stored-XSS finding in the SPA. They are gone: templates emit `data-action` / `data-submit` / `data-change` + `data-arg…`, and document-level delegated listeners dispatch to a registry; a node test fails the build if an `on*="` attribute or an unregistered action name reappears. `tr()` now HTML-escapes interpolated variables by default (`trText()` for textContent sinks), every path segment built from an object name is `encodeURIComponent`'d and decoded in the router, and the UI server adds `X-Request-Id`, a V(1) access log and the auth-proxy identity to its Events. The identity is an audit hint — the operator never authorises on a header the proxy may or may not set.
+
+- **MetricsRefresher iteration 4: one root listing per destination per tick.** Iteration 3 fixed connection reuse and concurrency but still issued `List(target/)` + `Get` per (source × destination) — 2·S·D storage calls per tick, 60 000 at 10k sources × 3 destinations. The refresher now lists each destination root once (`dest_listing.go`), picks the newest meta per target from the paths, and fetches one `Get` per target present: D·(1+T) calls, 30 003 in the same fleet, and the per-source work became pure in-memory selection so the per-destination slot is no longer contended. Companion bounds: `meta.ListOptions{Since, Limit}` so the heatmap fetches only its day window (with slimmed entries — no `Stats.Tables`) and the duration estimate only the newest N; a 200-entry newest-first buffer for anomalies instead of collect-then-truncate; the UI cache sweeps expired keys; the UI memoises the flattened source/destination lists by list ResourceVersion with a 15 s max age; the scrubber walks at most `STORAGE_SCRUB_MAX_PAIRS_PER_TICK` pairs round-robin so a tick can never outlast its interval.
+
+- **Config is strict at startup.** Shared validators and default constants (`config/validate.go`) replace the per-binary copies; validation errors name the key; `GetInt`/`GetInt64` fail fast instead of returning 0 for garbage; `DEFAULT_SCHEDULE` is parsed with the CronJob parser before the manager starts; the eight `WORKER_*` scheduling knobs are strict JSON (unknown fields fail startup) because a silently ignored toleration is exactly the kind of misconfiguration that only shows up when a node pool drains.
+
+- **Chart: templated with tests, `[Ingress, Egress]` NetworkPolicy, release reuses the PR gate.** helm-unittest suites (RBAC gating, CRD keep annotation, NetworkPolicy variants, worker env JSON, bootstrap recipients) caught a real bug the moment they ran: `{{ .Values.x | default true }}` turns an explicit `false` into `true`, so `crds.install=false`, `crds.keep=false` and `networkPolicy.worker.enabled=false` were impossible to express — now `hasKey` checks. The NetworkPolicy gained ingress rules (metrics from the monitoring namespace, UI/docs only from `ui.allowedFrom`, default denied) and a worker-pod policy, because the operator policy alone left the UI open to every pod and the credential-holding workers unrestricted. `release.yaml` calls `ci.yaml` via `workflow_call` instead of re-implementing a weaker subset, and adds Trivy (HIGH/CRITICAL) plus cosign keyless signatures for image and chart; base images are digest-pinned; `renovate.json` finally points at `charts/**`, the Dockerfile and the CI tool pins instead of a `kubernetes/` directory that never existed.
+
 ## 19. Helm Distribution
 
 ### 19.1 Installation
@@ -1425,6 +1471,9 @@ The chart installs the three CRDs as templates (`crds.install`, default on) with
 **Defaults to know:**
 
 - `crds.install: true`, `crds.keep: true` — see above.
+- `networkPolicy.enabled: false` — when on, the policy is `[Ingress, Egress]`: metrics ingress from `networkPolicy.metrics.allowedFrom` (default: the `networkPolicy.monitoringNamespace`), UI/docs ingress only from `networkPolicy.ui.allowedFrom` (empty = denied), egress to the API server limited by `networkPolicy.apiServerCIDRs` when set, 9090/9093 scoped to the monitoring namespace, plus a worker-pod policy (`networkPolicy.worker.*`).
+- `worker.{nodeSelector,tolerations,affinity,priorityClassName,podAnnotations,extraEnv,extraVolumes,extraVolumeMounts}` — rendered into the `WORKER_*` JSON env vars (§7). Operator pod knobs: `strategy`, `nodeSelector`, `tolerations`, `affinity`, `topologySpreadConstraints`, `priorityClassName`, `podAnnotations`, `podLabels`, `extraEnv`, `envFrom`, `extraVolumes`, `extraVolumeMounts`, `podSecurityContext`, `securityContext`, `probes.{startup,liveness,readiness}`.
+- `values.schema.json` types every value (e.g. `workerBackoffLimit` 0–10, `agePublicKeys` string|array); `templates/NOTES.txt` prints how to reach the UI and warns when the UI is on without NetworkPolicy ingress; `tests/*_test.yaml` are helm-unittest suites run by CI (`just test-chart`).
 - `prometheusReleaseLabel: kube-prometheus-stack` — applied as the `release:` label on `ServiceMonitor` and `PrometheusRule` so kube-prometheus-stack picks them up. Set to `""` to opt out.
 - `alerts.prometheusURL: http://prometheus-operated.alert.svc.cluster.local:9090` — assumes kube-prometheus-stack lives in the `alert` namespace. Override or set to `""` for the local heuristic.
 - `alerts.alertmanagerURL: http://alertmanager-operated.alert.svc.cluster.local:9093` — used for the "open in Alertmanager" UI link, the `/api/alerts/status` connectivity check, and the `/api/alerts/test` endpoint.
@@ -1435,8 +1484,8 @@ Two GitHub Actions workflows:
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yaml` | PR to `main` | `go build`, `go test`, `go vet`, `helm lint` |
-| `release.yaml` | Push to `main` | Semantic Release → multi-arch Docker image → GHCR, package + push Helm chart to OCI registry |
+| `ci.yaml` | PR to `main` | `go build` / `go test -race` / `go vet`, generate-check (CRD + DeepCopy drift), golangci-lint, govulncheck (pinned), `node --test` for the SPA, `helm lint --strict` + helm-unittest + two renders + kubeconform, Docker smoke build + DB-tool check |
+| `release.yaml` | Push to `main` | Re-runs the full CI gate via `workflow_call`, Semantic Release → multi-arch Docker image → GHCR (Trivy scan fails on HIGH/CRITICAL, `.trivyignore` honoured; cosign keyless signature on the image digest), package + push Helm chart to OCI registry (cosign-signed) |
 
 ### 19.3 Release Process
 

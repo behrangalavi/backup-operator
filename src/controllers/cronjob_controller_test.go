@@ -4,12 +4,12 @@ import (
 	"context"
 	"testing"
 
-	"backup-operator/internal/labels"
+	"backup-operator/api/v1alpha1"
 
 	"github.com/go-logr/logr"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -27,165 +27,207 @@ func cronScheme(t *testing.T) *runtime.Scheme {
 	if err := batchv1.AddToScheme(s); err != nil {
 		t.Fatalf("batchv1 AddToScheme: %v", err)
 	}
+	if err := v1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("v1alpha1 AddToScheme: %v", err)
+	}
 	return s
 }
 
-// ownedCronJob builds a CronJob with the controller OwnerReference the
-// reconciler sets — as if a prior source reconcile had created it.
-func ownedCronJob(name, namespace string, owner *corev1.Secret) *batchv1.CronJob {
-	return &batchv1.CronJob{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: "v1", Kind: "Secret",
-				Name: owner.Name, UID: owner.UID,
-				Controller: ptr(true), BlockOwnerDeletion: ptr(true),
-			}},
-		},
-	}
-}
-
-func cronExists(t *testing.T, c client.Client, name, namespace string) bool {
+// newFakeClient wires the status subresource for every CRD so
+// Status().Update behaves like the real API server.
+func newFakeClient(t *testing.T, objs ...client.Object) client.Client {
 	t.Helper()
+	return fake.NewClientBuilder().
+		WithScheme(cronScheme(t)).
+		WithStatusSubresource(&v1alpha1.BackupSource{}, &v1alpha1.BackupDestination{}).
+		WithObjects(objs...).
+		Build()
+}
+
+func testSource(name, ns string) *v1alpha1.BackupSource {
+	return &v1alpha1.BackupSource{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, UID: types.UID("uid-" + name), Generation: 1},
+		Spec: v1alpha1.BackupSourceSpec{
+			Schedule: "0 2 * * *",
+			Database: v1alpha1.DatabaseSpec{
+				Type:                 v1alpha1.DatabasePostgres,
+				Host:                 "db.example.com",
+				Username:             "backup",
+				CredentialsSecretRef: v1alpha1.CredentialsSecretRef{Name: name + "-credentials"},
+			},
+		},
+	}
+}
+
+func reconcileOnce(t *testing.T, c client.Client, name, ns string) {
+	t.Helper()
+	r := &CronJobReconciler{Client: c, Logger: logr.Discard(), Worker: WorkerSpec{
+		Image: "img", ServiceAccountName: "sa", AgeSecretName: "age", TempDir: "/tmp/x", RunTimeoutSeconds: 10, DefaultSchedule: "0 3 * * *",
+	}}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: name, Namespace: ns}}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+}
+
+func getSource(t *testing.T, c client.Client, name, ns string) *v1alpha1.BackupSource {
+	t.Helper()
+	var bs v1alpha1.BackupSource
+	if err := c.Get(context.Background(), types.NamespacedName{Name: name, Namespace: ns}, &bs); err != nil {
+		t.Fatalf("Get BackupSource: %v", err)
+	}
+	return &bs
+}
+
+// TestReconcile_CreatesOwnedCronJob is the happy path: a valid BackupSource
+// yields a CronJob owned by it (so deletion cascades), pointing the worker
+// at the source by name, and a Ready=True status with the materialised
+// schedule recorded.
+func TestReconcile_CreatesOwnedCronJob(t *testing.T) {
+	src := testSource("prod-db", "backup")
+	c := newFakeClient(t, src)
+	reconcileOnce(t, c, "prod-db", "backup")
+
 	var cj batchv1.CronJob
-	err := c.Get(context.Background(), types.NamespacedName{Name: name, Namespace: namespace}, &cj)
-	if err == nil {
-		return true
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "backup-prod-db", Namespace: "backup"}, &cj); err != nil {
+		t.Fatalf("CronJob not created: %v", err)
 	}
-	if apierrors.IsNotFound(err) {
-		return false
+	if len(cj.OwnerReferences) != 1 || cj.OwnerReferences[0].Kind != v1alpha1.KindBackupSource || cj.OwnerReferences[0].UID != src.UID {
+		t.Errorf("CronJob must be owned by the BackupSource, got %+v", cj.OwnerReferences)
 	}
-	t.Fatalf("unexpected Get error: %v", err)
-	return false
-}
+	args := cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Args
+	if len(args) < 2 || args[0] != "--source" || args[1] != "prod-db" {
+		t.Errorf("worker must be pointed at the BackupSource by name, got args %v", args)
+	}
+	if cj.Spec.Suspend == nil || *cj.Spec.Suspend {
+		t.Error("Suspend must be an explicit false")
+	}
 
-// TestReconcile_SourceToDestination_DeletesOwnedCronJob covers the role
-// transition: a Secret that was a source (owns backup-<name>) is relabelled
-// destination; the now-orphan CronJob must be removed.
-func TestReconcile_SourceToDestination_DeletesOwnedCronJob(t *testing.T) {
-	sec := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "prod-db", Namespace: "backup", UID: "secret-uid-1",
-			Labels: map[string]string{labels.LabelRole: labels.RoleDestination},
-		},
+	got := getSource(t, c, "prod-db", "backup")
+	ready := apimeta.FindStatusCondition(got.Status.Conditions, v1alpha1.ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionTrue {
+		t.Fatalf("Ready condition = %+v, want True", ready)
 	}
-	cj := ownedCronJob("backup-prod-db", "backup", sec)
-	c := fake.NewClientBuilder().WithScheme(cronScheme(t)).WithObjects(sec, cj).Build()
-	r := &CronJobReconciler{Client: c, Logger: logr.Discard()}
-
-	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "prod-db", Namespace: "backup"}})
-	if err != nil {
-		t.Fatalf("Reconcile: %v", err)
+	if got.Status.CronJobName != "backup-prod-db" {
+		t.Errorf("status.cronJobName = %q", got.Status.CronJobName)
 	}
-	if cronExists(t, c, "backup-prod-db", "backup") {
-		t.Error("CronJob owned by a now-destination Secret should have been deleted")
+	if got.Status.MaterializedSchedule == "" || got.Status.NextScheduleTime == nil {
+		t.Errorf("status must carry the materialised schedule and next fire time, got %+v", got.Status)
+	}
+	if got.Status.ObservedGeneration != 1 {
+		t.Errorf("observedGeneration = %d, want 1", got.Status.ObservedGeneration)
 	}
 }
 
-// TestReconcile_RoleRemoved_DeletesOwnedCronJob covers the label-removed path.
-func TestReconcile_RoleRemoved_DeletesOwnedCronJob(t *testing.T) {
-	sec := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "prod-db", Namespace: "backup", UID: "secret-uid-1",
-			// no role label
-		},
-	}
-	cj := ownedCronJob("backup-prod-db", "backup", sec)
-	c := fake.NewClientBuilder().WithScheme(cronScheme(t)).WithObjects(sec, cj).Build()
-	r := &CronJobReconciler{Client: c, Logger: logr.Discard()}
+// TestReconcile_SuspendedFlowsToCronJob: spec.suspended is the single source
+// of truth for CronJob.Spec.Suspend, in both directions.
+func TestReconcile_SuspendedFlowsToCronJob(t *testing.T) {
+	src := testSource("paused", "backup")
+	src.Spec.Suspended = true
+	c := newFakeClient(t, src)
+	reconcileOnce(t, c, "paused", "backup")
 
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "prod-db", Namespace: "backup"}}); err != nil {
-		t.Fatalf("Reconcile: %v", err)
+	var cj batchv1.CronJob
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "backup-paused", Namespace: "backup"}, &cj); err != nil {
+		t.Fatal(err)
 	}
-	if cronExists(t, c, "backup-prod-db", "backup") {
-		t.Error("CronJob should have been deleted after role label removal")
+	if cj.Spec.Suspend == nil || !*cj.Spec.Suspend {
+		t.Error("CronJob must be suspended")
+	}
+	got := getSource(t, c, "paused", "backup")
+	if got.Status.NextScheduleTime != nil {
+		t.Error("a suspended source has no next schedule time")
 	}
 }
 
-// TestDeleteCronJobIfOwned_LeavesUnownedCronJob is the core safety property:
-// a same-named CronJob the operator did NOT create must never be deleted.
-func TestDeleteCronJobIfOwned_LeavesUnownedCronJob(t *testing.T) {
-	sec := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "redis", Namespace: "backup", UID: "secret-uid-redis",
-		},
-	}
-	// A user's own unrelated CronJob that happens to collide on the name and
-	// has no OwnerReference back to the Secret.
-	foreign := &batchv1.CronJob{
-		ObjectMeta: metav1.ObjectMeta{Name: "backup-redis", Namespace: "backup"},
-	}
-	c := fake.NewClientBuilder().WithScheme(cronScheme(t)).WithObjects(sec, foreign).Build()
-	r := &CronJobReconciler{Client: c, Logger: logr.Discard()}
+// TestReconcile_InvalidSpec_SetsReadyFalse: a source whose spec can't be
+// flattened (traversal target name) produces no CronJob and a Ready=False
+// condition carrying the reason, instead of a silent skip.
+func TestReconcile_InvalidSpec_SetsReadyFalse(t *testing.T) {
+	src := testSource("bad", "backup")
+	src.Spec.TargetName = "../other-tenant"
+	c := newFakeClient(t, src)
+	reconcileOnce(t, c, "bad", "backup")
 
-	if err := r.deleteCronJobIfOwned(context.Background(), sec, logr.Discard()); err != nil {
-		t.Fatalf("deleteCronJobIfOwned: %v", err)
+	var cj batchv1.CronJob
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "backup-bad", Namespace: "backup"}, &cj); err == nil {
+		t.Error("no CronJob must be created for an invalid source")
 	}
-	if !cronExists(t, c, "backup-redis", "backup") {
-		t.Error("a CronJob not owned by the operator must NOT be deleted")
+	got := getSource(t, c, "bad", "backup")
+	ready := apimeta.FindStatusCondition(got.Status.Conditions, v1alpha1.ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != "InvalidSpec" {
+		t.Fatalf("Ready condition = %+v, want False/InvalidSpec", ready)
 	}
 }
 
-// TestDeleteCronJobIfOwned_WrongOwnerUID guards against a same-name CronJob
-// owned by a DIFFERENT Secret (e.g. after a hash-suffix collision edge).
-func TestDeleteCronJobIfOwned_WrongOwnerUID(t *testing.T) {
-	sec := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "redis", Namespace: "backup", UID: "secret-uid-A"},
-	}
-	other := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "redis", Namespace: "backup", UID: "secret-uid-B"}}
-	cj := ownedCronJob("backup-redis", "backup", other) // owned by a different UID
-	c := fake.NewClientBuilder().WithScheme(cronScheme(t)).WithObjects(sec, cj).Build()
-	r := &CronJobReconciler{Client: c, Logger: logr.Discard()}
+// TestReconcile_DefaultScheduleApplied: a source without spec.schedule runs
+// on the operator default, and status records the result.
+func TestReconcile_DefaultScheduleApplied(t *testing.T) {
+	src := testSource("nosched", "backup")
+	src.Spec.Schedule = ""
+	src.Spec.JitterMinutes = ptrInt32(0) // pin so the assertion is exact
+	c := newFakeClient(t, src)
+	reconcileOnce(t, c, "nosched", "backup")
 
-	if err := r.deleteCronJobIfOwned(context.Background(), sec, logr.Discard()); err != nil {
-		t.Fatalf("deleteCronJobIfOwned: %v", err)
+	var cj batchv1.CronJob
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "backup-nosched", Namespace: "backup"}, &cj); err != nil {
+		t.Fatal(err)
 	}
-	if !cronExists(t, c, "backup-redis", "backup") {
-		t.Error("CronJob owned by a different Secret UID must NOT be deleted")
+	if cj.Spec.Schedule != "0 3 * * *" {
+		t.Errorf("CronJob schedule = %q, want operator default", cj.Spec.Schedule)
+	}
+	if got := getSource(t, c, "nosched", "backup"); got.Status.MaterializedSchedule != "0 3 * * *" {
+		t.Errorf("status.materializedSchedule = %q", got.Status.MaterializedSchedule)
+	}
+}
+
+// TestReconcile_Idempotent: a second reconcile neither errors nor rewrites.
+func TestReconcile_Idempotent(t *testing.T) {
+	src := testSource("twice", "backup")
+	c := newFakeClient(t, src)
+	reconcileOnce(t, c, "twice", "backup")
+	first := getSource(t, c, "twice", "backup")
+	reconcileOnce(t, c, "twice", "backup")
+	second := getSource(t, c, "twice", "backup")
+	if first.ResourceVersion != second.ResourceVersion {
+		t.Errorf("second reconcile rewrote status (rv %s → %s); status writes must be change-only", first.ResourceVersion, second.ResourceVersion)
 	}
 }
 
 func TestCronJobNameFor_Short(t *testing.T) {
-	got := cronJobNameFor("my-secret")
-	want := "backup-my-secret"
+	got := cronJobNameFor("my-source")
+	want := "backup-my-source"
 	if got != want {
-		t.Errorf("cronJobNameFor(%q) = %q, want %q", "my-secret", got, want)
+		t.Errorf("cronJobNameFor(%q) = %q, want %q", "my-source", got, want)
 	}
 }
 
 func TestCronJobNameFor_ExactLimit(t *testing.T) {
-	// "backup-" is 7 chars, so a 45-char secret name gives exactly 52.
-	secret := "abcdefghijklmnopqrstuvwxyz0123456789012345678"
-	got := cronJobNameFor(secret)
+	// "backup-" is 7 chars, so a 45-char name gives exactly 52.
+	name := "abcdefghijklmnopqrstuvwxyz0123456789012345678"
+	got := cronJobNameFor(name)
 	if len(got) != 52 {
 		t.Errorf("expected length 52, got %d: %q", len(got), got)
 	}
-	want := "backup-" + secret
-	if got != want {
-		t.Errorf("should not hash when exactly at limit: got %q, want %q", got, want)
+	if got != "backup-"+name {
+		t.Errorf("should not hash when exactly at limit: got %q", got)
 	}
 }
 
 func TestCronJobNameFor_Long_HasHash(t *testing.T) {
-	long := "very-long-secret-name-that-exceeds-the-52-character-kubernetes-limit"
+	long := "very-long-source-name-that-exceeds-the-52-character-kubernetes-limit"
 	got := cronJobNameFor(long)
 	if len(got) > 52 {
 		t.Errorf("name too long: %d > 52: %q", len(got), got)
 	}
-	// Must end with a hash suffix
 	if got[len(got)-9] != '-' {
 		t.Errorf("expected hash separator near end, got %q", got)
 	}
 }
 
 func TestCronJobNameFor_LongCollision(t *testing.T) {
-	// Two secrets that share the same 52-char prefix must produce different names.
-	a := "very-long-prefix-shared-between-two-secrets-aaaaaaaaa"
-	b := "very-long-prefix-shared-between-two-secrets-bbbbbbbbb"
-	gotA := cronJobNameFor(a)
-	gotB := cronJobNameFor(b)
-	if gotA == gotB {
-		t.Errorf("collision: both produced %q", gotA)
+	a := "very-long-prefix-shared-between-two-sources-aaaaaaaaaa"
+	b := "very-long-prefix-shared-between-two-sources-bbbbbbbbbb"
+	if cronJobNameFor(a) == cronJobNameFor(b) {
+		t.Errorf("collision: both produced %q", cronJobNameFor(a))
 	}
 }

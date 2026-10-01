@@ -103,9 +103,9 @@ func (s *StorageScrubber) NeedLeaderElection() bool { return true }
 
 func (s *StorageScrubber) scrub(ctx context.Context) {
 	s.ensurePool()
-	res, err := listBackupSecrets(ctx, s.Client, s.Namespace, s.Logger)
+	res, err := listBackupObjects(ctx, s.Client, s.Namespace, s.Logger)
 	if err != nil {
-		s.Logger.Error(err, "list secrets")
+		s.Logger.Error(err, "list backup objects")
 		return
 	}
 	s.Logger.V(1).Info("scrub tick", "sources", len(res.Sources), "destinations", len(res.Dests))
@@ -117,7 +117,9 @@ func (s *StorageScrubber) scrub(ctx context.Context) {
 	workers := make(chan struct{}, defaultScrubSourceWorkers)
 	var wg sync.WaitGroup
 	for i := range res.Sources {
-		src, err := secrets.ParseSource(&res.Sources[i], "")
+		// Schedule is irrelevant for scrubbing; pass "" rather than plumb
+		// the operator default through a controller that never uses it.
+		src, err := secrets.FromBackupSource(&res.Sources[i], nil, "")
 		if err != nil {
 			continue
 		}
@@ -175,9 +177,13 @@ func (s *StorageScrubber) scrubOne(ctx context.Context, target string, d *secret
 		log.V(1).Info("scrub skipped: storage init failed", "err", err.Error())
 		return
 	}
-	m, _, outcome := loadLatestMeta(ctx, st, target)
+	m, _, outcome, lerr := loadLatestMeta(ctx, st, target)
 	if outcome != metaOK || m == nil {
-		log.V(1).Info("scrub skipped: no meta available", "outcome", outcome)
+		fields := []any{"outcome", outcome}
+		if lerr != nil {
+			fields = append(fields, "err", lerr.Error())
+		}
+		log.V(1).Info("scrub skipped: no meta available", fields...)
 		return
 	}
 	if m.IsFailure() {
@@ -258,4 +264,3 @@ func dumpPathFromMeta(metaPath, compression string) string {
 	base := strings.TrimSuffix(metaPath, metaSuffix)
 	return base + "." + labels.DumpSuffix(compression)
 }
-

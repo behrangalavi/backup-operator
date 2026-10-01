@@ -1,15 +1,15 @@
 // Worker — one-shot backup runner. Each invocation backs up exactly ONE
-// source database and exits. Launched by a Kubernetes Job created from the
+// BackupSource and exits. Launched by a Kubernetes Job created from the
 // CronJob the operator manages.
 //
-//	backup-worker --source-secret prod-users-db --namespace backup
+//	backup-worker --source prod-users-db --namespace backup
 //
 // The worker:
-//   1. Reads the source Secret it was pointed at.
-//   2. Lists destination Secrets in the same namespace via label selector,
-//      then applies the source's optional destination allow-list.
-//   3. Runs the existing Pipeline.Run end-to-end.
-//   4. Exits 0 on success, 1 on failure — Kubernetes records job status.
+//  1. Reads the BackupSource it was pointed at plus its credentials Secret.
+//  2. Lists BackupDestinations in the same namespace, resolves each one's
+//     credentials Secret, then applies the source's optional allow-list.
+//  3. Runs the existing Pipeline.Run end-to-end.
+//  4. Exits 0 on success, 1 on failure — Kubernetes records job status.
 package main
 
 import (
@@ -18,10 +18,12 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
@@ -31,15 +33,18 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/record"
 
+	"github.com/go-logr/logr"
+
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"backup-operator/analyzer"
+	"backup-operator/api/v1alpha1"
 	"backup-operator/assert"
 	"backup-operator/config"
 	"backup-operator/crypto"
 	"backup-operator/internal/backup"
-	"backup-operator/internal/labels"
 	"backup-operator/internal/secrets"
 	"backup-operator/verifier/ephemeral"
 	verifierFactory "backup-operator/verifier/factory"
@@ -56,33 +61,30 @@ type staticDestProvider struct {
 
 func (s *staticDestProvider) Destinations() []*secrets.Destination { return s.dests }
 
-// secretEventEmitter records Kubernetes Events against the source Secret for
+// sourceEventEmitter records Kubernetes Events against the BackupSource for
 // audit-trail compliance (DSGVO Art. 30, SOC2). Events are visible via
-// `kubectl describe secret <source>` and in cluster audit logs.
-type secretEventEmitter struct {
+// `kubectl describe backupsource <name>` and in cluster audit logs.
+type sourceEventEmitter struct {
 	recorder record.EventRecorder
 	ref      *corev1.ObjectReference
 }
 
-func (e *secretEventEmitter) Emit(eventType, reason, message string) {
+func (e *sourceEventEmitter) Emit(eventType, reason, message string) {
 	e.recorder.Event(e.ref, eventType, reason, message)
 }
 
 func main() { os.Exit(run()) }
 
 func run() int {
-	sourceSecret := flag.String("source-secret", "", "name of the source Secret to back up")
-	namespace := flag.String("namespace", "", "namespace of the source Secret (defaults to POD_NAMESPACE)")
-	// Bind zap's flags BEFORE the single Parse. The previous code parsed once
-	// here (before zap flags were registered) and again after — so passing
-	// --zap-log-level aborted the first parse with "flag provided but not
-	// defined".
+	sourceName := flag.String("source", "", "name of the BackupSource to back up")
+	namespace := flag.String("namespace", "", "namespace of the BackupSource (defaults to POD_NAMESPACE)")
+	// Bind zap's flags BEFORE the single Parse so --zap-log-level is known.
 	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
-	if *sourceSecret == "" {
-		die("flag --source-secret is required")
+	if *sourceName == "" {
+		die("flag --source is required")
 	}
 
 	err := config.InitializeConfigModule([]config.ConfigItemDescription{
@@ -91,9 +93,9 @@ func run() int {
 		{Key: "TEMP_DIR", Optional: true, Default: "/tmp/backup-operator"},
 		{Key: "DEFAULT_RETENTION_DAYS", Optional: true, Default: "30", Validate: validateNonNegInt},
 		{Key: "DEFAULT_MIN_KEEP", Optional: true, Default: "3", Validate: validateNonNegInt},
-		{Key: "DEFAULT_SCHEDULE", Optional: true, Default: "0 2 * * *"}, // unused here, but parser needs it
+		{Key: "DEFAULT_SCHEDULE", Optional: true, Default: "0 2 * * *"}, // unused here, but the flattener needs it
 		{Key: "POD_NAMESPACE", Optional: true},
-		// POD_NAME / POD_UID come from Downward API in the CronJob
+		// POD_NAME / POD_UID come from the Downward API in the CronJob
 		// pod-spec; the restore-verifier uses them as OwnerReference
 		// targets for spawned ephemeral DB pods. Optional because
 		// stream-validate / off don't need them.
@@ -117,25 +119,43 @@ func run() int {
 	assert.NoError(err, "failed to load kubeconfig")
 	cs, err := kubernetes.NewForConfig(cfg)
 	assert.NoError(err, "failed to build kubernetes client")
+	cl, err := client.New(cfg, client.Options{Scheme: workerScheme()})
+	assert.NoError(err, "failed to build controller-runtime client")
 
 	sigCtx, sigStop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer sigStop()
 	ctx, cancel := context.WithTimeout(sigCtx, config.GetDurationSeconds("RUN_TIMEOUT_SECONDS"))
 	defer cancel()
 
-	srcSecret, err := cs.CoreV1().Secrets(ns).Get(ctx, *sourceSecret, metav1.GetOptions{})
-	if err != nil {
-		log.Error(err, "get source secret", "secret", *sourceSecret, "namespace", ns)
+	var bs v1alpha1.BackupSource
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: ns, Name: *sourceName}, &bs); err != nil {
+		log.Error(err, "get backupsource", "source", *sourceName, "namespace", ns)
+		return 1
+	}
+	var creds corev1.Secret
+	credsKey := client.ObjectKey{Namespace: ns, Name: bs.Spec.Database.CredentialsSecretRef.Name}
+	if err := cl.Get(ctx, credsKey, &creds); err != nil {
+		log.Error(err, "get credentials secret", "secret", credsKey.Name, "source", bs.Name)
 		return 1
 	}
 
-	src, err := secrets.ParseSource(srcSecret, config.GetValue("DEFAULT_SCHEDULE"))
+	src, err := secrets.FromBackupSource(&bs, &creds, config.GetValue("DEFAULT_SCHEDULE"))
 	if err != nil {
-		log.Error(err, "parse source secret")
+		log.Error(err, "flatten backupsource")
 		return 1
 	}
 
-	dests, err := loadDestinations(ctx, cs, ns, src)
+	tempDir := config.GetValue("TEMP_DIR")
+	if src.TLSCA != nil {
+		cleanup, err := materialiseCA(ctx, cl, ns, src, tempDir)
+		if err != nil {
+			log.Error(err, "materialise TLS CA", "secret", src.TLSCA.Name, "key", src.TLSCA.Key)
+			return 1
+		}
+		defer cleanup()
+	}
+
+	dests, err := loadDestinations(ctx, cl, ns, src, log)
 	if err != nil {
 		log.Error(err, "load destinations")
 		return 1
@@ -153,13 +173,13 @@ func run() int {
 		MinKeep: config.GetInt("DEFAULT_MIN_KEEP"),
 	}
 
-	events, flushEvents := buildEventEmitter(cs, srcSecret)
+	events, flushEvents := buildEventEmitter(cs, &bs)
 	defer flushEvents()
 
 	pipeline := backup.NewPipeline(
 		enc,
 		analyzer.NewAnalyzer(),
-		config.GetValue("TEMP_DIR"),
+		tempDir,
 		&staticDestProvider{dests: dests},
 		policy,
 		log.WithName("pipeline"),
@@ -180,42 +200,72 @@ func run() int {
 	return 0
 }
 
-// loadDestinations lists Secrets in the namespace carrying the destination
-// role label, parses each, then filters via the source's allow-list. A
-// malformed destination Secret is logged and skipped — one bad Secret must
-// not block all uploads.
-func loadDestinations(ctx context.Context, cs kubernetes.Interface, ns string, src *secrets.Source) ([]*secrets.Destination, error) {
-	list, err := cs.CoreV1().Secrets(ns).List(ctx, metav1.ListOptions{
-		LabelSelector: labels.LabelRole + "=" + labels.RoleDestination,
-	})
-	if err != nil {
+// workerScheme registers exactly the kinds the worker reads: core Secrets
+// and the backup.mogenius.io API group.
+func workerScheme() *runtime.Scheme {
+	s := runtime.NewScheme()
+	_ = corev1.AddToScheme(s)
+	_ = v1alpha1.AddToScheme(s)
+	return s
+}
+
+// loadDestinations lists BackupDestinations in the namespace, resolves each
+// one's credentials Secret, flattens it, then filters via the source's
+// allow-list. A destination that fails to resolve is logged and skipped —
+// one broken destination must not block all uploads. Names are unique per
+// namespace by construction, so no logical-name de-duplication is needed.
+func loadDestinations(ctx context.Context, cl client.Client, ns string, src *secrets.Source, log logr.Logger) ([]*secrets.Destination, error) {
+	var list v1alpha1.BackupDestinationList
+	if err := cl.List(ctx, &list, client.InNamespace(ns)); err != nil {
 		return nil, err
 	}
 	out := make([]*secrets.Destination, 0, len(list.Items))
-	seenName := make(map[string]string, len(list.Items)) // logical name -> first Secret name
 	for i := range list.Items {
-		s := &list.Items[i]
-		dest, err := secrets.ParseDestination(s)
+		bd := &list.Items[i]
+		if !src.AllowsDestination(bd.Name) {
+			continue
+		}
+		var creds corev1.Secret
+		key := client.ObjectKey{Namespace: ns, Name: bd.Spec.CredentialsSecretRef.Name}
+		if err := cl.Get(ctx, key, &creds); err != nil {
+			if apierrors.IsNotFound(err) {
+				log.Error(nil, "skipping destination: credentials secret not found", "destination", bd.Name, "secret", key.Name)
+				continue
+			}
+			return nil, fmt.Errorf("get credentials secret %q for destination %q: %w", key.Name, bd.Name, err)
+		}
+		dest, err := secrets.FromBackupDestination(bd, &creds)
 		if err != nil {
-			ctrl.Log.WithName("worker").Error(err, "skipping invalid destination", "secret", s.Name)
+			log.Error(err, "skipping invalid destination", "destination", bd.Name)
 			continue
 		}
-		if !src.AllowsDestination(dest.Name) {
-			continue
-		}
-		// De-dup by logical name: the pipeline's per-destination storage cache
-		// is keyed on it, so a second destination sharing a name would reuse
-		// the first's client and silently never receive its dump while still
-		// reporting success. First wins; log the skip.
-		if first, dup := seenName[dest.Name]; dup {
-			ctrl.Log.WithName("worker").Info("skipping destination with duplicate logical name; keeping the first",
-				"name", dest.Name, "kept", first, "skipped", s.Name)
-			continue
-		}
-		seenName[dest.Name] = s.Name
 		out = append(out, dest)
 	}
 	return out, nil
+}
+
+// materialiseCA writes the CA bundle referenced by spec.database.tls.caSecretRef
+// to the worker's temp volume (the only writable path under
+// readOnlyRootFilesystem) and points the dumper at it. The file is 0600 and
+// removed when the run ends; the pod's emptyDir goes with the pod anyway.
+func materialiseCA(ctx context.Context, cl client.Client, ns string, src *secrets.Source, tempDir string) (func(), error) {
+	var sec corev1.Secret
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: ns, Name: src.TLSCA.Name}, &sec); err != nil {
+		return nil, fmt.Errorf("get CA secret: %w", err)
+	}
+	pem, ok := sec.Data[src.TLSCA.Key]
+	if !ok || len(pem) == 0 {
+		return nil, fmt.Errorf("CA secret %q has no data key %q", src.TLSCA.Name, src.TLSCA.Key)
+	}
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create temp dir: %w", err)
+	}
+	path := filepath.Join(tempDir, "tls-ca-"+src.ObjectName+".pem")
+	if err := os.WriteFile(path, pem, 0o600); err != nil {
+		return nil, fmt.Errorf("write CA file: %w", err)
+	}
+	secrets.ApplyTLSCAPath(src, path)
+	return func() { _ = os.Remove(path) }, nil
 }
 
 // loadKubeConfig prefers in-cluster config (the normal case for CronJob pods),
@@ -282,26 +332,27 @@ func workerOwnerRef() *metav1.OwnerReference {
 }
 
 // buildEventEmitter creates a Kubernetes EventRecorder that emits events
-// against the source Secret. Events form a permanent audit trail visible
-// via `kubectl describe secret <source>` and cluster audit logs.
-// The returned cleanup function shuts down the broadcaster, flushing
-// any buffered events before the process exits.
-func buildEventEmitter(cs kubernetes.Interface, sec *corev1.Secret) (backup.EventEmitter, func()) {
+// against the BackupSource. Events form a permanent audit trail visible via
+// `kubectl describe backupsource <name>` and cluster audit logs. The
+// returned cleanup function shuts down the broadcaster, flushing any
+// buffered events before the process exits.
+func buildEventEmitter(cs kubernetes.Interface, bs *v1alpha1.BackupSource) (backup.EventEmitter, func()) {
 	s := runtime.NewScheme()
 	_ = scheme.AddToScheme(s)
+	_ = v1alpha1.AddToScheme(s)
 	eventBroadcaster := record.NewBroadcaster()
 	eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{
-		Interface: cs.CoreV1().Events(sec.Namespace),
+		Interface: cs.CoreV1().Events(bs.Namespace),
 	})
 	recorder := eventBroadcaster.NewRecorder(s, corev1.EventSource{Component: "backup-worker"})
 	ref := &corev1.ObjectReference{
-		Kind:       "Secret",
-		Namespace:  sec.Namespace,
-		Name:       sec.Name,
-		UID:        sec.UID,
-		APIVersion: "v1",
+		Kind:       v1alpha1.KindBackupSource,
+		Namespace:  bs.Namespace,
+		Name:       bs.Name,
+		UID:        bs.UID,
+		APIVersion: v1alpha1.GroupVersion.String(),
 	}
-	return &secretEventEmitter{recorder: recorder, ref: ref}, eventBroadcaster.Shutdown
+	return &sourceEventEmitter{recorder: recorder, ref: ref}, eventBroadcaster.Shutdown
 }
 
 func die(format string, args ...any) {

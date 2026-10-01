@@ -234,7 +234,7 @@ async function renderDashboard(loading = true) {
     <div class="table-card">
       <div class="table-card-header">
         <h2>${tr('page.dashboard.targets')}</h2>
-        <button class="btn btn-primary btn-sm" onclick="location.hash='#/sources';openSourceForm()" title="Create a new backup source — opens a form that generates a labelled Kubernetes Secret">+ ${tr('buttons.addSource')}</button>
+        <button class="btn btn-primary btn-sm" onclick="location.hash='#/sources';openSourceForm()" title="Create a new backup source — opens a form that creates a BackupSource plus a credentials Secret">+ ${tr('buttons.addSource')}</button>
       </div>
       ${targets.length === 0 ? `<div class="empty-state"><h3>${tr('page.dashboard.noTargets')}</h3><p>${tr('page.dashboard.noTargetsHint')}</p></div>` : `
       <table>
@@ -271,10 +271,10 @@ async function renderDashboard(loading = true) {
           <td style="white-space:nowrap">
             <button class="btn btn-ghost btn-sm" onclick="triggerBackup('${escJS(t.Name)}')" title="Trigger a manual backup run now (creates a one-off Job from the CronJob template)">&#9654;</button>
             ${t.Suspended
-              ? `<button class="btn btn-ghost btn-sm" style="color:var(--success)" onclick="toggleSourceSuspend('${escJS(t.SecretName)}','${escJS(t.Name)}',false)" title="Resume scheduled runs">&#9655;&#9655;</button>`
-              : `<button class="btn btn-ghost btn-sm" style="color:var(--warning)" onclick="toggleSourceSuspend('${escJS(t.SecretName)}','${escJS(t.Name)}',true)" title="Pause scheduled runs — sets backup.mogenius.io/suspended=true. Existing dumps kept; manual triggers still work.">&#10074;&#10074;</button>`}
-            <button class="btn btn-ghost btn-sm" onclick="openSourceForm('${escJS(t.SecretName)}')" title="Edit this source's connection details and schedule">&#9998;</button>
-            <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteSource('${escJS(t.SecretName)}','${escJS(t.Name)}')" title="Delete this source — the CronJob is cascaded; existing dumps in storage are kept">&#10005;</button>
+              ? `<button class="btn btn-ghost btn-sm" style="color:var(--success)" onclick="toggleSourceSuspend('${escJS(t.ObjectName)}','${escJS(t.Name)}',false)" title="Resume scheduled runs">&#9655;&#9655;</button>`
+              : `<button class="btn btn-ghost btn-sm" style="color:var(--warning)" onclick="toggleSourceSuspend('${escJS(t.ObjectName)}','${escJS(t.Name)}',true)" title="Pause scheduled runs — sets spec.suspended=true on the BackupSource. Existing dumps kept; manual triggers still work.">&#10074;&#10074;</button>`}
+            <button class="btn btn-ghost btn-sm" onclick="openSourceForm('${escJS(t.ObjectName)}')" title="Edit this source's connection details and schedule">&#9998;</button>
+            <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteSource('${escJS(t.ObjectName)}','${escJS(t.Name)}')" title="Delete this BackupSource — the CronJob is cascaded; existing dumps in storage are kept">&#10005;</button>
           </td>
         </tr>`).join('')}</tbody>
       </table>`}
@@ -377,7 +377,7 @@ async function renderSources(loading = true) {
         ${targets.length > 0 ? renderSortControl('sources', [
           ['createdAt', tr('table.createdAt')],['name', tr('common.name')],['lastRun', tr('table.lastRun')],['dbType', tr('common.type')],
         ]) : ''}
-        <button class="btn btn-primary" onclick="openSourceForm()" title="Create a new backup source — opens a form that generates a labelled Kubernetes Secret">+ ${tr('buttons.addSource')}</button>
+        <button class="btn btn-primary" onclick="openSourceForm()" title="Create a new backup source — opens a form that creates a BackupSource plus a credentials Secret">+ ${tr('buttons.addSource')}</button>
       </div>
     </div>
     ${targets.length === 0 ? `
@@ -412,10 +412,10 @@ async function renderSources(loading = true) {
         <div style="display:flex;gap:6px;margin-top:12px;justify-content:flex-end">
           <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();triggerBackup('${escJS(t.Name)}')" title="Trigger a manual backup run now (creates a one-off Job from the CronJob template; pause-state ignored for manual triggers)">&#9654; ${tr('buttons.run')}</button>
           ${t.Suspended
-            ? `<button class="btn btn-ghost btn-sm" style="color:var(--success)" onclick="event.stopPropagation();toggleSourceSuspend('${escJS(t.SecretName)}','${escJS(t.Name)}',false)" title="Resume scheduled runs — the reconciler clears Spec.Suspend on the managed CronJob within seconds">${tr('buttons.resume')}</button>`
-            : `<button class="btn btn-ghost btn-sm" style="color:var(--warning)" onclick="event.stopPropagation();toggleSourceSuspend('${escJS(t.SecretName)}','${escJS(t.Name)}',true)" title="Pause scheduled runs — sets backup.mogenius.io/suspended=true on the source Secret. Existing dumps and config are kept; manual Run still works.">${tr('buttons.pause')}</button>`}
-          <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openSourceForm('${escJS(t.SecretName)}')" title="Edit this source's connection details and schedule">${tr('common.edit')}</button>
-          <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="event.stopPropagation();deleteSource('${escJS(t.SecretName)}','${escJS(t.Name)}')" title="Delete this source — the managed CronJob is removed via OwnerReference; existing dumps in storage are kept">${tr('common.delete')}</button>
+            ? `<button class="btn btn-ghost btn-sm" style="color:var(--success)" onclick="event.stopPropagation();toggleSourceSuspend('${escJS(t.ObjectName)}','${escJS(t.Name)}',false)" title="Resume scheduled runs — the reconciler clears Spec.Suspend on the managed CronJob within seconds">${tr('buttons.resume')}</button>`
+            : `<button class="btn btn-ghost btn-sm" style="color:var(--warning)" onclick="event.stopPropagation();toggleSourceSuspend('${escJS(t.ObjectName)}','${escJS(t.Name)}',true)" title="Pause scheduled runs — sets spec.suspended=true on the BackupSource. Existing dumps and config are kept; manual Run still works.">${tr('buttons.pause')}</button>`}
+          <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();openSourceForm('${escJS(t.ObjectName)}')" title="Edit this source's connection details and schedule">${tr('common.edit')}</button>
+          <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="event.stopPropagation();deleteSource('${escJS(t.ObjectName)}','${escJS(t.Name)}')" title="Delete this BackupSource — the managed CronJob is removed via OwnerReference; existing dumps in storage are kept">${tr('common.delete')}</button>
         </div>
       </div>`).join('')}
     </div>`}`;
@@ -463,11 +463,11 @@ function refreshPhase2RBACWarning(formEl, caps) {
   banner.innerHTML = '⚠ ' + escHTML(tr('banner.phase2RBAC')) + (caps.reason ? ' ' + escHTML(caps.reason) : '');
 }
 
-window.openSourceForm = function(secretName) {
-  const isEdit = !!secretName;
+window.openSourceForm = function(objectName) {
+  const isEdit = !!objectName;
   const title = isEdit ? tr('form.source.editTitle') : tr('form.source.createTitle');
 
-  let formHTML = `<form id="sourceForm" onsubmit="submitSourceForm(event, '${secretName || ''}')">
+  let formHTML = `<form id="sourceForm" onsubmit="submitSourceForm(event, '${objectName || ''}')">
     <div class="form-row">
       <div class="form-group"><label>${tr('form.source.label.name')} *</label>
         <input name="name" required placeholder="${tr('form.source.placeholder.name')}" ${isEdit ? 'disabled' : ''}></div>
@@ -584,7 +584,7 @@ window.openSourceForm = function(secretName) {
     </div>
     <div class="form-actions">
       <button type="button" class="btn btn-secondary" onclick="closeModal()" title="Discard changes and close this dialog">${tr('common.cancel')}</button>
-      <button type="submit" class="btn btn-primary" title="${isEdit ? 'Save the modified source Secret — the operator reconciles changes within seconds' : 'Create the source Secret — the operator generates a CronJob within seconds'}">${isEdit ? tr('common.update') : tr('common.create')}</button>
+      <button type="submit" class="btn btn-primary" title="${isEdit ? 'Save the BackupSource — the operator reconciles changes within seconds' : 'Create the BackupSource — the operator generates a CronJob within seconds'}">${isEdit ? tr('common.update') : tr('common.create')}</button>
     </div>
   </form>`;
 
@@ -627,7 +627,7 @@ window.openSourceForm = function(secretName) {
   if (!isEdit) loadDestinationsPicker('');
 
   if (isEdit) {
-    api('/api/sources/' + secretName).then(src => {
+    api('/api/sources/' + objectName).then(src => {
       const f = $('#sourceForm');
       f.name.value = src.name || '';
       f.dbType.value = src.dbType || '';
@@ -697,7 +697,7 @@ function loadDestinationsPicker(currentValue) {
       // Ghost entry: not in the cluster right now (renamed / deleted /
       // different namespace). Keep it checked so Save doesn't drop it; the
       // disabled checkbox tells the user something is off.
-      rows.push(`<label class="ms-missing" title="This destination is in the saved allow-list but no destination Secret with that logical name currently exists.">
+      rows.push(`<label class="ms-missing" title="This destination is in the saved allow-list but no BackupDestination with that name currently exists.">
         <input type="checkbox" value="${escAttr(name)}" checked disabled data-ghost="1">
         <span>${escHTML(name)}</span>
         <span class="ms-meta">missing</span>
@@ -718,7 +718,7 @@ function loadDestinationsPicker(currentValue) {
   });
 }
 
-window.submitSourceForm = async function(e, secretName) {
+window.submitSourceForm = async function(e, objectName) {
   e.preventDefault();
   const f = e.target;
   // Tri-state selects: empty string = "use default" → don't send the field at
@@ -756,8 +756,8 @@ window.submitSourceForm = async function(e, secretName) {
     compression: f.compression.value,
   };
   try {
-    if (secretName) {
-      await api('/api/sources/' + secretName, { method: 'PUT', body: JSON.stringify(body) });
+    if (objectName) {
+      await api('/api/sources/' + objectName, { method: 'PUT', body: JSON.stringify(body) });
       toast(tr('toast.sourceUpdated'), 'success');
     } else {
       await api('/api/sources', { method: 'POST', body: JSON.stringify(body) });
@@ -770,18 +770,18 @@ window.submitSourceForm = async function(e, secretName) {
   }
 };
 
-window.deleteSource = function(secretName, displayName) {
+window.deleteSource = function(objectName, displayName) {
   openModal(tr('modal.delete.title', {name: displayName}), `
     <div class="confirm-text">${tr('modal.delete.warning')}</div>
     <div class="form-actions">
       <button class="btn btn-secondary" onclick="closeModal()" title="Keep this source — close without deleting">${tr('common.cancel')}</button>
-      <button class="btn btn-danger" onclick="confirmDeleteSource('${escJS(secretName)}')" title="Permanently delete the source Secret. The CronJob is cascaded via OwnerReference; existing dumps in storage remain.">${tr('common.delete')}</button>
+      <button class="btn btn-danger" onclick="confirmDeleteSource('${escJS(objectName)}')" title="Permanently delete the BackupSource. The CronJob and the UI-managed credentials Secret are cascaded via OwnerReference; existing dumps in storage remain.">${tr('common.delete')}</button>
     </div>`);
 };
 
-window.confirmDeleteSource = async function(secretName) {
+window.confirmDeleteSource = async function(objectName) {
   try {
-    await api('/api/sources/' + secretName, { method: 'DELETE' });
+    await api('/api/sources/' + objectName, { method: 'DELETE' });
     toast(tr('toast.sourceDeleted'), 'success');
     closeModal();
     location.hash = '#/sources';
@@ -870,9 +870,9 @@ async function renderDestinations(loading = true) {
             <div style="font-weight:600;font-size:15px;color:var(--text-heading)">${escHTML(d.name)}</div>
             <span class="badge badge-${d.storageType}" style="margin-top:6px">${d.storageType}</span>
           </div>
-          <span class="dest-status" id="dest-status-${escAttr(d.secretName)}"></span>
+          <span class="dest-status" id="dest-status-${escAttr(d.objectName)}"></span>
         </div>
-        <div class="detail-row"><span class="key">Secret</span><code class="val">${escHTML(d.secretName)}</code></div>
+        <div class="detail-row"><span class="key">${tr('row.credentials')}</span><code class="val">${escHTML(d.credentialsSecret || '—')}</code></div>
         <div class="detail-row"><span class="key">${tr('form.destination.label.host')}</span><span class="val">${escHTML(d.host || '—')}</span></div>
         <div class="detail-row"><span class="key">${tr('form.destination.label.pathPrefix')}</span><span class="val">${escHTML(d.pathPrefix || '/')}</span></div>
         <div class="detail-row"><span class="key">${tr('table.createdAt')}</span><span class="val">${d.createdAt ? timeAgo(d.createdAt) : '—'}</span></div>
@@ -887,9 +887,9 @@ async function renderDestinations(loading = true) {
           ${tr('card.storageUnreachable')}: ${escHTML(st.error)}
         </div>` : ''}
         <div style="display:flex;gap:6px;margin-top:12px;justify-content:flex-end">
-          <button class="btn btn-ghost btn-sm" onclick="testDestConnection('${escJS(d.secretName)}','${escJS(d.name)}')" title="Probe this destination — verifies SSH/SFTP login or S3 bucket access without uploading anything">&#128268; ${tr('buttons.test')}</button>
-          <button class="btn btn-ghost btn-sm" onclick="openDestForm('${escJS(d.secretName)}')" title="Edit this destination's credentials and connection details">${tr('common.edit')}</button>
-          <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteDest('${escJS(d.secretName)}','${escJS(d.name)}')" title="Delete this destination Secret. Existing dumps stored at this destination remain intact.">${tr('common.delete')}</button>
+          <button class="btn btn-ghost btn-sm" onclick="testDestConnection('${escJS(d.objectName)}','${escJS(d.name)}')" title="Probe this destination — verifies SSH/SFTP login or S3 bucket access without uploading anything">&#128268; ${tr('buttons.test')}</button>
+          <button class="btn btn-ghost btn-sm" onclick="openDestForm('${escJS(d.objectName)}')" title="Edit this destination's credentials and connection details">${tr('common.edit')}</button>
+          <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteDest('${escJS(d.objectName)}','${escJS(d.name)}')" title="Delete this BackupDestination. Existing dumps stored at this destination remain intact.">${tr('common.delete')}</button>
         </div>
       </div>`;
       }).join('')}
@@ -897,8 +897,8 @@ async function renderDestinations(loading = true) {
 }
 
 // --- Destination Form ---
-window.openDestForm = function(secretName) {
-  const isEdit = !!secretName;
+window.openDestForm = function(objectName) {
+  const isEdit = !!objectName;
   const title = isEdit ? tr('form.destination.editTitle') : tr('form.destination.createTitle');
 
   const sftpFields = `
@@ -982,7 +982,7 @@ window.openDestForm = function(secretName) {
       <div class="hint">${tr('form.destination.hint.serviceAccountJson')}</div>
     </div>`;
 
-  openModal(title, `<form id="destForm" onsubmit="submitDestForm(event, '${secretName || ''}')">
+  openModal(title, `<form id="destForm" onsubmit="submitDestForm(event, '${objectName || ''}')">
     <div class="form-row">
       <div class="form-group"><label>${tr('common.name')} *</label><input name="name" required placeholder="${tr('form.destination.placeholder.name')}" ${isEdit ? 'disabled' : ''}></div>
       <div class="form-group"><label>${tr('form.destination.label.type')} *</label>
@@ -1000,7 +1000,7 @@ window.openDestForm = function(secretName) {
     <div id="destTypeFields"></div>
     <div class="form-actions">
       <button type="button" class="btn btn-secondary" onclick="closeModal()" title="Discard changes and close this dialog">${tr('common.cancel')}</button>
-      <button type="submit" class="btn btn-primary" title="${isEdit ? 'Save the modified destination Secret — the operator picks up changes on the next run' : 'Create the destination Secret — sources can target it via the destinations annotation or pick it up on next run if the source has no allow-list'}">${isEdit ? tr('common.update') : tr('common.create')}</button>
+      <button type="submit" class="btn btn-primary" title="${isEdit ? 'Save the BackupDestination — the operator picks up changes on the next run' : 'Create the BackupDestination — sources can target it via spec.destinations or pick it up on next run if the source has no allow-list'}">${isEdit ? tr('common.update') : tr('common.create')}</button>
     </div>
   </form>
   <div id="destSFTPTemplate" style="display:none">${sftpFields}</div>
@@ -1010,7 +1010,7 @@ window.openDestForm = function(secretName) {
   <div id="destGCSTemplate" style="display:none">${gcsFields}</div>`);
 
   if (isEdit) {
-    api('/api/destinations/' + secretName).then(d => {
+    api('/api/destinations/' + objectName).then(d => {
       const f = $('#destForm');
       f.name.value = d.name || '';
       f.storageType.value = d.storageType || '';
@@ -1081,7 +1081,7 @@ const DEST_SENSITIVE_KEYS = new Set([
   'access-key-id', 'account-key', 'service-account-json',
 ]);
 
-window.submitDestForm = async function(e, secretName) {
+window.submitDestForm = async function(e, objectName) {
   e.preventDefault();
   const f = e.target;
   const data = {};
@@ -1097,7 +1097,7 @@ window.submitDestForm = async function(e, secretName) {
     }
     if (inp.value) {
       data[key] = inp.value;
-    } else if (secretName && !DEST_SENSITIVE_KEYS.has(key)) {
+    } else if (objectName && !DEST_SENSITIVE_KEYS.has(key)) {
       // Edit-mode only: explicit clear of a non-sensitive field.
       // On create we just omit the empty field.
       removeKeys.push(key);
@@ -1128,8 +1128,8 @@ window.submitDestForm = async function(e, secretName) {
     removeKeys: removeKeys,
   };
   try {
-    if (secretName) {
-      await api('/api/destinations/' + secretName, { method: 'PUT', body: JSON.stringify(body) });
+    if (objectName) {
+      await api('/api/destinations/' + objectName, { method: 'PUT', body: JSON.stringify(body) });
       toast(tr('toast.destinationUpdated'), 'success');
     } else {
       await api('/api/destinations', { method: 'POST', body: JSON.stringify(body) });
@@ -1140,13 +1140,13 @@ window.submitDestForm = async function(e, secretName) {
   } catch(e) { toast(e.message, 'error'); }
 };
 
-window.testDestConnection = async function(secretName, displayName) {
-  const el = document.getElementById('dest-status-' + secretName);
+window.testDestConnection = async function(objectName, displayName) {
+  const el = document.getElementById('dest-status-' + objectName);
   if (el) { el.innerHTML = `<span class="badge badge-pending">${tr('badge.testing')}</span>`; }
   try {
     // User-initiated probe: the server bounds it at 15 s (upload+readback),
     // so allow more than the default client timeout before giving up.
-    const result = await api('/api/destinations/' + secretName + '/test', { method: 'POST', timeoutMs: 30000 });
+    const result = await api('/api/destinations/' + objectName + '/test', { method: 'POST', timeoutMs: 30000 });
     if (result.ok) {
       if (el) el.innerHTML = `<span class="badge badge-ok">${tr('badge.connected')}</span>`;
       toast(displayName + ': ' + tr('badge.ok'), 'success');
@@ -1160,18 +1160,18 @@ window.testDestConnection = async function(secretName, displayName) {
   }
 };
 
-window.deleteDest = function(secretName, displayName) {
+window.deleteDest = function(objectName, displayName) {
   openModal(tr('modal.delete.title', {name: displayName}), `
     <div class="confirm-text">${tr('modal.delete.warning')}</div>
     <div class="form-actions">
       <button class="btn btn-secondary" onclick="closeModal()" title="Keep this destination — close without deleting">${tr('common.cancel')}</button>
-      <button class="btn btn-danger" onclick="confirmDeleteDest('${escJS(secretName)}')" title="Permanently delete the destination Secret. Sources will skip it on next run; existing dumps in storage remain.">${tr('common.delete')}</button>
+      <button class="btn btn-danger" onclick="confirmDeleteDest('${escJS(objectName)}')" title="Permanently delete the BackupDestination. Sources will skip it on next run; existing dumps in storage remain.">${tr('common.delete')}</button>
     </div>`);
 };
 
-window.confirmDeleteDest = async function(secretName) {
+window.confirmDeleteDest = async function(objectName) {
   try {
-    await api('/api/destinations/' + secretName, { method: 'DELETE' });
+    await api('/api/destinations/' + objectName, { method: 'DELETE' });
     toast(tr('toast.destinationDeleted'), 'success');
     closeModal();
     renderDestinations();
@@ -2006,8 +2006,8 @@ async function renderTargetDetail(name, loading = true) {
       </div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-secondary btn-sm" onclick="triggerBackup('${escJS(name)}')" title="Trigger a manual backup run for this target now — creates a one-off Job from the CronJob template">&#9654; ${tr('buttons.runNow')}</button>
-        <button class="btn btn-secondary btn-sm" onclick="openSourceForm('${escJS(target.SecretName)}')" title="Edit this source's connection details and schedule">${tr('common.edit')}</button>
-        <button class="btn btn-danger btn-sm" onclick="deleteSource('${escJS(target.SecretName)}','${escJS(name)}')" title="Permanently delete this source. The CronJob is cascaded; existing dumps remain in storage.">${tr('common.delete')}</button>
+        <button class="btn btn-secondary btn-sm" onclick="openSourceForm('${escJS(target.ObjectName)}')" title="Edit this source's connection details and schedule">${tr('common.edit')}</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteSource('${escJS(target.ObjectName)}','${escJS(name)}')" title="Permanently delete this BackupSource. The CronJob is cascaded; existing dumps remain in storage.">${tr('common.delete')}</button>
       </div>
     </div>
     ${runningJob ? `
@@ -2419,9 +2419,9 @@ window.triggerBackup = async function(targetName) {
 // Pause/resume scheduled runs without deleting the source. Hits the
 // dedicated suspend endpoint so we don't have to send the full source
 // body — that endpoint only patches the suspended annotation.
-window.toggleSourceSuspend = async function(secretName, displayName, suspend) {
+window.toggleSourceSuspend = async function(objectName, displayName, suspend) {
   try {
-    await api('/api/sources/' + secretName + '/suspend', {
+    await api('/api/sources/' + objectName + '/suspend', {
       method: 'POST',
       body: JSON.stringify({ suspend }),
     });
@@ -2433,20 +2433,10 @@ window.toggleSourceSuspend = async function(secretName, displayName, suspend) {
 };
 
 
-// --- Settings Wizard ---
-let settingsStep = 0;
-// Built fresh each call so the active language wins. The result is read
-// dozens of times within a single render — keep callers light by using a
-// local const.
-function getSettingsSteps() {
-  return [
-    { id: 'schedule', title: tr('page.settings.section.schedule'), icon: '&#128339;' },
-    { id: 'retention', title: tr('page.settings.section.retention'), icon: '&#128451;' },
-    { id: 'resources', title: tr('page.settings.section.worker'), icon: '&#9881;' },
-    { id: 'review', title: tr('page.settings.section.review'), icon: '&#10003;' }
-  ];
-}
-
+// --- Settings (read-only operator defaults) ---
+// Fleet-wide defaults are Helm values → env vars; the operator exposes the
+// effective values and can export them as values.yaml. Per-source settings
+// are typed fields on each BackupSource and are edited on the Sources page.
 window.renderSettings = renderSettings;
 async function renderSettings(loading = true) {
   const _gen = _renderGen;
@@ -2464,66 +2454,52 @@ async function renderSettings(loading = true) {
   if (isStaleRender(_gen)) return;
 
   if (!settings) {
-    window._currentSettings = null;
     content.innerHTML = `
       <div class="page-header">
         <div><h1>${tr('page.settings.title')}</h1><div class="subtitle">${tr('page.settings.subtitle')}</div></div>
       </div>
       <div class="empty-state">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09"/></svg>
         <h3>${tr('page.settings.notAvailable')}</h3>
-        <p>${tr('toast.loadFailed', {error: errorMsg || ''})}</p>
-        <p style="margin-top:8px;font-size:0.9em;opacity:0.7">Ensure the operator is deployed with <code>ui.enabled=true</code> and the Docker image is rebuilt after code changes.</p>
-        <button class="btn btn-primary" onclick="renderSettings(true)" style="margin-top:12px" title="Reload the settings ConfigMap from Kubernetes">${tr('buttons.refresh')}</button>
+        <p>${tr('toast.loadFailed', {error: escHTML(errorMsg || '')})}</p>
+        <button class="btn btn-primary" onclick="renderSettings(true)" style="margin-top:12px" title="Reload the operator defaults">${tr('buttons.refresh')}</button>
       </div>`;
     return;
   }
-
-  window._currentSettings = settings;
-  settingsStep = 0;
   renderSettingsPage(settings);
 }
 
-function renderSettingsPage(settings) {
-  const settingsSteps = getSettingsSteps();
+function renderSettingsPage(s) {
+  const v = x => escHTML(x || '') || '—';
   content.innerHTML = `
     <div class="page-header">
-      <div><h1>${tr('page.settings.title')}</h1><div class="subtitle">${tr('page.settings.wizardSubtitle')}</div></div>
+      <div><h1>${tr('page.settings.title')}</h1><div class="subtitle">${tr('page.settings.subtitleRO')}</div></div>
       <div style="display:flex;gap:8px">
-        <button class="btn btn-secondary" onclick="exportSettings()" title="Download a values.yaml snippet matching the current settings — drop into your Helm chart for GitOps-style management">&#8681; ${tr('buttons.exportValues')}</button>
+        <button class="btn btn-secondary" onclick="exportSettings()" title="Download a values.yaml snippet matching the effective defaults — drop into your Helm chart for GitOps-style management">&#8681; ${tr('buttons.exportValues')}</button>
       </div>
     </div>
-    <div class="wizard">
-      <div class="wizard-steps">
-        ${settingsSteps.map((s, i) => `
-          <div class="wizard-step ${i === settingsStep ? 'active' : ''} ${i < settingsStep ? 'done' : ''}" onclick="goToStep(${i})">
-            <div class="wizard-step-num">${i < settingsStep ? '&#10003;' : i + 1}</div>
-            <div class="wizard-step-label">${s.title}</div>
-          </div>
-          ${i < settingsSteps.length - 1 ? '<div class="wizard-step-line"></div>' : ''}
-        `).join('')}
+    <div class="banner banner-info" style="margin-bottom:16px">${tr('page.settings.readOnlyNote')}</div>
+    <div class="review-grid">
+      <div class="detail-card">
+        <h3>${tr('page.settings.section.schedule')}</h3>
+        <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.defaultSchedule')}</span><code class="val">${v(s.defaultSchedule)}</code></div>
+        <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.runTimeout')}</span><span class="val">${v(s.runTimeoutSeconds)}</span></div>
       </div>
-      <form id="settingsForm" onsubmit="submitSettings(event)">
-        <div class="wizard-body">
-          ${renderSettingsStepContent(settingsStep, settings)}
-        </div>
-        <div class="wizard-footer">
-          <div>
-            ${settingsStep > 0 ? '<button type="button" class="btn btn-secondary" onclick="goToStep(' + (settingsStep - 1) + ')" title="Return to the previous wizard step (your changes are preserved)">&#8592; ' + tr('buttons.back') + '</button>' : ''}
-          </div>
-          <div style="display:flex;gap:8px">
-            ${settingsStep < settingsSteps.length - 1
-              ? '<button type="button" class="btn btn-primary" onclick="goToStep(' + (settingsStep + 1) + ')" title="Continue to the next wizard step">' + tr('buttons.next') + ' &#8594;</button>'
-              : '<button type="submit" class="btn btn-primary" title="Persist all settings to the operator\'s ConfigMap. Takes effect immediately for new runs.">' + tr('buttons.applySettings') + '</button>'}
-          </div>
-        </div>
-      </form>
+      <div class="detail-card">
+        <h3>${tr('page.settings.section.retention')}</h3>
+        <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.retentionDays')}</span><span class="val">${v(s.defaultRetentionDays)}</span></div>
+        <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.minKeep')}</span><span class="val">${v(s.defaultMinKeep)}</span></div>
+        <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.tempDir')}</span><code class="val">${v(s.tempDir)}</code></div>
+        <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.tempDirSize')}</span><span class="val">${v(s.tempDirSize)}</span></div>
+      </div>
+      <div class="detail-card">
+        <h3>${tr('page.settings.section.worker')}</h3>
+        <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.cpuLimit')}</span><span class="val">${v(s.workerCpuLimit)}</span></div>
+        <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.memoryLimit')}</span><span class="val">${v(s.workerMemoryLimit)}</span></div>
+        <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.cpuRequest')}</span><span class="val">${v(s.workerCpuRequest)}</span></div>
+        <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.memoryRequest')}</span><span class="val">${v(s.workerMemoryRequest)}</span></div>
+      </div>
     </div>
-    `;
-  // Age-keys management moved to its own page (#/age-keys, see
-  // renderAgeKeys) so the sidebar's active-link highlight and direct
-  // bookmarking work. Keep loadAgeKeysSection() pure so renderAgeKeys
-  // can reuse the existing async-load logic.
+    <div class="wizard-note" style="margin-top:16px">${tr('page.settings.exportHint')}</div>`;
 }
 
 
@@ -2562,7 +2538,7 @@ async function loadAgeKeysSection() {
   host.innerHTML = `
     <div class="table-card-header">
       <h2>${tr('ageKeys.title')}</h2>
-      <span style="color:var(--text-muted);font-size:12px">${keys.length} · Secret: <code>${escHTML(resp.secretName || '—')}</code></span>
+      <span style="color:var(--text-muted);font-size:12px">${keys.length} · ${tr('ageKeys.merged')}: <code>${escHTML(resp.mergedSecret || '—')}</code></span>
     </div>
     <p style="padding:0 16px;color:var(--text-muted);font-size:13px;margin:0 0 12px">
       ${tr('ageKeys.intro')}
@@ -2574,11 +2550,13 @@ async function loadAgeKeysSection() {
         <th class="num row-num">#</th>
         <th>${tr('row.fingerprint')}</th>
         <th>${tr('common.name')}</th>
+        <th>${tr('ageKeys.publicKey') || 'Public Key'}</th>
         ${canMutate ? '<th style="width:1%"></th>' : ''}
       </tr></thead>
       <tbody>${keys.map((k, i) => `<tr>
         <td class="num row-num">${i + 1}</td>
         <td><code style="font-size:12px;background:var(--bg-input);padding:2px 6px;border-radius:4px">${escHTML(k.hash)}</code></td>
+        <td><code style="font-size:12px">${escHTML(k.name || '')}</code></td>
         <td><code style="font-size:11px;word-break:break-all">${escHTML(k.recipient)}</code></td>
         ${canMutate ? `<td style="white-space:nowrap">
           <button class="btn btn-ghost btn-sm" style="color:var(--danger)"
@@ -2635,155 +2613,6 @@ window.removeAgeKey = async function(recipient, hash) {
     loadAgeKeysSection();
   } catch(e) {
     toast(tr('ageKeys.removeFailed', {error: e.message}), 'error');
-  }
-};
-
-function renderSettingsStepContent(step, s) {
-  switch(step) {
-    case 0: return `
-      <h3>${tr('page.settings.section.schedule')}</h3>
-      <p class="wizard-desc">${tr('page.settings.wizard.scheduleDesc')}</p>
-      <div class="form-group">
-        <label for="defaultSchedule">${tr('page.settings.wizard.label.defaultSchedule')}</label>
-        <input type="text" id="defaultSchedule" name="defaultSchedule" value="${escAttr(s.defaultSchedule)}" placeholder="0 2 * * *">
-        <div class="hint">${tr('page.settings.wizard.hint.schedule')}</div>
-      </div>
-      <div class="form-group">
-        <label for="runTimeoutSeconds">${tr('page.settings.wizard.label.runTimeout')}</label>
-        <input type="number" id="runTimeoutSeconds" name="runTimeoutSeconds" value="${escAttr(s.runTimeoutSeconds)}" placeholder="3600" min="0">
-        <div class="hint">${tr('page.settings.wizard.hint.timeout')}</div>
-      </div>`;
-
-    case 1: return `
-      <h3>${tr('page.settings.section.retention')}</h3>
-      <p class="wizard-desc">${tr('page.settings.wizard.retentionDesc')}</p>
-      <div class="form-row">
-        <div class="form-group">
-          <label for="defaultRetentionDays">${tr('page.settings.wizard.label.retentionDays')}</label>
-          <input type="number" id="defaultRetentionDays" name="defaultRetentionDays" value="${escAttr(s.defaultRetentionDays)}" placeholder="30" min="0">
-          <div class="hint">${tr('page.settings.wizard.hint.retentionDays')}</div>
-        </div>
-        <div class="form-group">
-          <label for="defaultMinKeep">${tr('page.settings.wizard.label.minKeep')}</label>
-          <input type="number" id="defaultMinKeep" name="defaultMinKeep" value="${escAttr(s.defaultMinKeep)}" placeholder="3" min="0">
-          <div class="hint">${tr('page.settings.wizard.hint.minKeep')}</div>
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label for="tempDir">${tr('page.settings.wizard.label.tempDir')}</label>
-          <input type="text" id="tempDir" name="tempDir" value="${escAttr(s.tempDir)}" placeholder="/tmp/backup-operator">
-          <div class="hint">${tr('page.settings.wizard.hint.tempDir')}</div>
-        </div>
-        <div class="form-group">
-          <label for="tempDirSize">${tr('page.settings.wizard.label.tempDirSize')}</label>
-          <input type="text" id="tempDirSize" name="tempDirSize" value="${escAttr(s.tempDirSize)}" placeholder="10Gi">
-          <div class="hint">${tr('page.settings.wizard.hint.tempDirSize')}</div>
-        </div>
-      </div>`;
-
-    case 2: return `
-      <h3>${tr('page.settings.section.worker')}</h3>
-      <p class="wizard-desc">${tr('page.settings.wizard.workerDesc')}</p>
-      <div class="form-section">
-        <h4>${tr('page.settings.wizard.limits')}</h4>
-        <div class="form-row">
-          <div class="form-group">
-            <label for="workerCpuLimit">${tr('page.settings.wizard.label.cpuLimit')}</label>
-            <input type="text" id="workerCpuLimit" name="workerCpuLimit" value="${escAttr(s.workerCpuLimit)}" placeholder="2000m">
-            <div class="hint">${tr('page.settings.wizard.hint.cpuLimit')}</div>
-          </div>
-          <div class="form-group">
-            <label for="workerMemoryLimit">${tr('page.settings.wizard.label.memoryLimit')}</label>
-            <input type="text" id="workerMemoryLimit" name="workerMemoryLimit" value="${escAttr(s.workerMemoryLimit)}" placeholder="2Gi">
-            <div class="hint">${tr('page.settings.wizard.hint.memoryLimit')}</div>
-          </div>
-        </div>
-      </div>
-      <div class="form-section">
-        <h4>${tr('page.settings.wizard.requests')}</h4>
-        <div class="form-row">
-          <div class="form-group">
-            <label for="workerCpuRequest">${tr('page.settings.wizard.label.cpuRequest')}</label>
-            <input type="text" id="workerCpuRequest" name="workerCpuRequest" value="${escAttr(s.workerCpuRequest)}" placeholder="250m">
-            <div class="hint">${tr('page.settings.wizard.hint.cpuRequest')}</div>
-          </div>
-          <div class="form-group">
-            <label for="workerMemoryRequest">${tr('page.settings.wizard.label.memoryRequest')}</label>
-            <input type="text" id="workerMemoryRequest" name="workerMemoryRequest" value="${escAttr(s.workerMemoryRequest)}" placeholder="256Mi">
-            <div class="hint">${tr('page.settings.wizard.hint.memoryRequest')}</div>
-          </div>
-        </div>
-      </div>`;
-
-    case 3:
-      return `
-      <h3>${tr('page.settings.section.review')}</h3>
-      <p class="wizard-desc">${tr('page.settings.wizard.reviewDesc')}</p>
-      <div class="review-grid">
-        <div class="detail-card">
-          <h3>${tr('page.settings.section.schedule')}</h3>
-          <div class="detail-row"><span class="key">${tr('table.schedule')}</span><code class="val">${escHTML(s.defaultSchedule)}</code></div>
-          <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.timeout')}</span><span class="val">${escHTML(s.runTimeoutSeconds)}s</span></div>
-        </div>
-        <div class="detail-card">
-          <h3>${tr('page.settings.section.retention')}</h3>
-          <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.retentionDays')}</span><span class="val">${escHTML(s.defaultRetentionDays)}</span></div>
-          <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.minKeep')}</span><span class="val">${escHTML(s.defaultMinKeep)}</span></div>
-          <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.tempDir')}</span><code class="val">${escHTML(s.tempDir)}</code></div>
-          <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.tempDirSize')}</span><span class="val">${escHTML(s.tempDirSize)}</span></div>
-        </div>
-        <div class="detail-card">
-          <h3>${tr('page.settings.section.worker')}</h3>
-          <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.cpuLimit')}</span><span class="val">${escHTML(s.workerCpuLimit) || '—'}</span></div>
-          <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.memoryLimit')}</span><span class="val">${escHTML(s.workerMemoryLimit) || '—'}</span></div>
-          <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.cpuRequest')}</span><span class="val">${escHTML(s.workerCpuRequest) || '—'}</span></div>
-          <div class="detail-row"><span class="key">${tr('page.settings.wizard.label.memoryRequest')}</span><span class="val">${escHTML(s.workerMemoryRequest) || '—'}</span></div>
-        </div>
-      </div>
-      <div class="wizard-note">
-        ${tr('page.settings.wizard.note')}
-      </div>`;
-  }
-}
-
-window.goToStep = function(n) {
-  // Collect current form values into _currentSettings before navigating.
-  const form = $('#settingsForm');
-  if (form && window._currentSettings) {
-    const fd = new FormData(form);
-    for (const [k, v] of fd.entries()) {
-      window._currentSettings[k] = v;
-    }
-  }
-  settingsStep = Math.max(0, Math.min(n, getSettingsSteps().length - 1));
-  // Re-render from cached settings without refetching from the API.
-  renderSettingsPage(window._currentSettings);
-};
-
-window.submitSettings = async function(e) {
-  e.preventDefault();
-  const form = $('#settingsForm');
-  if (form && window._currentSettings) {
-    const fd = new FormData(form);
-    for (const [k, v] of fd.entries()) {
-      window._currentSettings[k] = v;
-    }
-  }
-  const s = window._currentSettings;
-  if (!s) { toast('No settings loaded — please reload the page', 'error'); return; }
-
-  const btn = form ? form.querySelector('[type="submit"]') : null;
-  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
-
-  try {
-    await api('/api/settings', { method: 'PUT', body: JSON.stringify(s) });
-    toast(tr('toast.settingsSaved'), 'success');
-  } catch(e) {
-    console.error('[Settings] Save failed:', e.message);
-    toast(tr('toast.saveFailed', {error: e.message}), 'error');
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Save Settings'; }
   }
 };
 

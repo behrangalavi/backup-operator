@@ -185,7 +185,9 @@
           "cpuRequest": "CPU minimum garanti",
           "memoryRequest": "Mémoire minimum garantie"
         }
-      }
+      },
+      "readOnlyNote": "Les valeurs par défaut de l’opérateur sont gérées par le chart Helm (values.yaml → variables d’environnement). Les réglages par source sont typés sur chaque BackupSource. Exportez les valeurs ci-dessous puis lancez helm upgrade pour les modifier.",
+      "subtitleRO": "Valeurs par défaut effectives de l’opérateur (lecture seule)"
     }
   },
   "table": {
@@ -444,7 +446,8 @@
     "removeFailed": "Échec de la suppression : {error}",
     "removeConfirm": "Supprimer le destinataire {name} ? Les pods worker ne chiffreront plus pour cette clé. Les dumps existants restent déchiffrables avec la clé privée correspondante.",
     "readOnly": "Mode lecture seule — la modification des destinataires est désactivée.",
-    "subtitle": "Clés publiques des destinataires age auxquelles l'opérateur chiffre les sauvegardes."
+    "subtitle": "Clés publiques des destinataires age auxquelles l'opérateur chiffre les sauvegardes.",
+    "merged": "Secret fusionné"
   },
   "hero": {
     "status": {
@@ -717,7 +720,8 @@
   "row": {
     "charset": "Charset",
     "download": "Téléchargement",
-    "fingerprint": "Empreinte"
+    "fingerprint": "Empreinte",
+    "credentials": "Identifiants"
   },
   "banner": {
     "localEvaluator": "Affichage des alertes évaluées localement (sans for:). Configurez alerts.prometheusURL pour la vue Prometheus de référence.",

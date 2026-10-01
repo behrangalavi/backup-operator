@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"backup-operator/internal/scheduler"
 )
 
 // --- Input validation helpers ---
@@ -44,10 +46,9 @@ func isSupportedDBType(t string) bool {
 }
 
 // validateCronSchedule validates a cron expression using the same 5-field
-// parser Kubernetes CronJobs use. Catches field-count errors AND invalid
-// values (e.g. minute=99) that the old len-only check missed.
+// parser (plus @daily-style descriptors) Kubernetes CronJobs accept.
 func validateCronSchedule(schedule string) string {
-	if _, err := cronParser.Parse(schedule); err != nil {
+	if err := scheduler.ValidateSchedule(schedule); err != nil {
 		return fmt.Sprintf("invalid cron schedule: %v", err)
 	}
 	return ""

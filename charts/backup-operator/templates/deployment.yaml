@@ -68,6 +68,23 @@ spec:
               value: {{ include "backup-operator.fullname" . }}-worker
             - name: AGE_SECRET_NAME
               value: {{ include "backup-operator.fullname" . }}-age
+            {{- /* Age recipients from values, seeded as BackupRecipient objects
+                   by the operator at startup. Shipped as an env var rather than
+                   as CR manifests because Helm applies templated CRDs and CRs
+                   in one batch; a CR whose CRD is not yet established fails
+                   the first install. Accepts the array form (recommended) or
+                   a string (single key or newline-separated). */}}
+            {{- $keys := list }}
+            {{- if kindIs "slice" .Values.agePublicKeys }}
+              {{- range .Values.agePublicKeys }}{{- $line := trim . }}{{- if $line }}{{- $keys = append $keys $line }}{{- end }}{{- end }}
+            {{- else if .Values.agePublicKeys }}
+              {{- range (regexSplit "\n" .Values.agePublicKeys -1) }}{{- $line := trim . }}{{- if $line }}{{- $keys = append $keys $line }}{{- end }}{{- end }}
+            {{- end }}
+            {{- if not $keys }}
+            {{- fail "agePublicKeys is required: set at least one age recipient public key (age1...)" }}
+            {{- end }}
+            - name: BOOTSTRAP_AGE_RECIPIENTS
+              value: {{ join "," $keys | quote }}
             {{- with .Values.workerResources }}
             {{- if .limits }}
             {{- if .limits.cpu }}
@@ -97,8 +114,6 @@ spec:
               value: "true"
             - name: UI_ADDR
               value: ":{{ .Values.ui.port }}"
-            - name: SETTINGS_CONFIGMAP
-              value: {{ include "backup-operator.fullname" . }}-settings
             - name: UI_READ_ONLY
               value: {{ .Values.ui.readOnly | default false | quote }}
             - name: UI_ALLOW_KEY_MUTATION

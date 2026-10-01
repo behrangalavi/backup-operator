@@ -185,7 +185,9 @@
           "cpuRequest": "Garantiertes CPU-Minimum",
           "memoryRequest": "Garantierter Speicher-Mindestwert"
         }
-      }
+      },
+      "readOnlyNote": "Operator-Defaults werden über das Helm-Chart verwaltet (values.yaml → Env-Variablen). Pro-Source-Einstellungen liegen typisiert auf jeder BackupSource. Exportiere die Werte unten und führe helm upgrade aus, um sie zu ändern.",
+      "subtitleRO": "Effektive Operator-Defaults (nur lesend)"
     }
   },
   "table": {
@@ -444,7 +446,8 @@
     "removeFailed": "Entfernen fehlgeschlagen: {error}",
     "removeConfirm": "Empfänger {name} entfernen? Worker-Pods verschlüsseln nicht mehr für diesen Key. Vorhandene Dumps bleiben mit dem zugehörigen Private Key entschlüsselbar.",
     "readOnly": "Nur-Lese-Modus — Änderung von Empfängern deaktiviert.",
-    "subtitle": "Age-Empfänger-Public-Keys, für die der Operator Backups verschlüsselt."
+    "subtitle": "Age-Empfänger-Public-Keys, für die der Operator Backups verschlüsselt.",
+    "merged": "Zusammengeführtes Secret"
   },
   "hero": {
     "status": {
@@ -717,7 +720,8 @@
   "row": {
     "charset": "Charset",
     "download": "Download",
-    "fingerprint": "Fingerprint"
+    "fingerprint": "Fingerprint",
+    "credentials": "Zugangsdaten"
   },
   "banner": {
     "localEvaluator": "Zeige lokal ausgewertete Alarme (ohne for:-Debounce). Setze alerts.prometheusURL für die verbindliche Prometheus-Sicht.",

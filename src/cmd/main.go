@@ -1,4 +1,4 @@
-// Operator — reconciles labeled source Secrets to managed K8s CronJobs.
+// Operator — reconciles BackupSource objects to managed K8s CronJobs.
 // It does not run backups itself; CronJob-spawned Job pods do, executing
 // the worker binary (cmd/worker).
 package main
@@ -17,6 +17,8 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -25,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
+	"backup-operator/api/v1alpha1"
 	"backup-operator/assert"
 	"backup-operator/config"
 	"backup-operator/controllers"
@@ -108,6 +111,12 @@ func main() {
 		{Key: "WORKER_IMAGE_PULL_SECRETS", Optional: true},
 		{Key: "WORKER_SERVICE_ACCOUNT", Optional: false},
 		{Key: "AGE_SECRET_NAME", Optional: false},
+		// Comma- or newline-separated age recipients the chart was installed
+		// with. Seeded into BackupRecipient objects at startup (idempotent) —
+		// the chart cannot ship them as CRs because Helm applies templated
+		// CRDs and CRs in one batch, and a CR whose CRD is not yet established
+		// fails the very first install.
+		{Key: "BOOTSTRAP_AGE_RECIPIENTS", Optional: true},
 
 		// Worker resource limits — empty means no limits.
 		{Key: "WORKER_CPU_LIMIT", Optional: true},
@@ -135,7 +144,6 @@ func main() {
 		// to expose it on UI_ADDR.
 		{Key: "UI_ENABLED", Optional: true, Default: "false"},
 		{Key: "UI_ADDR", Optional: true, Default: ":8081"},
-		{Key: "SETTINGS_CONFIGMAP", Optional: true},
 		// UI mutation gates — defense in depth on top of the (optional)
 		// auth proxy. UI_READ_ONLY=true disables every mutating endpoint.
 		// UI_ALLOW_KEY_MUTATION specifically gates the age-key add/remove
@@ -189,12 +197,22 @@ func main() {
 
 	watchNs := config.GetValue("WATCH_NAMESPACE")
 	leaderElectionID := config.GetValue("LEADER_ELECTION_ID")
+	scheme := runtime.NewScheme()
+	assert.NoError(clientgoscheme.AddToScheme(scheme), "failed to register client-go scheme")
+	assert.NoError(v1alpha1.AddToScheme(scheme), "failed to register backup.mogenius.io scheme")
 	mgrOpts := ctrl.Options{
+		Scheme:                        scheme,
 		LeaderElection:                leaderElectionID != "",
 		LeaderElectionID:              leaderElectionID,
 		LeaderElectionNamespace:       config.GetValue("POD_NAMESPACE"),
 		LeaderElectionReleaseOnCancel: true,
 		HealthProbeBindAddress:        ":8082",
+		// Secrets are read straight from the API server, never cached. The
+		// operator only ever needs a credentials Secret by name (destination
+		// probes, UI edits), and a cached client would otherwise start an
+		// informer that holds EVERY Secret in the namespace — DB passwords,
+		// TLS keys, unrelated application secrets — in operator memory.
+		Client: client.Options{Cache: &client.CacheOptions{DisableFor: []client.Object{&corev1.Secret{}}}},
 	}
 	if watchNs != "" {
 		mgrOpts.Cache = cache.Options{DefaultNamespaces: map[string]cache.Config{watchNs: {}}}
@@ -252,12 +270,13 @@ func main() {
 	}
 
 	refresher := &controllers.MetricsRefresher{
-		Client:    mgr.GetClient(),
-		Logger:    ctrl.Log.WithName("metrics-refresher"),
-		Namespace: watchNs,
-		Interval:  config.GetDurationSeconds("METRICS_REFRESH_INTERVAL_SECONDS"),
-		Pool:      storagePool,
-		Broadcast: broadcast,
+		Client:          mgr.GetClient(),
+		Logger:          ctrl.Log.WithName("metrics-refresher"),
+		Namespace:       watchNs,
+		Interval:        config.GetDurationSeconds("METRICS_REFRESH_INTERVAL_SECONDS"),
+		DefaultSchedule: config.GetValue("DEFAULT_SCHEDULE"),
+		Pool:            storagePool,
+		Broadcast:       broadcast,
 	}
 	assert.NoError(mgr.Add(refresher), "failed to register metrics refresher")
 
@@ -272,11 +291,9 @@ func main() {
 	}
 	assert.NoError(jobWatcher.SetupWithManager(mgr), "failed to setup job watcher")
 
-	// Recipient reconciler: watches Secrets labeled role=age-recipient and
-	// materialises them into the operator-managed merged Secret named by
-	// AGE_SECRET_NAME — the same name worker pods reference via
-	// `secretKeyRef`. So the chart can bootstrap recipients with
-	// per-Secret files and the operator owns the merged target.
+	// Recipient reconciler: watches BackupRecipient objects and materialises
+	// them into the operator-managed merged Secret named by AGE_SECRET_NAME —
+	// the same name worker pods reference via `secretKeyRef`.
 	recipientReconciler := &controllers.RecipientReconciler{
 		Client:           mgr.GetClient(),
 		Logger:           ctrl.Log.WithName("recipient-reconciler"),
@@ -287,13 +304,12 @@ func main() {
 	// Bootstrap before the manager starts so the merged Secret exists with
 	// the right content before any CronJob tick can race against an empty
 	// or missing target. Uses a non-cached client because the manager's
-	// cache only starts during mgr.Start(). Bootstrap also runs the
-	// one-time legacy migration (single AGE_PUBLIC_KEYS Secret →
-	// per-recipient Secrets) so a helm upgrade from the pre-reconciler
-	// chart fans recipients out automatically.
+	// cache only starts during mgr.Start(). Bootstrap also seeds the
+	// chart-provided recipients (BOOTSTRAP_AGE_RECIPIENTS) as
+	// BackupRecipient objects.
 	bootstrapClient, err := client.New(cfg, client.Options{Scheme: mgr.GetScheme()})
 	assert.NoError(err, "failed to create bootstrap client")
-	recipientReconciler.Bootstrap(context.Background(), bootstrapClient)
+	recipientReconciler.Bootstrap(context.Background(), bootstrapClient, []string{config.GetValue("BOOTSTRAP_AGE_RECIPIENTS")})
 
 	assert.NoError(recipientReconciler.SetupWithManager(mgr), "failed to setup recipient reconciler")
 
@@ -333,20 +349,32 @@ func main() {
 		}
 
 		uiServer, err := ui.New(ui.Config{
-			Addr:              config.GetValue("UI_ADDR"),
-			Namespace:         namespaceForUI(watchNs),
-			Client:            mgr.GetClient(),
-			APIReader:         mgr.GetAPIReader(),
-			Logger:            ctrl.Log.WithName("ui"),
-			SettingsConfigMap: config.GetValue("SETTINGS_CONFIGMAP"),
-			AgeSecretName:     config.GetValue("AGE_SECRET_NAME"),
-			ReadOnly:          config.GetBool("UI_READ_ONLY"),
-			AllowKeyMutation:  config.GetBool("UI_ALLOW_KEY_MUTATION"),
-			MaxBodyBytes:      maxBody,
-			MaxSSEClients:     maxSSE,
-			AlertsProvider:    alertsProvider,
-			PrometheusURL:     promURL,
-			AlertmanagerURL:   alertmanagerURL,
+			Addr:            config.GetValue("UI_ADDR"),
+			Namespace:       namespaceForUI(watchNs),
+			Client:          mgr.GetClient(),
+			APIReader:       mgr.GetAPIReader(),
+			Logger:          ctrl.Log.WithName("ui"),
+			AgeSecretName:   config.GetValue("AGE_SECRET_NAME"),
+			DefaultSchedule: config.GetValue("DEFAULT_SCHEDULE"),
+			Defaults: ui.OperatorDefaults{
+				DefaultSchedule:      config.GetValue("DEFAULT_SCHEDULE"),
+				RunTimeoutSeconds:    config.GetValue("RUN_TIMEOUT_SECONDS"),
+				DefaultRetentionDays: config.GetValue("DEFAULT_RETENTION_DAYS"),
+				DefaultMinKeep:       config.GetValue("DEFAULT_MIN_KEEP"),
+				TempDir:              config.GetValue("TEMP_DIR"),
+				TempDirSize:          config.GetValue("TEMP_DIR_SIZE"),
+				WorkerCPULimit:       config.GetValue("WORKER_CPU_LIMIT"),
+				WorkerMemoryLimit:    config.GetValue("WORKER_MEMORY_LIMIT"),
+				WorkerCPURequest:     config.GetValue("WORKER_CPU_REQUEST"),
+				WorkerMemoryRequest:  config.GetValue("WORKER_MEMORY_REQUEST"),
+			},
+			ReadOnly:             config.GetBool("UI_READ_ONLY"),
+			AllowKeyMutation:     config.GetBool("UI_ALLOW_KEY_MUTATION"),
+			MaxBodyBytes:         maxBody,
+			MaxSSEClients:        maxSSE,
+			AlertsProvider:       alertsProvider,
+			PrometheusURL:        promURL,
+			AlertmanagerURL:      alertmanagerURL,
 			WorkerServiceAccount: config.GetValue("WORKER_SERVICE_ACCOUNT"),
 			Pool:                 storagePool,
 		})

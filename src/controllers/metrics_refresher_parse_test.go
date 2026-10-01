@@ -4,34 +4,20 @@ import (
 	"context"
 	"testing"
 
-	"backup-operator/internal/labels"
+	"backup-operator/api/v1alpha1"
 
 	"github.com/go-logr/logr"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 // TestRefresh_ParseErrorKeepsTargetSticky regresses the "monitoring goes dark"
-// bug: when a still-present source Secret fails to parse (e.g. an invalid name
-// annotation typed during an edit), the refresher must keep its target's series
-// rather than sweeping them — otherwise BackupOverdue can never fire on the now
-// absent last_success series and existing alerts silently resolve.
+// bug: when a still-present BackupSource fails to flatten (e.g. an unsafe
+// targetName typed during an edit), the refresher must keep its target's
+// series rather than sweeping them — otherwise BackupOverdue can never fire
+// on the now-absent last_success series and existing alerts silently resolve.
 func TestRefresh_ParseErrorKeepsTargetSticky(t *testing.T) {
-	sec := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "prod-db",
-			Namespace: "backup",
-			Labels: map[string]string{
-				labels.LabelRole:   labels.RoleSource,
-				labels.LabelDBType: "postgres",
-			},
-			// Invalid target name — ParseSource rejects it, so this tick
-			// cannot compute the target from the Secret.
-			Annotations: map[string]string{labels.AnnotationName: "../evil"},
-		},
-	}
-	c := fake.NewClientBuilder().WithScheme(cronScheme(t)).WithObjects(sec).Build()
+	src := testSource("prod-db", "backup")
+	src.Spec.TargetName = "../evil"
+	c := newFakeClient(t, src)
 	r := &MetricsRefresher{
 		Client:         c,
 		Namespace:      "backup",
@@ -43,15 +29,15 @@ func TestRefresh_ParseErrorKeepsTargetSticky(t *testing.T) {
 	r.refresh(context.Background())
 
 	if !r.trackedTargets["prod"] {
-		t.Error("a source that fails to parse must keep its target's metrics sticky, not delete them")
+		t.Error("a source that fails to flatten must keep its target's metrics sticky, not delete them")
 	}
 }
 
-// TestRefresh_RemovedSourceDropsTarget confirms the complementary case: a source
-// that is genuinely gone (no backing Secret) still has its target swept and its
+// TestRefresh_RemovedSourceDropsTarget confirms the complementary case: a
+// source that is genuinely gone still has its target swept and its
 // secretToTarget entry pruned.
 func TestRefresh_RemovedSourceDropsTarget(t *testing.T) {
-	c := fake.NewClientBuilder().WithScheme(cronScheme(t)).Build()
+	c := newFakeClient(t)
 	r := &MetricsRefresher{
 		Client:         c,
 		Namespace:      "backup",
@@ -68,4 +54,24 @@ func TestRefresh_RemovedSourceDropsTarget(t *testing.T) {
 	if _, ok := r.secretToTarget["backup/gone-db"]; ok {
 		t.Error("secretToTarget must be pruned for a removed source")
 	}
+}
+
+// TestRefresh_NoDataStillWritesNextSchedule: before the first run lands, the
+// refresher still keeps status.nextScheduleTime current so `kubectl get`
+// answers "when will this run" from day one.
+func TestRefresh_NoDataStillWritesNextSchedule(t *testing.T) {
+	src := testSource("fresh", "backup")
+	c := newFakeClient(t, src)
+	r := &MetricsRefresher{Client: c, Namespace: "backup", Logger: logr.Discard(), DefaultSchedule: "0 2 * * *"}
+
+	r.refresh(context.Background())
+
+	got := getSource(t, c, "fresh", "backup")
+	if got.Status.NextScheduleTime == nil {
+		t.Error("nextScheduleTime must be set even with no run history")
+	}
+	if got.Status.LastRunStatus != "" {
+		t.Errorf("no run yet, lastRunStatus must stay empty, got %q", got.Status.LastRunStatus)
+	}
+	_ = v1alpha1.RunStatusSuccess
 }

@@ -1,0 +1,286 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: backupdestinations.backup.mogenius.io
+spec:
+  group: backup.mogenius.io
+  names:
+    categories:
+    - backup
+    kind: BackupDestination
+    listKind: BackupDestinationList
+    plural: backupdestinations
+    shortNames:
+    - bdst
+    singular: backupdestination
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .spec.pathPrefix
+      name: Prefix
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Reachable")].status
+      name: Reachable
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          BackupDestination is one storage backend that every (allowed) source
+          fans out to.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              BackupDestinationSpec declares one upload target. Exactly one backend
+              block must be set and must match Type; the credentials Secret carries
+              the keys that backend needs (see CLAUDE.md §6.5).
+            properties:
+              azure:
+                description: AzureSpec covers Azure Blob Storage with shared-key auth.
+                properties:
+                  accountName:
+                    minLength: 1
+                    type: string
+                  container:
+                    minLength: 1
+                    type: string
+                required:
+                - accountName
+                - container
+                type: object
+              credentialsSecretRef:
+                description: |-
+                  CredentialsSecretRef names the Secret holding the backend's
+                  credentials: password or ssh-private-key (sftp), password (ftps),
+                  access-key-id + secret-access-key (s3), account-key (azure),
+                  service-account-json (gcs).
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              ftps:
+                description: FTPSSpec covers FTP over TLS for NAS firmware without
+                  SFTP.
+                properties:
+                  host:
+                    minLength: 1
+                    type: string
+                  insecureSkipCertVerify:
+                    type: boolean
+                  port:
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  tlsMode:
+                    default: explicit
+                    description: TLSMode is explicit (port 21 + AUTH TLS) or implicit
+                      (port 990).
+                    enum:
+                    - explicit
+                    - implicit
+                    type: string
+                  username:
+                    minLength: 1
+                    type: string
+                required:
+                - host
+                - username
+                type: object
+              gcs:
+                description: GCSSpec covers Google Cloud Storage with a service-account
+                  key.
+                properties:
+                  bucket:
+                    minLength: 1
+                    type: string
+                required:
+                - bucket
+                type: object
+              pathPrefix:
+                description: |-
+                  PathPrefix is prepended to every object path. May contain '/' as the
+                  tenant/cluster isolation root; '..' segments are rejected.
+                maxLength: 1024
+                type: string
+              s3:
+                description: S3Spec covers AWS S3 and every S3-compatible store.
+                properties:
+                  bucket:
+                    minLength: 1
+                    type: string
+                  endpoint:
+                    description: |-
+                      Endpoint is required for non-AWS providers (MinIO, Hetzner Object
+                      Storage, R2, B2, Wasabi). Leave empty for AWS.
+                    type: string
+                  pathStyle:
+                    description: PathStyle forces path-style addressing (MinIO and
+                      friends).
+                    type: boolean
+                  region:
+                    type: string
+                required:
+                - bucket
+                type: object
+              sftp:
+                description: SFTPSpec covers generic SFTP and Hetzner Storage Boxes
+                  (port 23).
+                properties:
+                  host:
+                    minLength: 1
+                    type: string
+                  insecureSkipHostVerify:
+                    type: boolean
+                  knownHosts:
+                    description: |-
+                      KnownHosts is ssh-keyscan output. Without it the connection is
+                      refused unless insecureSkipHostVerify is set.
+                    type: string
+                  port:
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  username:
+                    minLength: 1
+                    type: string
+                required:
+                - host
+                - username
+                type: object
+              type:
+                description: Type selects the storage backend.
+                enum:
+                - sftp
+                - ftps
+                - s3
+                - azure
+                - gcs
+                type: string
+            required:
+            - credentialsSecretRef
+            - type
+            type: object
+            x-kubernetes-validations:
+            - message: spec.sftp is required when type is sftp
+              rule: self.type != 'sftp' || has(self.sftp)
+            - message: spec.ftps is required when type is ftps
+              rule: self.type != 'ftps' || has(self.ftps)
+            - message: spec.s3 is required when type is s3
+              rule: self.type != 's3' || has(self.s3)
+            - message: spec.azure is required when type is azure
+              rule: self.type != 'azure' || has(self.azure)
+            - message: spec.gcs is required when type is gcs
+              rule: self.type != 'gcs' || has(self.gcs)
+            - message: spec.pathPrefix must not contain a '..' segment
+              rule: '!has(self.pathPrefix) || !(self.pathPrefix == ''..'' || self.pathPrefix.startsWith(''../'')
+                || self.pathPrefix.endsWith(''/..'') || self.pathPrefix.contains(''/../''))'
+          status:
+            description: BackupDestinationStatus is written by the operator's metrics
+              refresher.
+            properties:
+              conditions:
+                description: 'Conditions: Reachable.'
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              lastError:
+                description: LastError is the sanitized message of the most recent
+                  failed probe.
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -101,7 +101,7 @@ func (p *StoragePool) Size() int {
 // sorted before hashing.
 func destSignature(d *secrets.Destination) string {
 	h := sha256.New()
-	h.Write([]byte(d.SecretName))
+	h.Write([]byte(d.ObjectName))
 	h.Write([]byte{0})
 	h.Write([]byte(d.Namespace))
 	h.Write([]byte{0})

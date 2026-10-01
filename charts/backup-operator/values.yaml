@@ -12,23 +12,38 @@ imagePullSecrets: []
 
 replicaCount: 1
 
-# Discovery is namespace-scoped — the service watches its own namespace only.
+# Discovery is namespace-scoped — the operator watches BackupSource /
+# BackupDestination / BackupRecipient objects in its own namespace only.
 # Set to a different namespace to override; "" means the release namespace.
 watchNamespace: ""
+
+# CustomResourceDefinitions (backup.mogenius.io/v1alpha1). Templated — not in
+# Helm's crds/ directory — so `helm upgrade` updates the schema. `keep` adds
+# helm.sh/resource-policy: keep so `helm uninstall` leaves the CRDs (and with
+# them every BackupSource/BackupDestination/BackupRecipient) in place; delete
+# them explicitly with `kubectl delete crd` when you really mean it. Set
+# install: false when a cluster admin manages the CRDs out-of-band.
+crds:
+  install: true
+  keep: true
 
 config:
   defaultSchedule: "0 2 * * *"
   runTimeoutSeconds: 3600
   tempDir: /tmp/backup-operator
   leaderElectionId: "backup-operator"
-  # Retention defaults — sources can override per-secret via annotations
-  # backup.mogenius.io/retention-days and /min-keep.
+  # Retention defaults — sources can override via spec.retention.days /
+  # spec.retention.minKeep on the BackupSource.
   # 0 retentionDays disables pruning (keep forever); minKeep is the safety
   # floor that prevents accidentally deleting the most recent backups.
   defaultRetentionDays: 30
   defaultMinKeep: 3
 
 # Public age recipient(s). Required: the chart fails to render if empty.
+# Each key is seeded by the operator at startup as a BackupRecipient object
+# (name backup-recipient-<sha256 prefix>); add or remove recipients later via
+# kubectl / GitOps / the UI Age-Keys page. Removing a key from this list does
+# NOT delete the object it seeded — the objects outlive the value.
 #
 # Two forms accepted:
 #
@@ -44,11 +59,6 @@ config:
 #        agePublicKeys: |-
 #          age1qx...
 #          age1yz...
-#      Backwards-compatible with installs from before the array form
-#      existed.
-#
-# The worker always sees the same newline-separated env-var regardless
-# of which form is used.
 agePublicKeys: ""
 
 resources:
@@ -112,8 +122,8 @@ storageScrub:
 # requires the worker ServiceAccount to be able to create/delete Pods
 # in the operator's namespace so it can spawn short-lived ephemeral
 # DBs to restore against. Disabled by default — enable AND set
-# `backup.mogenius.io/restore-verification-mode` on a source to a
-# Phase-2 mode to actually use it. Phase-1 mode `stream-validate` does
+# `spec.restoreVerification.mode` on a BackupSource to a Phase-2 mode to
+# actually use it. Phase-1 mode `stream-validate` does
 # NOT need this RBAC expansion.
 restoreVerification:
   enableEphemeralPodSpawn: false

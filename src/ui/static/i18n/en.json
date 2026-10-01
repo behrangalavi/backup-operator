@@ -185,7 +185,9 @@
           "cpuRequest": "Minimum guaranteed CPU",
           "memoryRequest": "Minimum guaranteed memory"
         }
-      }
+      },
+      "readOnlyNote": "Operator defaults are managed by the Helm chart (values.yaml → env vars). Per-source settings live typed on each BackupSource. Export the values below and run helm upgrade to change them.",
+      "subtitleRO": "Effective operator defaults (read-only)"
     }
   },
   "table": {
@@ -444,7 +446,8 @@
     "removeFailed": "Remove failed: {error}",
     "removeConfirm": "Remove recipient {name}? Worker pods will no longer encrypt to this key. Existing dumps remain decryptable with the corresponding private key.",
     "readOnly": "Read-only mode — recipient mutation is disabled.",
-    "subtitle": "Age recipient public keys the operator encrypts backups to."
+    "subtitle": "Age recipient public keys the operator encrypts backups to.",
+    "merged": "Merged Secret"
   },
   "hero": {
     "status": {
@@ -717,7 +720,8 @@
   "row": {
     "charset": "Charset",
     "download": "Download",
-    "fingerprint": "Fingerprint"
+    "fingerprint": "Fingerprint",
+    "credentials": "Credentials"
   },
   "banner": {
     "localEvaluator": "Showing locally evaluated alerts (no for: debounce). Configure alerts.prometheusURL for the canonical Prometheus-based view.",

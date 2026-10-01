@@ -3,7 +3,8 @@
 // the controller manager, providing:
 //
 //   - Read-only dashboard for backup targets and run history
-//   - CRUD endpoints for source and destination Secrets
+//   - CRUD endpoints for BackupSource / BackupDestination / BackupRecipient
+//     objects and their credentials Secrets
 //   - Manual backup trigger via Job creation
 //   - Server-Sent Events (SSE) for live status updates
 package ui
@@ -48,17 +49,22 @@ var staticFS embed.FS
 
 // Config carries everything the server needs to render itself.
 type Config struct {
-	Addr              string // ":8081" by default — kept off the metrics port to keep concerns separate
-	Namespace         string
-	Client            client.Client
-	APIReader         client.Reader // uncached reads (events list, where caching would force a watch on a noisy resource)
-	Logger            logr.Logger
-	SettingsConfigMap string // name of the ConfigMap for runtime-configurable settings (empty = disabled)
-	AgeSecretName     string // name of the Secret holding AGE_PUBLIC_KEYS (empty = key listing/mutation disabled)
-	ReadOnly          bool   // when true, all mutation endpoints return 403
-	AllowKeyMutation  bool   // when true, age-key add/remove endpoints are exposed (read-only listing always available)
-	MaxBodyBytes      int64  // request body cap; 0 = use defaultMaxBodyBytes
-	MaxSSEClients     int    // concurrent SSE subscribers; 0 = use defaultMaxSSEClients
+	Addr          string // ":8081" by default — kept off the metrics port to keep concerns separate
+	Namespace     string
+	Client        client.Client
+	APIReader     client.Reader // uncached reads (events list, where caching would force a watch on a noisy resource)
+	Logger        logr.Logger
+	AgeSecretName string // name of the operator-managed merged age Secret (display only)
+	// DefaultSchedule mirrors DEFAULT_SCHEDULE so sources without a schedule
+	// show the one their CronJob actually runs on.
+	DefaultSchedule string
+	// Defaults are the operator's effective fleet-wide settings, shown
+	// read-only on the Settings page and exportable as values.yaml.
+	Defaults         OperatorDefaults
+	ReadOnly         bool  // when true, all mutation endpoints return 403
+	AllowKeyMutation bool  // when true, age-key add/remove endpoints are exposed (read-only listing always available)
+	MaxBodyBytes     int64 // request body cap; 0 = use defaultMaxBodyBytes
+	MaxSSEClients    int   // concurrent SSE subscribers; 0 = use defaultMaxSSEClients
 
 	// AlertsProvider supplies /api/alerts. When PrometheusURL is configured
 	// in main.go we install a PrometheusProvider with a LocalProvider
@@ -125,7 +131,7 @@ func New(cfg Config) (*Server, error) {
 	}
 	broker := newSSEBroker()
 	broker.maxClients = cfg.MaxSSEClients
-	data := newK8sData(cfg.Client, cfg.Namespace, cfg.Logger.WithName("data"))
+	data := newK8sData(cfg.Client, cfg.Namespace, cfg.DefaultSchedule, cfg.Logger.WithName("data"))
 	data.pool = cfg.Pool
 	s := &Server{
 		cfg:  cfg,

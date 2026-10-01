@@ -2,9 +2,7 @@ package ui
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"sort"
@@ -13,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"backup-operator/api/v1alpha1"
 	"backup-operator/internal/labels"
 	"backup-operator/internal/meta"
 	"backup-operator/internal/safe"
@@ -26,474 +25,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// --- JSON request/response types ---
-
-type sourceRequest struct {
-	Name               string            `json:"name"`
-	DBType             string            `json:"dbType"`
-	Schedule           string            `json:"schedule"`
-	Host               string            `json:"host"`
-	Port               string            `json:"port"`
-	Database           string            `json:"database"`
-	Username           string            `json:"username"`
-	Password           string            `json:"password"`
-	AnalyzerEnabled    *bool             `json:"analyzerEnabled"`
-	EmptyDumpCheck     *bool             `json:"emptyDumpCheck"`
-	Destinations       string            `json:"destinations"`
-	RetentionDays      string            `json:"retentionDays"`
-	MinKeep            string            `json:"minKeep"`
-	RowDropThreshold   string            `json:"rowDropThreshold"`
-	SizeDropThreshold  string            `json:"sizeDropThreshold"`
-	AnonymizeTables    *bool             `json:"anonymizeTables"`
-	// JitterMinutes spreads the cron's minute field per source.
-	// Empty string = annotation absent (default behaviour: jitter when
-	// minute==0 only). "0" pins the schedule. Any other integer is a
-	// window override.
-	JitterMinutes string `json:"jitterMinutes"`
-	// Restore-verification (Phase 1 stream-validate, Phase 2 spawn-and-restore).
-	// Empty string on optional fields means "don't change / use default".
-	RestoreVerificationMode     string `json:"restoreVerificationMode"`
-	RestoreVerificationInterval string `json:"restoreVerificationInterval"`
-	VerificationImage           string `json:"verificationImage"`
-	VerificationVolumeSize      string `json:"verificationVolumeSize"`
-	Compression                 string `json:"compression"`
-	Extra              map[string]string `json:"extra"`
-}
-
-type destinationRequest struct {
-	Name        string            `json:"name"`
-	StorageType string            `json:"storageType"`
-	PathPrefix  string            `json:"pathPrefix"`
-	Data        map[string]string `json:"data"`
-	// RemoveKeys lists Secret data keys the caller wants explicitly dropped
-	// on update. The merge semantics of PUT mean a missing key in `data`
-	// preserves the existing value; this is the escape hatch when the user
-	// genuinely wants to remove a field (e.g. switching SFTP auth from key
-	// to password — the old ssh-private-key must go).
-	RemoveKeys []string `json:"removeKeys,omitempty"`
-}
-
 type apiResponse struct {
-	OK      bool   `json:"ok"`
+	OK bool `json:"ok"`
 	// Code is a stable machine-readable error tag — see errors_api.go for
 	// the catalogue. Frontend uses it to pick toast severity and (later)
 	// localised messages without parsing Message text.
 	Code    string `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
 	Name    string `json:"name,omitempty"`
-}
-
-// --- Source CRUD ---
-
-func (s *Server) handleAPICreateSource(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "POST required")
-		return
-	}
-	var req sourceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "invalid JSON")
-		return
-	}
-	if req.Name == "" || req.DBType == "" || req.Host == "" {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "name, dbType, host are required")
-		return
-	}
-	// Redis can run with password-only AUTH (no username); every other DB
-	// type still requires a username.
-	if req.Username == "" && req.DBType != "redis" {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "username is required for " + req.DBType)
-		return
-	}
-	if !isSupportedDBType(req.DBType) {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "dbType must be postgres, mysql, mariadb, mongo, or redis")
-		return
-	}
-	if msg := validateK8sName(req.Name); msg != "" {
-		writeError(w, http.StatusBadRequest, codeBadRequest, msg)
-		return
-	}
-	if req.Port != "" {
-		if msg := validatePort(req.Port); msg != "" {
-			writeError(w, http.StatusBadRequest, codeBadRequest, msg)
-			return
-		}
-	}
-	if req.Schedule != "" {
-		if msg := validateCronSchedule(req.Schedule); msg != "" {
-			writeError(w, http.StatusBadRequest, codeBadRequest, msg)
-			return
-		}
-	}
-
-	secretName := "backup-src-" + sanitizeName(req.Name)
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: s.cfg.Namespace,
-			Labels: map[string]string{
-				labels.LabelRole:   labels.RoleSource,
-				labels.LabelDBType: req.DBType,
-			},
-			Annotations: buildSourceAnnotations(req),
-		},
-		Data: buildSourceData(req),
-	}
-
-	if err := s.cfg.Client.Create(r.Context(), secret); err != nil {
-		s.cfg.Logger.Error(err, "create source secret")
-		writeError(w, http.StatusConflict, codeConflict, "failed to create: " + sanitizeError(err))
-		return
-	}
-	s.emitMutationEvent(r.Context(), secret, "SourceCreated", fmt.Sprintf("Source %q created via UI", req.Name))
-	s.broadcast(sseEvent{Type: "source_created", Data: req.Name})
-	writeJSON(w, http.StatusCreated, apiResponse{OK: true, Name: secretName})
-}
-
-func (s *Server) handleAPIUpdateSource(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPut {
-		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "PUT required")
-		return
-	}
-	secretName := trimPrefixPath(r.URL.Path, "/api/sources/")
-	if secretName == "" {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "secret name required")
-		return
-	}
-
-	var req sourceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "invalid JSON")
-		return
-	}
-
-	existing := &corev1.Secret{}
-	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, existing); err != nil {
-		writeError(w, http.StatusNotFound, codeNotFound, "secret not found")
-		return
-	}
-	if existing.Labels[labels.LabelRole] != labels.RoleSource {
-		writeError(w, http.StatusForbidden, codeForbidden, "not a backup source secret")
-		return
-	}
-
-	if req.DBType != "" {
-		if existing.Labels == nil {
-			existing.Labels = make(map[string]string)
-		}
-		existing.Labels[labels.LabelDBType] = req.DBType
-	}
-	mergeSourceAnnotations(existing, req)
-	mergeSourceData(existing, req)
-
-	if err := s.cfg.Client.Update(r.Context(), existing); err != nil {
-		s.cfg.Logger.Error(err, "update source secret")
-		writeError(w, http.StatusInternalServerError, codeInternal, "update failed")
-		return
-	}
-	s.emitMutationEvent(r.Context(), existing, "SourceUpdated", fmt.Sprintf("Source %q updated via UI", secretName))
-	s.broadcast(sseEvent{Type: "source_updated", Data: secretName})
-	writeJSON(w, http.StatusOK, apiResponse{OK: true, Name: secretName})
-}
-
-func (s *Server) handleAPIDeleteSource(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "DELETE required")
-		return
-	}
-	secretName := trimPrefixPath(r.URL.Path, "/api/sources/")
-	if secretName == "" {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "secret name required")
-		return
-	}
-
-	existing := &corev1.Secret{}
-	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, existing); err != nil {
-		writeError(w, http.StatusNotFound, codeNotFound, "not found or already deleted")
-		return
-	}
-	if existing.Labels[labels.LabelRole] != labels.RoleSource {
-		writeError(w, http.StatusForbidden, codeForbidden, "not a backup source secret")
-		return
-	}
-	if err := s.cfg.Client.Delete(r.Context(), existing); err != nil {
-		writeError(w, http.StatusInternalServerError, codeInternal, "delete failed")
-		return
-	}
-	s.emitMutationEvent(r.Context(), existing, "SourceDeleted", fmt.Sprintf("Source %q deleted via UI", secretName))
-	s.broadcast(sseEvent{Type: "source_deleted", Data: secretName})
-	writeJSON(w, http.StatusOK, apiResponse{OK: true})
-}
-
-// handleAPISuspendSource toggles the source's suspended annotation. The
-// reconciler observes the change and writes Spec.Suspend on the managed
-// CronJob. In-flight Jobs are unaffected — Suspend only blocks future ticks,
-// which matches K8s semantics. Body: {"suspend": true|false}.
-//
-// Separate from the regular update endpoint so a one-click pause does not
-// require sending the whole source body (and risk overwriting a concurrent
-// edit). The annotation is removed entirely on resume so cleared sources
-// don't carry a stale "suspended=false".
-func (s *Server) handleAPISuspendSource(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "POST required")
-		return
-	}
-	rest := trimPrefixPath(r.URL.Path, "/api/sources/")
-	secretName := strings.TrimSuffix(rest, "/suspend")
-	if secretName == "" || strings.Contains(secretName, "/") {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "secret name required")
-		return
-	}
-
-	var body struct {
-		Suspend bool `json:"suspend"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "invalid JSON")
-		return
-	}
-
-	existing := &corev1.Secret{}
-	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, existing); err != nil {
-		writeError(w, http.StatusNotFound, codeNotFound, "secret not found")
-		return
-	}
-	if existing.Labels[labels.LabelRole] != labels.RoleSource {
-		writeError(w, http.StatusForbidden, codeForbidden, "not a backup source secret")
-		return
-	}
-
-	if existing.Annotations == nil {
-		existing.Annotations = map[string]string{}
-	}
-	if body.Suspend {
-		existing.Annotations[labels.AnnotationSuspended] = "true"
-	} else {
-		delete(existing.Annotations, labels.AnnotationSuspended)
-	}
-
-	if err := s.cfg.Client.Update(r.Context(), existing); err != nil {
-		s.cfg.Logger.Error(err, "patch suspend annotation")
-		writeError(w, http.StatusInternalServerError, codeInternal, "update failed")
-		return
-	}
-	evType := "source_resumed"
-	reason := "SourceUpdated"
-	action := "resumed"
-	if body.Suspend {
-		evType = "source_suspended"
-		action = "suspended"
-	}
-	s.emitMutationEvent(r.Context(), existing, reason, fmt.Sprintf("Source %q %s via UI", secretName, action))
-	s.broadcast(sseEvent{Type: evType, Data: secretName})
-	writeJSON(w, http.StatusOK, apiResponse{OK: true, Name: secretName})
-}
-
-// --- Destination CRUD ---
-
-func (s *Server) handleAPIListDestinations(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "GET required")
-		return
-	}
-	var list corev1.SecretList
-	if err := s.cfg.Client.List(r.Context(), &list, client.InNamespace(s.cfg.Namespace), client.MatchingLabels{
-		labels.LabelRole: labels.RoleDestination,
-	}); err != nil {
-		s.cfg.Logger.Error(err, "list destination secrets")
-		writeError(w, http.StatusInternalServerError, codeInternal, "internal error")
-		return
-	}
-	type destInfo struct {
-		SecretName  string `json:"secretName"`
-		Name        string `json:"name"`
-		StorageType string `json:"storageType"`
-		PathPrefix  string `json:"pathPrefix"`
-		Host        string `json:"host"`
-		CreatedAt   string `json:"createdAt,omitempty"`
-	}
-	out := make([]destInfo, 0, len(list.Items))
-	for _, sec := range list.Items {
-		name := sec.Annotations[labels.AnnotationName]
-		if name == "" {
-			name = sec.Name
-		}
-		var createdAt string
-		if !sec.CreationTimestamp.IsZero() {
-			createdAt = sec.CreationTimestamp.UTC().Format(time.RFC3339)
-		}
-		out = append(out, destInfo{
-			SecretName:  sec.Name,
-			Name:        name,
-			StorageType: sec.Labels[labels.LabelStorageType],
-			PathPrefix:  sec.Annotations[labels.AnnotationPathPrefix],
-			Host:        string(sec.Data["host"]),
-			CreatedAt:   createdAt,
-		})
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (s *Server) handleAPICreateDestination(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "POST required")
-		return
-	}
-	var req destinationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "invalid JSON")
-		return
-	}
-	if req.Name == "" || req.StorageType == "" {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "name and storageType are required")
-		return
-	}
-	validTypes := map[string]bool{"sftp": true, "hetzner-sftp": true, "s3": true, "ftps": true, "azure": true, "gcs": true}
-	if !validTypes[req.StorageType] {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "storageType must be sftp, hetzner-sftp, ftps, s3, azure, or gcs")
-		return
-	}
-	if msg := validateK8sName(req.Name); msg != "" {
-		writeError(w, http.StatusBadRequest, codeBadRequest, msg)
-		return
-	}
-
-	secretName := "backup-dest-" + sanitizeName(req.Name)
-	annotations := map[string]string{
-		labels.AnnotationName: req.Name,
-	}
-	if req.PathPrefix != "" {
-		annotations[labels.AnnotationPathPrefix] = req.PathPrefix
-	}
-
-	data := make(map[string][]byte, len(req.Data))
-	for k, v := range req.Data {
-		data[k] = []byte(v)
-	}
-
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        secretName,
-			Namespace:   s.cfg.Namespace,
-			Labels: map[string]string{
-				labels.LabelRole:        labels.RoleDestination,
-				labels.LabelStorageType: req.StorageType,
-			},
-			Annotations: annotations,
-		},
-		Data: data,
-	}
-
-	if err := s.cfg.Client.Create(r.Context(), secret); err != nil {
-		s.cfg.Logger.Error(err, "create destination secret")
-		writeError(w, http.StatusConflict, codeConflict, "failed to create: " + sanitizeError(err))
-		return
-	}
-	s.emitMutationEvent(r.Context(), secret, "DestinationCreated", fmt.Sprintf("Destination %q created via UI", req.Name))
-	s.broadcast(sseEvent{Type: "destination_created", Data: req.Name})
-	writeJSON(w, http.StatusCreated, apiResponse{OK: true, Name: secretName})
-}
-
-func (s *Server) handleAPIUpdateDestination(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPut {
-		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "PUT required")
-		return
-	}
-	secretName := trimPrefixPath(r.URL.Path, "/api/destinations/")
-	if secretName == "" {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "secret name required")
-		return
-	}
-
-	var req destinationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "invalid JSON")
-		return
-	}
-
-	existing := &corev1.Secret{}
-	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, existing); err != nil {
-		writeError(w, http.StatusNotFound, codeNotFound, "secret not found")
-		return
-	}
-	if existing.Labels[labels.LabelRole] != labels.RoleDestination {
-		writeError(w, http.StatusForbidden, codeForbidden, "not a backup destination secret")
-		return
-	}
-
-	if req.StorageType != "" {
-		if existing.Labels == nil {
-			existing.Labels = make(map[string]string)
-		}
-		existing.Labels[labels.LabelStorageType] = req.StorageType
-	}
-	if req.Name != "" {
-		if existing.Annotations == nil {
-			existing.Annotations = make(map[string]string)
-		}
-		existing.Annotations[labels.AnnotationName] = req.Name
-	}
-	// PathPrefix follows three-valued logic on update: a non-empty value
-	// replaces, an empty string explicitly clears the annotation, and a
-	// missing field (would require the JSON to omit it) preserves. The
-	// UI always sends pathPrefix so the empty-string→clear branch covers
-	// the "user cleared the input box" case.
-	if req.PathPrefix != "" {
-		if existing.Annotations == nil {
-			existing.Annotations = make(map[string]string)
-		}
-		existing.Annotations[labels.AnnotationPathPrefix] = req.PathPrefix
-	} else if existing.Annotations != nil {
-		delete(existing.Annotations, labels.AnnotationPathPrefix)
-	}
-	for k, v := range req.Data {
-		if existing.Data == nil {
-			existing.Data = make(map[string][]byte)
-		}
-		existing.Data[k] = []byte(v)
-	}
-	for _, k := range req.RemoveKeys {
-		delete(existing.Data, k)
-	}
-
-	if err := s.cfg.Client.Update(r.Context(), existing); err != nil {
-		s.cfg.Logger.Error(err, "update destination secret")
-		writeError(w, http.StatusInternalServerError, codeInternal, "update failed")
-		return
-	}
-	s.emitMutationEvent(r.Context(), existing, "DestinationUpdated", fmt.Sprintf("Destination %q updated via UI", secretName))
-	s.broadcast(sseEvent{Type: "destination_updated", Data: secretName})
-	writeJSON(w, http.StatusOK, apiResponse{OK: true, Name: secretName})
-}
-
-func (s *Server) handleAPIDeleteDestination(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "DELETE required")
-		return
-	}
-	secretName := trimPrefixPath(r.URL.Path, "/api/destinations/")
-	if secretName == "" {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "secret name required")
-		return
-	}
-
-	existing := &corev1.Secret{}
-	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, existing); err != nil {
-		writeError(w, http.StatusNotFound, codeNotFound, "not found or already deleted")
-		return
-	}
-	if existing.Labels[labels.LabelRole] != labels.RoleDestination {
-		writeError(w, http.StatusForbidden, codeForbidden, "not a backup destination secret")
-		return
-	}
-	if err := s.cfg.Client.Delete(r.Context(), existing); err != nil {
-		writeError(w, http.StatusInternalServerError, codeInternal, "delete failed")
-		return
-	}
-	s.emitMutationEvent(r.Context(), existing, "DestinationDeleted", fmt.Sprintf("Destination %q deleted via UI", secretName))
-	s.broadcast(sseEvent{Type: "destination_deleted", Data: secretName})
-	writeJSON(w, http.StatusOK, apiResponse{OK: true})
 }
 
 // --- Manual backup trigger ---
@@ -572,13 +111,13 @@ func (s *Server) handleAPIJobs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type jobInfo struct {
-		Name                      string  `json:"name"`
-		Target                    string  `json:"target"`
-		Status                    string  `json:"status"`
-		StartTime                 string  `json:"startTime,omitempty"`
-		Duration                  string  `json:"duration,omitempty"`
-		EstimatedDurationSeconds  float64 `json:"estimatedDurationSeconds,omitempty"`
-		EstimateSampleSize        int     `json:"estimateSampleSize,omitempty"`
+		Name                     string  `json:"name"`
+		Target                   string  `json:"target"`
+		Status                   string  `json:"status"`
+		StartTime                string  `json:"startTime,omitempty"`
+		Duration                 string  `json:"duration,omitempty"`
+		EstimatedDurationSeconds float64 `json:"estimatedDurationSeconds,omitempty"`
+		EstimateSampleSize       int     `json:"estimateSampleSize,omitempty"`
 	}
 
 	out := make([]jobInfo, 0, len(jobs.Items))
@@ -668,399 +207,18 @@ func sanitizeError(err error) string {
 	return "operation failed"
 }
 
-func buildSourceAnnotations(req sourceRequest) map[string]string {
-	ann := map[string]string{
-		labels.AnnotationName: req.Name,
-	}
-	if req.Schedule != "" {
-		ann[labels.AnnotationSchedule] = req.Schedule
-	}
-	if req.AnalyzerEnabled != nil {
-		ann[labels.AnnotationAnalyzerEnabled] = fmt.Sprintf("%t", *req.AnalyzerEnabled)
-	}
-	if req.EmptyDumpCheck != nil {
-		ann[labels.AnnotationEmptyDumpCheck] = fmt.Sprintf("%t", *req.EmptyDumpCheck)
-	}
-	if req.Destinations != "" {
-		ann[labels.AnnotationDestinations] = req.Destinations
-	}
-	if req.JitterMinutes != "" {
-		ann[labels.AnnotationJitterMinutes] = req.JitterMinutes
-	}
-	if req.RetentionDays != "" {
-		ann[labels.AnnotationRetentionDays] = req.RetentionDays
-	}
-	if req.MinKeep != "" {
-		ann[labels.AnnotationMinKeep] = req.MinKeep
-	}
-	if req.RowDropThreshold != "" {
-		ann[labels.AnnotationRowDropThreshold] = req.RowDropThreshold
-	}
-	if req.SizeDropThreshold != "" {
-		ann[labels.AnnotationSizeDropThreshold] = req.SizeDropThreshold
-	}
-	if req.AnonymizeTables != nil && *req.AnonymizeTables {
-		ann[labels.AnnotationAnonymizeTables] = "true"
-	}
-	if req.RestoreVerificationMode != "" {
-		ann[labels.AnnotationRestoreVerificationMode] = req.RestoreVerificationMode
-	}
-	if req.RestoreVerificationInterval != "" {
-		ann[labels.AnnotationRestoreVerificationInterval] = req.RestoreVerificationInterval
-	}
-	if req.VerificationImage != "" {
-		ann[labels.AnnotationVerificationImage] = req.VerificationImage
-	}
-	if req.VerificationVolumeSize != "" {
-		ann[labels.AnnotationVerificationVolumeSize] = req.VerificationVolumeSize
-	}
-	if req.Compression != "" {
-		ann[labels.AnnotationCompression] = req.Compression
-	}
-	for k, v := range req.Extra {
-		ann["backup.mogenius.io/extra-"+k] = v
-	}
-	return ann
-}
-
-func buildSourceData(req sourceRequest) map[string][]byte {
-	data := map[string][]byte{
-		"host":     []byte(req.Host),
-		"username": []byte(req.Username),
-	}
-	if req.Port != "" {
-		data["port"] = []byte(req.Port)
-	}
-	if req.Database != "" {
-		data["database"] = []byte(req.Database)
-	}
-	if req.Password != "" {
-		data["password"] = []byte(req.Password)
-	}
-	return data
-}
-
-func mergeSourceAnnotations(sec *corev1.Secret, req sourceRequest) {
-	if sec.Annotations == nil {
-		sec.Annotations = make(map[string]string)
-	}
-	if req.Name != "" {
-		sec.Annotations[labels.AnnotationName] = req.Name
-	}
-	if req.Schedule != "" {
-		sec.Annotations[labels.AnnotationSchedule] = req.Schedule
-	}
-	if req.AnalyzerEnabled != nil {
-		sec.Annotations[labels.AnnotationAnalyzerEnabled] = fmt.Sprintf("%t", *req.AnalyzerEnabled)
-	}
-	if req.EmptyDumpCheck != nil {
-		sec.Annotations[labels.AnnotationEmptyDumpCheck] = fmt.Sprintf("%t", *req.EmptyDumpCheck)
-	}
-	if req.Destinations != "" {
-		sec.Annotations[labels.AnnotationDestinations] = req.Destinations
-	}
-	if req.JitterMinutes != "" {
-		sec.Annotations[labels.AnnotationJitterMinutes] = req.JitterMinutes
-	}
-	if req.RetentionDays != "" {
-		sec.Annotations[labels.AnnotationRetentionDays] = req.RetentionDays
-	}
-	if req.MinKeep != "" {
-		sec.Annotations[labels.AnnotationMinKeep] = req.MinKeep
-	}
-	if req.RowDropThreshold != "" {
-		sec.Annotations[labels.AnnotationRowDropThreshold] = req.RowDropThreshold
-	}
-	if req.SizeDropThreshold != "" {
-		sec.Annotations[labels.AnnotationSizeDropThreshold] = req.SizeDropThreshold
-	}
-	if req.AnonymizeTables != nil {
-		sec.Annotations[labels.AnnotationAnonymizeTables] = fmt.Sprintf("%t", *req.AnonymizeTables)
-	}
-	// Verification annotations: empty string from the form means "unset"
-	// (delete the annotation) so users can revert to default by clearing
-	// the input. Non-empty replaces.
-	applyOptionalAnnotation(sec, labels.AnnotationRestoreVerificationMode, req.RestoreVerificationMode)
-	applyOptionalAnnotation(sec, labels.AnnotationRestoreVerificationInterval, req.RestoreVerificationInterval)
-	applyOptionalAnnotation(sec, labels.AnnotationVerificationImage, req.VerificationImage)
-	applyOptionalAnnotation(sec, labels.AnnotationVerificationVolumeSize, req.VerificationVolumeSize)
-	applyOptionalAnnotation(sec, labels.AnnotationCompression, req.Compression)
-	for k, v := range req.Extra {
-		sec.Annotations["backup.mogenius.io/extra-"+k] = v
-	}
-}
-
-// applyOptionalAnnotation sets the annotation to v if non-empty, deletes
-// it otherwise. Lets the form clear an annotation by submitting an empty
-// string for that field. Without this, a cleared form field would have
-// no effect (zero-valued string just means "skip").
-func applyOptionalAnnotation(sec *corev1.Secret, key, v string) {
-	if v == "" {
-		delete(sec.Annotations, key)
-		return
-	}
-	sec.Annotations[key] = v
-}
-
-func mergeSourceData(sec *corev1.Secret, req sourceRequest) {
-	if sec.Data == nil {
-		sec.Data = make(map[string][]byte)
-	}
-	if req.Host != "" {
-		sec.Data["host"] = []byte(req.Host)
-	}
-	if req.Port != "" {
-		sec.Data["port"] = []byte(req.Port)
-	}
-	if req.Database != "" {
-		sec.Data["database"] = []byte(req.Database)
-	}
-	if req.Username != "" {
-		sec.Data["username"] = []byte(req.Username)
-	}
-	if req.Password != "" {
-		sec.Data["password"] = []byte(req.Password)
-	}
-}
-
-// handleAPIGetSource returns a single source secret's configuration (without password).
-func (s *Server) handleAPIGetSource(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "GET required")
-		return
-	}
-	secretName := trimPrefixPath(r.URL.Path, "/api/sources/")
-	if secretName == "" {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "secret name required")
-		return
-	}
-
-	sec := &corev1.Secret{}
-	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, sec); err != nil {
-		writeError(w, http.StatusNotFound, codeNotFound, "secret not found")
-		return
-	}
-	if sec.Labels[labels.LabelRole] != labels.RoleSource {
-		writeError(w, http.StatusForbidden, codeForbidden, "not a backup source secret")
-		return
-	}
-
-	type sourceInfo struct {
-		SecretName        string `json:"secretName"`
-		Name              string `json:"name"`
-		DBType            string `json:"dbType"`
-		Schedule          string `json:"schedule"`
-		Suspended         bool   `json:"suspended"`
-		Host              string `json:"host"`
-		Port              string `json:"port"`
-		Database          string `json:"database"`
-		Username          string `json:"username"`
-		HasPassword       bool   `json:"hasPassword"`
-		AnalyzerEnabled   string `json:"analyzerEnabled"`
-		EmptyDumpCheck    string `json:"emptyDumpCheck"`
-		Destinations      string `json:"destinations"`
-		JitterMinutes     string `json:"jitterMinutes"`
-		RetentionDays     string `json:"retentionDays"`
-		MinKeep           string `json:"minKeep"`
-		RowDropThreshold  string `json:"rowDropThreshold"`
-		SizeDropThreshold string `json:"sizeDropThreshold"`
-		AnonymizeTables   string `json:"anonymizeTables"`
-		// Restore-verification settings — empty when annotation absent.
-		RestoreVerificationMode     string `json:"restoreVerificationMode"`
-		RestoreVerificationInterval string `json:"restoreVerificationInterval"`
-		VerificationImage           string `json:"verificationImage"`
-		VerificationVolumeSize      string `json:"verificationVolumeSize"`
-		Compression                 string `json:"compression"`
-	}
-
-	name := sec.Annotations[labels.AnnotationName]
-	if name == "" {
-		name = sec.Name
-	}
-
-	writeJSON(w, http.StatusOK, sourceInfo{
-		SecretName:        sec.Name,
-		Name:              name,
-		DBType:            sec.Labels[labels.LabelDBType],
-		Schedule:          sec.Annotations[labels.AnnotationSchedule],
-		Suspended:         strings.EqualFold(strings.TrimSpace(sec.Annotations[labels.AnnotationSuspended]), "true"),
-		Host:              string(sec.Data["host"]),
-		Port:              string(sec.Data["port"]),
-		Database:          string(sec.Data["database"]),
-		Username:          string(sec.Data["username"]),
-		HasPassword:       len(sec.Data["password"]) > 0,
-		AnalyzerEnabled:   sec.Annotations[labels.AnnotationAnalyzerEnabled],
-		EmptyDumpCheck:    sec.Annotations[labels.AnnotationEmptyDumpCheck],
-		Destinations:      sec.Annotations[labels.AnnotationDestinations],
-		JitterMinutes:     sec.Annotations[labels.AnnotationJitterMinutes],
-		RetentionDays:     sec.Annotations[labels.AnnotationRetentionDays],
-		MinKeep:           sec.Annotations[labels.AnnotationMinKeep],
-		RowDropThreshold:  sec.Annotations[labels.AnnotationRowDropThreshold],
-		SizeDropThreshold: sec.Annotations[labels.AnnotationSizeDropThreshold],
-		AnonymizeTables:   sec.Annotations[labels.AnnotationAnonymizeTables],
-		RestoreVerificationMode:     sec.Annotations[labels.AnnotationRestoreVerificationMode],
-		RestoreVerificationInterval: sec.Annotations[labels.AnnotationRestoreVerificationInterval],
-		VerificationImage:           sec.Annotations[labels.AnnotationVerificationImage],
-		VerificationVolumeSize:      sec.Annotations[labels.AnnotationVerificationVolumeSize],
-		Compression:                 sec.Annotations[labels.AnnotationCompression],
-	})
-}
-
-// handleAPIGetDestination returns a single destination secret's configuration (without sensitive keys).
-func (s *Server) handleAPIGetDestination(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "GET required")
-		return
-	}
-	secretName := trimPrefixPath(r.URL.Path, "/api/destinations/")
-	if secretName == "" {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "secret name required")
-		return
-	}
-
-	sec := &corev1.Secret{}
-	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, sec); err != nil {
-		writeError(w, http.StatusNotFound, codeNotFound, "secret not found")
-		return
-	}
-	if sec.Labels[labels.LabelRole] != labels.RoleDestination {
-		writeError(w, http.StatusForbidden, codeForbidden, "not a backup destination secret")
-		return
-	}
-
-	name := sec.Annotations[labels.AnnotationName]
-	if name == "" {
-		name = sec.Name
-	}
-
-	safeData := make(map[string]string)
-	// Mask every credential-bearing data key. Names must match the actual
-	// destination Secret schema (§6.5): S3 uses access-key-id /
-	// secret-access-key, SFTP uses ssh-private-key / password, Azure uses
-	// account-key, GCS uses service-account-json. access-key-id, account-key
-	// and service-account-json were previously absent here, so those secrets
-	// leaked in plaintext on GET. The extra legacy aliases (access-key,
-	// secret-key) are harmless.
-	sensitiveKeys := map[string]bool{
-		"password": true, "ssh-private-key": true, "secret-key": true,
-		"access-key": true, "secret-access-key": true, "access-key-id": true,
-		"account-key": true, "service-account-json": true,
-	}
-	for k, v := range sec.Data {
-		if sensitiveKeys[k] {
-			safeData[k] = "***"
-		} else {
-			safeData[k] = string(v)
-		}
-	}
-
-	type destInfo struct {
-		SecretName  string            `json:"secretName"`
-		Name        string            `json:"name"`
-		StorageType string            `json:"storageType"`
-		PathPrefix  string            `json:"pathPrefix"`
-		Data        map[string]string `json:"data"`
-	}
-
-	writeJSON(w, http.StatusOK, destInfo{
-		SecretName:  sec.Name,
-		Name:        name,
-		StorageType: sec.Labels[labels.LabelStorageType],
-		PathPrefix:  sec.Annotations[labels.AnnotationPathPrefix],
-		Data:        safeData,
-	})
-}
-
-// --- Destination connectivity test ---
-
-func (s *Server) handleAPITestDestination(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "POST required")
-		return
-	}
-	secretName := trimPrefixPath(r.URL.Path, "/api/destinations/")
-	secretName = strings.TrimSuffix(secretName, "/test")
-
-	var sec corev1.Secret
-	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{Namespace: s.cfg.Namespace, Name: secretName}, &sec); err != nil {
-		writeError(w, http.StatusNotFound, codeNotFound, "destination secret not found")
-		return
-	}
-	if sec.Labels[labels.LabelRole] != labels.RoleDestination {
-		writeError(w, http.StatusForbidden, codeForbidden, "not a destination secret")
-		return
-	}
-
-	dest, err := secrets.ParseDestination(&sec)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "invalid destination config")
-		return
-	}
-
-	st, err := s.storageFor(dest, "test-connection")
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":    false,
-			"error": "storage init failed: " + sanitizeStorageError(err),
-		})
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-
-	// Real write probe: upload a tiny object, read it back, delete it. List
-	// alone only verifies dial+login, which masks the common failure of
-	// "credentials valid but user has no write permission" — exactly the
-	// case where backups will run forever without ever landing a byte.
-	probePath := fmt.Sprintf(".backup-operator-probe-%d", time.Now().UnixNano())
-	payload := []byte("backup-operator connectivity probe")
-	if err := st.Upload(ctx, probePath, strings.NewReader(string(payload))); err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":    false,
-			"error": "upload failed: " + sanitizeStorageError(err),
-		})
-		return
-	}
-	// Best-effort cleanup — even if Delete fails the destination is
-	// still proven writable, but we want to leave no trace if possible.
-	defer func() {
-		delCtx, delCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer delCancel()
-		_ = st.Delete(delCtx, probePath)
-	}()
-	rc, err := st.Get(ctx, probePath)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":    false,
-			"error": "readback failed: " + sanitizeStorageError(err),
-		})
-		return
-	}
-	defer func() { _ = rc.Close() }()
-	got, _ := io.ReadAll(rc)
-	if string(got) != string(payload) {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":    false,
-			"error": fmt.Sprintf("readback mismatch: wrote %d bytes, got %d", len(payload), len(got)),
-		})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
 // --- Destination storage stats ---
 
 type destStorageStats struct {
-	Name         string `json:"name"`
-	StorageType  string `json:"storageType"`
-	TotalFiles   int    `json:"totalFiles"`
-	TotalSizeBytes int64 `json:"totalSizeBytes"`
-	BackupCount  int    `json:"backupCount"`
-	MetaCount    int    `json:"metaCount"`
-	OldestBackup string `json:"oldestBackup,omitempty"`
-	NewestBackup string `json:"newestBackup,omitempty"`
-	Error        string `json:"error,omitempty"`
+	Name           string `json:"name"`
+	StorageType    string `json:"storageType"`
+	TotalFiles     int    `json:"totalFiles"`
+	TotalSizeBytes int64  `json:"totalSizeBytes"`
+	BackupCount    int    `json:"backupCount"`
+	MetaCount      int    `json:"metaCount"`
+	OldestBackup   string `json:"oldestBackup,omitempty"`
+	NewestBackup   string `json:"newestBackup,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 func (s *Server) handleAPIDestinationStats(w http.ResponseWriter, r *http.Request) {
@@ -1069,36 +227,25 @@ func (s *Server) handleAPIDestinationStats(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var list corev1.SecretList
-	if err := s.cfg.Client.List(r.Context(), &list, client.InNamespace(s.cfg.Namespace), client.MatchingLabels{
-		labels.LabelRole: labels.RoleDestination,
-	}); err != nil {
+	dests, err := s.data.listDestinations(r.Context())
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, codeInternal, "internal error")
 		return
 	}
 
-	results := make([]destStorageStats, len(list.Items))
+	results := make([]destStorageStats, len(dests))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 4)
-	for i := range list.Items {
+	for i := range dests {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			defer safe.Goroutine(s.cfg.Logger, "destination-stats", list.Items[idx].Name)
+			dest := dests[idx]
+			defer safe.Goroutine(s.cfg.Logger, "destination-stats", dest.Name)
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-r.Context().Done():
-				return
-			}
-
-			sec := &list.Items[idx]
-			dest, err := secrets.ParseDestination(sec)
-			if err != nil {
-				results[idx] = destStorageStats{
-					Name:  sec.Annotations[labels.AnnotationName],
-					Error: "invalid config",
-				}
 				return
 			}
 
@@ -1198,9 +345,9 @@ type destHealthEntry struct {
 	// one scrub has run for this pair. ScrubStatus is "" when no scrub data
 	// is available — the UI can then either hide the column or render
 	// "disabled" depending on whether the operator advertises scrub support.
-	ScrubStatus       string `json:"scrubStatus,omitempty"`        // "ok" | "failed"
-	ScrubLastCheck    int64  `json:"scrubLastCheck,omitempty"`     // unix seconds
-	ScrubFailedTotal  int64  `json:"scrubFailedTotal,omitempty"`   // cumulative failures
+	ScrubStatus      string `json:"scrubStatus,omitempty"`      // "ok" | "failed"
+	ScrubLastCheck   int64  `json:"scrubLastCheck,omitempty"`   // unix seconds
+	ScrubFailedTotal int64  `json:"scrubFailedTotal,omitempty"` // cumulative failures
 }
 
 func (s *Server) handleAPIDestinationHealth(w http.ResponseWriter, r *http.Request) {
@@ -1215,21 +362,10 @@ func (s *Server) handleAPIDestinationHealth(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	var destList corev1.SecretList
-	if err := s.cfg.Client.List(r.Context(), &destList, client.InNamespace(s.cfg.Namespace), client.MatchingLabels{
-		labels.LabelRole: labels.RoleDestination,
-	}); err != nil {
+	dests, err := s.data.listDestinations(r.Context())
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, codeInternal, "internal error")
 		return
-	}
-
-	dests := make([]*secrets.Destination, 0, len(destList.Items))
-	for i := range destList.Items {
-		d, err := secrets.ParseDestination(&destList.Items[i])
-		if err != nil {
-			continue
-		}
-		dests = append(dests, d)
 	}
 
 	type lookupResult struct {
@@ -1464,26 +600,15 @@ func (s *Server) handleAPIConsistencyCheck(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var destList corev1.SecretList
-	if err := s.cfg.Client.List(r.Context(), &destList, client.InNamespace(s.cfg.Namespace), client.MatchingLabels{
-		labels.LabelRole: labels.RoleDestination,
-	}); err != nil {
+	dests, err := s.data.listDestinations(r.Context())
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, codeInternal, "internal error")
 		return
 	}
 
-	dests := make([]*secrets.Destination, 0, len(destList.Items))
-	for i := range destList.Items {
-		d, err := secrets.ParseDestination(&destList.Items[i])
-		if err != nil {
-			continue
-		}
-		dests = append(dests, d)
-	}
-
 	// Fetch runs per destination
 	type destRuns struct {
-		name      string
+		name       string
 		timestamps map[string]bool
 	}
 	allDestRuns := make([]destRuns, len(dests))
@@ -1629,7 +754,7 @@ func uiReportingInstance() string {
 }
 
 // emitUIEvent records a Kubernetes Event against any object the UI mutates
-// (Secret, ConfigMap). Best-effort — failing to emit must not abort the
+// (BackupSource, BackupDestination, BackupRecipient). Best-effort — failing to emit must not abort the
 // mutation. The events.k8s.io/v1 schema requires ReportingController,
 // ReportingInstance, and Action whenever EventTime is set; omitting any of
 // them produces a "Required value" rejection from the API server and the
@@ -1659,28 +784,16 @@ func (s *Server) emitUIEvent(ctx context.Context, ref corev1.ObjectReference, re
 	}
 }
 
-// emitMutationEvent records a Kubernetes Event against the mutated Secret so
-// CRUD operations appear in `kubectl describe secret` and in the audit log
-// served by /api/audit-log.
-func (s *Server) emitMutationEvent(ctx context.Context, sec *corev1.Secret, reason, message string) {
+// emitObjectEvent records a Kubernetes Event against a backup.mogenius.io
+// object the UI mutated so CRUD operations appear in `kubectl describe` and
+// in the audit log served by /api/audit-log.
+func (s *Server) emitObjectEvent(ctx context.Context, obj client.Object, kind, reason, message string) {
 	s.emitUIEvent(ctx, corev1.ObjectReference{
-		Kind:       "Secret",
-		Namespace:  sec.Namespace,
-		Name:       sec.Name,
-		UID:        sec.UID,
-		APIVersion: "v1",
-	}, reason, message)
-}
-
-// emitConfigMapEvent records a Kubernetes Event against a ConfigMap. Used for
-// settings mutations so they appear in the audit log alongside Secret changes.
-func (s *Server) emitConfigMapEvent(ctx context.Context, cm *corev1.ConfigMap, reason, message string) {
-	s.emitUIEvent(ctx, corev1.ObjectReference{
-		Kind:       "ConfigMap",
-		Namespace:  cm.Namespace,
-		Name:       cm.Name,
-		UID:        cm.UID,
-		APIVersion: "v1",
+		Kind:       kind,
+		Namespace:  obj.GetNamespace(),
+		Name:       obj.GetName(),
+		UID:        obj.GetUID(),
+		APIVersion: v1alpha1.GroupVersion.String(),
 	}, reason, message)
 }
 

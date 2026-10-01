@@ -1,0 +1,463 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: backupsources.backup.mogenius.io
+spec:
+  group: backup.mogenius.io
+  names:
+    categories:
+    - backup
+    kind: BackupSource
+    listKind: BackupSourceList
+    plural: backupsources
+    shortNames:
+    - bsrc
+    singular: backupsource
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.database.type
+      name: Type
+      type: string
+    - jsonPath: .status.materializedSchedule
+      name: Schedule
+      type: string
+    - jsonPath: .spec.suspended
+      name: Suspended
+      type: boolean
+    - jsonPath: .status.lastRunStatus
+      name: Last Run
+      type: string
+    - jsonPath: .status.lastSuccessTime
+      name: Last Success
+      type: date
+    - jsonPath: .status.restoreVerification.verdict
+      name: Verified
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: BackupSource is one database the operator backs up on a schedule.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              BackupSourceSpec declares one database to back up: where it is, how to
+              authenticate, when to run, and which safety checks to apply.
+            properties:
+              analyzer:
+                description: Analyzer tunes the semantic dump analysis.
+                properties:
+                  anonymizeTables:
+                    description: AnonymizeTables hashes table names in meta.json.
+                    type: boolean
+                  emptyDumpCheck:
+                    description: |-
+                      EmptyDumpCheck hard-fails a run whose dump has no data although the
+                      source has rows. Default true; disable for schema-only sources.
+                    type: boolean
+                  enabled:
+                    description: |-
+                      Enabled toggles pre-dump stats collection and the run-to-run
+                      comparison. Default true.
+                    type: boolean
+                  rowDropThresholdPercent:
+                    description: |-
+                      RowDropThresholdPercent flags a table whose row count fell below this
+                      percentage of the previous run. Default 50.
+                    format: int32
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                  sizeDropThresholdPercent:
+                    description: |-
+                      SizeDropThresholdPercent flags a dump whose size fell below this
+                      percentage of the previous run. Default 50.
+                    format: int32
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                type: object
+              compression:
+                default: gzip
+                description: Compression algorithm applied to the dump before encryption.
+                enum:
+                - gzip
+                - zstd
+                type: string
+              database:
+                description: Database describes the connection and the credentials
+                  Secret.
+                properties:
+                  credentialsSecretRef:
+                    description: CredentialsSecretRef points at the Secret holding
+                      the password.
+                    properties:
+                      name:
+                        description: Name of the Secret.
+                        minLength: 1
+                        type: string
+                      passwordKey:
+                        default: password
+                        description: PasswordKey is the data key holding the password.
+                        type: string
+                      usernameKey:
+                        description: |-
+                          UsernameKey, when set, reads the username from the Secret instead of
+                          spec.database.username.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  extra:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      Extra passes engine-specific options to the dumper (e.g.
+                      max-allowed-packet for MySQL, authSource/replicaSet for Mongo).
+                      Replaces the legacy backup.mogenius.io/extra-<key> annotations.
+                    type: object
+                  host:
+                    description: Host is the database hostname or IP.
+                    minLength: 1
+                    type: string
+                  name:
+                    description: |-
+                      Name is the database to dump. Required for postgres/mysql/mariadb.
+                      Optional for mongo (all non-system DBs) and redis (DB index or
+                      comma-separated list; narrows stats only).
+                    type: string
+                  port:
+                    description: Port defaults per engine (5432, 3306, 27017, 6379).
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  tls:
+                    description: TLS configures transport encryption to the database.
+                    properties:
+                      caSecretRef:
+                        description: |-
+                          CASecretRef supplies a CA bundle. The worker materialises it to a file
+                          inside the pod and hands the path to the dump tool and the stats
+                          connection, which is what makes verify-ca / verify-full possible.
+                        properties:
+                          key:
+                            minLength: 1
+                            type: string
+                          name:
+                            minLength: 1
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      mode:
+                        description: |-
+                          Mode is engine-specific: postgres accepts libpq sslmode values
+                          (disable, prefer, require, verify-ca, verify-full); mysql/mariadb and
+                          redis accept true/false plus verify-ca/verify-identity for mysql.
+                        type: string
+                    type: object
+                  type:
+                    description: Type selects the dumper.
+                    enum:
+                    - postgres
+                    - mysql
+                    - mariadb
+                    - mongo
+                    - redis
+                    type: string
+                  username:
+                    description: |-
+                      Username for the connection. Required for every engine except redis.
+                      Ignored when credentialsSecretRef.usernameKey is set.
+                    type: string
+                required:
+                - credentialsSecretRef
+                - host
+                - type
+                type: object
+              destinations:
+                description: |-
+                  Destinations is an allow-list of BackupDestination names. Empty fans
+                  out to every destination in the namespace.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
+              jitterMinutes:
+                description: |-
+                  JitterMinutes spreads the cron minute across an N-minute window via a
+                  deterministic per-source hash. Unset: jitter only when the schedule's
+                  minute field is literally "0". 0 pins the schedule exactly. Multi-fire
+                  schedules (*/15, 0,30, ranges) are never jittered.
+                format: int32
+                maximum: 60
+                minimum: 0
+                type: integer
+              restoreVerification:
+                description: RestoreVerification configures the periodic prove-it-restores
+                  check.
+                properties:
+                  image:
+                    description: Image overrides the verifier DB pod image (Phase
+                      2 only).
+                    type: string
+                  interval:
+                    description: Interval is the minimum gap between verifier runs.
+                      Default 168h.
+                    type: string
+                  mode:
+                    default: "off"
+                    description: |-
+                      Mode selects how deep the verification goes. Phase-2 modes
+                      (schema-only, sample, full) spawn an ephemeral DB pod and need the
+                      worker RBAC from restoreVerification.enableEphemeralPodSpawn.
+                    enum:
+                    - "off"
+                    - stream-validate
+                    - schema-only
+                    - sample
+                    - full
+                    type: string
+                  volumeSize:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      VolumeSize is the emptyDir sizeLimit of the verifier pod (Phase 2
+                      only). Defaults per mode: 1Gi / 5Gi / 50Gi.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                type: object
+              retention:
+                description: Retention controls pruning of old artifacts.
+                properties:
+                  days:
+                    description: |-
+                      Days deletes dumps older than N days. 0 keeps forever. Unset uses the
+                      operator default.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  minKeep:
+                    description: |-
+                      MinKeep is the safety floor: never delete below this many newest
+                      dumps regardless of age. Unset uses the operator default.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                type: object
+              schedule:
+                description: |-
+                  Schedule is a standard 5-field cron expression. Empty uses the
+                  operator's DEFAULT_SCHEDULE.
+                type: string
+              suspended:
+                description: |-
+                  Suspended pauses scheduled runs (Spec.Suspend on the CronJob) without
+                  deleting anything. Manual triggers still run.
+                type: boolean
+              targetName:
+                description: |-
+                  TargetName is the logical name used in storage paths, metric labels
+                  and CronJob names. Defaults to metadata.name. Only set this when a
+                  source was migrated from the legacy Secret model and must keep its
+                  existing storage prefix — renaming it orphans the run history.
+                maxLength: 253
+                pattern: ^[A-Za-z0-9][A-Za-z0-9._-]*$
+                type: string
+            required:
+            - database
+            type: object
+          status:
+            description: |-
+              BackupSourceStatus is written by the operator only. The worker never
+              touches it — everything here is reconstructed from the CronJob and from
+              the meta.json sidecars in storage, which keeps worker RBAC minimal.
+            properties:
+              conditions:
+                description: 'Conditions: Ready, LastRunSucceeded, Verified.'
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              cronJobName:
+                description: CronJobName is the managed batch/v1.CronJob.
+                type: string
+              destinations:
+                description: Destinations lists the per-destination outcome of the
+                  most recent run.
+                items:
+                  description: DestinationRunStatus is one destination's result in
+                    the most recent run.
+                  properties:
+                    error:
+                      type: string
+                    lastSuccessTime:
+                      format: date-time
+                      type: string
+                    name:
+                      type: string
+                    status:
+                      description: Status is "success" or "failed".
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              lastDumpSizeBytes:
+                description: |-
+                  LastDumpSizeBytes is the encrypted size of the most recent successful
+                  dump.
+                format: int64
+                type: integer
+              lastRunAnomalies:
+                description: LastRunAnomalies is the analyzer anomaly count of the
+                  most recent run.
+                format: int32
+                type: integer
+              lastRunError:
+                description: |-
+                  LastRunError carries the sanitized failure message of the most recent
+                  run when it failed.
+                type: string
+              lastRunStatus:
+                description: LastRunStatus is "success" or "failed" for the most recent
+                  run.
+                type: string
+              lastRunTime:
+                description: LastRunTime is the start time of the most recent run
+                  (any outcome).
+                format: date-time
+                type: string
+              lastSuccessTime:
+                description: LastSuccessTime is the start time of the most recent
+                  successful run.
+                format: date-time
+                type: string
+              materializedSchedule:
+                description: |-
+                  MaterializedSchedule is the post-jitter cron expression the CronJob
+                  actually fires on.
+                type: string
+              nextScheduleTime:
+                description: |-
+                  NextScheduleTime is the next fire time computed from the materialized
+                  schedule. Absent while suspended.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the spec generation the status
+                  reflects.
+                format: int64
+                type: integer
+              restoreVerification:
+                description: RestoreVerification is the most recent verifier verdict.
+                properties:
+                  completedAt:
+                    format: date-time
+                    type: string
+                  error:
+                    type: string
+                  mode:
+                    type: string
+                  verdict:
+                    description: Verdict is match, mismatch or skipped.
+                    type: string
+                type: object
+              schemaChangedAt:
+                description: SchemaChangedAt is when the schema fingerprint last changed.
+                format: date-time
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

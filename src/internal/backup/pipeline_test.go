@@ -27,10 +27,12 @@ type mockStorage struct {
 	listErr error
 }
 
-func (m *mockStorage) Name() string                                            { return m.name }
-func (m *mockStorage) Upload(_ context.Context, _ string, _ io.Reader) error   { return nil }
-func (m *mockStorage) Get(_ context.Context, _ string) (io.ReadCloser, error)  { return io.NopCloser(&bytes.Buffer{}), nil }
-func (m *mockStorage) Delete(_ context.Context, _ string) error                { return nil }
+func (m *mockStorage) Name() string                                          { return m.name }
+func (m *mockStorage) Upload(_ context.Context, _ string, _ io.Reader) error { return nil }
+func (m *mockStorage) Get(_ context.Context, _ string) (io.ReadCloser, error) {
+	return io.NopCloser(&bytes.Buffer{}), nil
+}
+func (m *mockStorage) Delete(_ context.Context, _ string) error { return nil }
 func (m *mockStorage) List(_ context.Context, _ string) ([]storage.Object, error) {
 	return m.objects, m.listErr
 }

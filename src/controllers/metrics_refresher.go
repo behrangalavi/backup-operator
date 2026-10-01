@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -15,8 +16,9 @@ import (
 	"backup-operator/storage"
 
 	"github.com/go-logr/logr"
-	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"backup-operator/api/v1alpha1"
 )
 
 const (
@@ -49,6 +51,9 @@ type MetricsRefresher struct {
 	Logger    logr.Logger
 	Namespace string
 	Interval  time.Duration
+	// DefaultSchedule mirrors the operator's DEFAULT_SCHEDULE so the
+	// materialised schedule written to status matches the CronJob.
+	DefaultSchedule string
 
 	// Pool is the per-destination storage cache. Optional — left nil the
 	// refresher lazy-builds its own pool on first refresh, but production
@@ -69,7 +74,7 @@ type MetricsRefresher struct {
 	// target on the previous tick. The refresher fires a broadcast when
 	// the new tick finds a strictly newer timestamp, so we never
 	// re-emit for unchanged data (which would flood the SSE channel).
-	tsMu            sync.Mutex
+	tsMu              sync.Mutex
 	lastSeenTimestamp map[string]string
 
 	// trackedTargets remembers which targets we exposed last refresh, so we
@@ -238,9 +243,9 @@ func (r *MetricsRefresher) ensurePool() {
 
 func (r *MetricsRefresher) refresh(ctx context.Context) {
 	r.ensurePool()
-	res, err := listBackupSecrets(ctx, r.Client, r.Namespace, r.Logger)
+	res, err := listBackupObjects(ctx, r.Client, r.Namespace, r.Logger)
 	if err != nil {
-		r.Logger.Error(err, "list secrets")
+		r.Logger.Error(err, "list backup objects")
 		return
 	}
 
@@ -275,6 +280,7 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 		current   = make(map[string]bool, len(sources))
 		wg        sync.WaitGroup
 		workers   = make(chan struct{}, defaultGlobalConcurrency)
+		probes    = newDestProbes()
 	)
 	for i := range sources {
 		s := sources[i] // capture by value — defensive even on Go 1.22+ semantics
@@ -292,21 +298,21 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 				return
 			}
 
-			src, err := secrets.ParseSource(&s, "")
+			src, err := secrets.FromBackupSource(&s, nil, r.DefaultSchedule)
 			if err != nil {
 				metrics.IncSourceParseError(s.Name)
 				// Keep this target's series sticky if we've seen it parse before:
 				// a transient parse error must not make its monitoring go dark
 				// (BackupOverdue can never fire on an absent series).
 				r.mu.Lock()
-				prevTarget, known := r.secretToTarget[secretKey(&s)]
+				prevTarget, known := r.secretToTarget[sourceKey(&s)]
 				r.mu.Unlock()
 				if known {
 					currentMu.Lock()
 					current[prevTarget] = true
 					currentMu.Unlock()
 				}
-				r.Logger.V(1).Info("skipping invalid source; keeping last-known metrics", "secret", s.Name, "err", err.Error())
+				r.Logger.V(1).Info("skipping invalid source; keeping last-known metrics", "source", s.Name, "err", err.Error())
 				return
 			}
 			currentMu.Lock()
@@ -316,9 +322,9 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 			if r.secretToTarget == nil {
 				r.secretToTarget = map[string]string{}
 			}
-			r.secretToTarget[secretKey(&s)] = src.TargetName
+			r.secretToTarget[sourceKey(&s)] = src.TargetName
 			r.mu.Unlock()
-			r.refreshSource(ctx, src, dests)
+			r.refreshSource(ctx, &s, src, dests, probes)
 		}()
 	}
 	wg.Wait()
@@ -327,7 +333,7 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 	// that genuinely disappeared (vs. merely failed to parse, which keeps them).
 	presentSecrets := make(map[string]bool, len(sources))
 	for i := range sources {
-		presentSecrets[secretKey(&sources[i])] = true
+		presentSecrets[sourceKey(&sources[i])] = true
 	}
 
 	r.mu.Lock()
@@ -354,14 +360,16 @@ func (r *MetricsRefresher) refresh(ctx context.Context) {
 		}
 	}
 	r.tsMu.Unlock()
+
+	r.writeDestinationStatuses(ctx, res, probes)
 }
 
-// secretKey identifies a Secret across ticks for the secretToTarget map.
-func secretKey(s *corev1.Secret) string {
+// sourceKey identifies a BackupSource across ticks for the secretToTarget map.
+func sourceKey(s *v1alpha1.BackupSource) string {
 	return s.Namespace + "/" + s.Name
 }
 
-func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Source, all []*secrets.Destination) {
+func (r *MetricsRefresher) refreshSource(ctx context.Context, bs *v1alpha1.BackupSource, src *secrets.Source, all []*secrets.Destination, probes *destProbes) {
 	allowed := secrets.FilterDestinations(src, all)
 
 	// Reconcile the destination label-set up front (independent of whether
@@ -380,10 +388,11 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 	//   - success:   dictates dump_size, table_count, last_success_timestamp —
 	//                fields that only make sense when a real artifact exists
 	var (
-		newest, success        *meta.MetaFile
-		newestTS, successTS    time.Time
-		resultMu               sync.Mutex
-		wg                     sync.WaitGroup
+		newest, success     *meta.MetaFile
+		newestTS, successTS time.Time
+		resultMu            sync.Mutex
+		wg                  sync.WaitGroup
+		runs                = make(map[string]destRun, len(allowed))
 	)
 	for _, d := range allowed {
 		// Acquire the per-destination slot BEFORE spawning the goroutine.
@@ -416,7 +425,8 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 				metrics.SetDestinationFailed(src.TargetName, d.Name, true)
 				return
 			}
-			m, ts, outcome := loadLatestMeta(ctx, st, src.TargetName)
+			m, ts, outcome, perr := loadLatestMeta(ctx, st, src.TargetName)
+			probes.record(d.Name, outcome, perr)
 			switch outcome {
 			case metaError:
 				// Storage unreachable / unreadable (offline host, rotated
@@ -438,6 +448,7 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 			}
 
 			resultMu.Lock()
+			runs[d.Name] = destRun{ts: ts, m: m}
 			if newest == nil || ts.After(newestTS) {
 				newest = m
 				newestTS = ts
@@ -450,6 +461,11 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, src *secrets.Sourc
 		}(d)
 	}
 	wg.Wait()
+
+	// Status mirrors the gauges; deferred so it sees the final pivots and
+	// still runs on the no-data-yet early return below (nextScheduleTime
+	// is meaningful before the first run lands).
+	defer r.writeSourceStatus(ctx, bs, src, newest, newestTS, success, successTS, runs)
 
 	if newest == nil {
 		// No data anywhere yet — leave gauges absent. lastRunStatus only
@@ -575,7 +591,7 @@ func (o metaOutcome) String() string {
 // loadLatestMeta fetches and parses the most recent *.meta.json under the
 // given target prefix. The metaOutcome tells callers whether a nil result
 // means "nothing there" (metaEmpty) or "storage is broken" (metaError).
-func loadLatestMeta(ctx context.Context, st storage.Storage, target string) (*meta.MetaFile, time.Time, metaOutcome) {
+func loadLatestMeta(ctx context.Context, st storage.Storage, target string) (*meta.MetaFile, time.Time, metaOutcome, error) {
 	// Reuse one connection for the List + Get when the backend supports it
 	// (SFTP/FTPS). This runs once per (source × destination) every tick on the
 	// refresher and scrubber hot path; without the shared session each call
@@ -585,7 +601,7 @@ func loadLatestMeta(ctx context.Context, st storage.Storage, target string) (*me
 	if bs, ok := st.(storage.BatchStorage); ok {
 		sess, closer, err := bs.WithSession(ctx)
 		if err != nil {
-			return nil, time.Time{}, metaError
+			return nil, time.Time{}, metaError, fmt.Errorf("open session: %w", err)
 		}
 		defer func() { _ = closer() }()
 		active = sess
@@ -593,31 +609,31 @@ func loadLatestMeta(ctx context.Context, st storage.Storage, target string) (*me
 
 	objs, err := active.List(ctx, target+"/")
 	if err != nil {
-		return nil, time.Time{}, metaError
+		return nil, time.Time{}, metaError, fmt.Errorf("list: %w", err)
 	}
 	if len(objs) == 0 {
-		return nil, time.Time{}, metaEmpty
+		return nil, time.Time{}, metaEmpty, nil
 	}
 	latest := mostRecentMeta(objs)
 	if latest.Path == "" {
 		// Objects exist (dumps) but no meta.json — storage is reachable, there
 		// is just nothing parseable to read. Not a destination failure.
-		return nil, time.Time{}, metaEmpty
+		return nil, time.Time{}, metaEmpty, nil
 	}
 	rc, err := active.Get(ctx, latest.Path)
 	if err != nil {
-		return nil, time.Time{}, metaError
+		return nil, time.Time{}, metaError, fmt.Errorf("get %s: %w", latest.Path, err)
 	}
 	defer func() { _ = rc.Close() }()
 	raw, err := io.ReadAll(rc)
 	if err != nil {
-		return nil, time.Time{}, metaError
+		return nil, time.Time{}, metaError, fmt.Errorf("read %s: %w", latest.Path, err)
 	}
 	var m meta.MetaFile
 	if err := json.Unmarshal(raw, &m); err != nil {
 		// A meta object exists but is unreadable — the destination is not
 		// serving good data, so it counts as failed rather than empty.
-		return nil, time.Time{}, metaError
+		return nil, time.Time{}, metaError, fmt.Errorf("parse %s: %w", latest.Path, err)
 	}
 	m.Path = latest.Path
 	ts := latest.LastModified
@@ -627,7 +643,7 @@ func loadLatestMeta(ctx context.Context, st storage.Storage, target string) (*me
 		// replicate with skewed clocks.
 		ts = parsed
 	}
-	return &m, ts, metaOK
+	return &m, ts, metaOK, nil
 }
 
 func mostRecentMeta(objs []storage.Object) storage.Object {

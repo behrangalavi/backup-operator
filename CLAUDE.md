@@ -1,6 +1,6 @@
 # Backup Operator — Claude Code Guide
 
-A Kubernetes-native backup operator in Go for **PostgreSQL**, **MySQL**, **MariaDB**, **MongoDB**, and **Redis**, with public-key encryption (`age`), multi-destination fan-out (SFTP + S3-compatible), semantic dump analysis, and Prometheus-driven alerting. Built on the **Operator-Reconciles-CronJobs** pattern: the operator does not run backups itself; Kubernetes does.
+A Kubernetes-native backup operator in Go for **PostgreSQL**, **MySQL**, **MariaDB**, **MongoDB**, and **Redis**, with public-key encryption (`age`), multi-destination fan-out (SFTP + S3-compatible), semantic dump analysis, and Prometheus-driven alerting. Built on the **Operator-Reconciles-CronJobs** pattern: the operator does not run backups itself; Kubernetes does. Configuration is typed: `BackupSource`, `BackupDestination` and `BackupRecipient` CustomResources carry everything non-secret; only passwords and keys live in Secrets.
 
 ---
 
@@ -10,7 +10,7 @@ A Kubernetes-native backup operator in Go for **PostgreSQL**, **MySQL**, **Maria
 
 K8up, Stash, and Velero all solve adjacent problems but none of them satisfy all three of:
 
-1. **Discovery via labeled Secrets**, not CRDs — labelling a Secret is the entire user contract.
+1. **Typed, validated configuration with status** — a `BackupSource` is rejected at admission when it is wrong and tells you via `kubectl get` when it last succeeded; credentials stay in plain Secrets you can source from the database's own chart.
 2. **Semantic dump analysis** — alerting on dump *content* (table disappeared, row-count collapsed, schema fingerprint changed), not just job status.
 3. **Multi-destination fan-out as first-class** — one dump → N storage backends in parallel, mixed protocols.
 
@@ -18,10 +18,10 @@ This service is what you get when those three are non-negotiable.
 
 ### What it does, end to end
 
-1. The operator watches Secrets in its namespace.
-2. When a Secret carries `backup.mogenius.io/role=source` it produces a `batch/v1.CronJob` mirroring the Secret's schedule annotation.
+1. The operator watches `BackupSource`, `BackupDestination` and `BackupRecipient` objects in its namespace.
+2. For every `BackupSource` it produces a `batch/v1.CronJob` mirroring `spec.schedule` and writes the result back into `status`.
 3. At cron-tick, Kubernetes spawns a `Job` whose pod runs the **worker** binary.
-4. The worker reads its source Secret, lists destination Secrets, dumps the database, encrypts with `age` (public key only), uploads to all destinations in parallel.
+4. The worker reads its `BackupSource` plus the referenced credentials Secret, lists `BackupDestinations` (each with its credentials Secret), dumps the database, encrypts with `age` (public key only), uploads to all destinations in parallel.
 5. Before the dump it captures table-level statistics; after upload it compares with the previous run's stats and exposes the result as Prometheus metrics.
 6. Retention prunes old artifacts, with a safety floor that prevents accidentally deleting the most recent N.
 7. For recovery, an operator runs the **restore** CLI on their own machine with the offline `age` private key.
@@ -34,8 +34,8 @@ This service is what you get when those three are non-negotiable.
                                 ┌──────────────────────────────────────────────┐
                                 │ Kubernetes API                               │
                                 │                                              │
-   user labels Secret           │   Source Secret  ←┐                          │
-            │                   │                   │ OwnerReference (GC)      │
+   user applies BackupSource    │   BackupSource   ←┐                          │
+            │                   │   (+ creds Secret)│ OwnerReference (GC)      │
             ▼                   │                   ▼                          │
    ┌──────────────────┐  watch  │   batch/v1.CronJob ──tick──▶ batch/v1.Job    │
    │ Operator pod     ├─────────▶                                  │           │
@@ -49,10 +49,10 @@ This service is what you get when those three are non-negotiable.
                                                                   │
                                           stats + dump + encrypt  │  list destinations
                                                                   ▼
-                                                          ┌──────────────────┐
-                                                          │ Destination Secrets │
-                                                          │ (SFTP, S3, ...)     │
-                                                          └──────────────────┘
+                                                          ┌─────────────────────┐
+                                                          │ BackupDestinations  │
+                                                          │ (+ creds Secrets)   │
+                                                          └─────────────────────┘
                                                                   │
                                                        fan-out, parallel
                                                                   ▼
@@ -76,9 +76,9 @@ This service is what you get when those three are non-negotiable.
 
 | Binary | Where it runs | Purpose | Why separate |
 |---|---|---|---|
-| `backup-operator` | Operator Deployment | Reconciles Source Secret → managed CronJob | Stays small, can be replicated, cannot be crowded out by a big dump |
+| `backup-operator` | Operator Deployment | Reconciles BackupSource → managed CronJob + status | Stays small, can be replicated, cannot be crowded out by a big dump |
 | `backup-worker` | CronJob-spawned Job pod | One-shot: dump → encrypt → fan-out → retention | One pod per backup run, isolated resources, native K8s observability |
-| `backup-restore` | Operator's laptop | List + decrypt + extract a chosen artifact | Only place the age private key ever lives |
+| `backup-restore` | Operator's laptop | List + decrypt + extract a chosen artifact; `migrate` subcommand converts legacy Secrets | Only place the age private key ever lives |
 
 The container image ships the two in-cluster binaries — `backup-operator` and `backup-worker` — with the entrypoint differing per pod. `backup-restore` is deliberately NOT in the image: it is built separately and runs on the operator's machine, the only place the age private key ever lives (see §5.3 and the "Restore is a separate binary" ADR).
 
@@ -101,57 +101,77 @@ helm install backup-operator ./charts/backup-operator -n backup --create-namespa
 # String form is also accepted:
 #   --set agePublicKeys="age1qx..."  (single key only — CLI cannot pass a literal newline)
 
-# 3. Label a database Secret as a source
+# 3. Declare a source: connection in the CR, password in a Secret
 kubectl -n backup apply -f - <<'EOF'
 apiVersion: v1
 kind: Secret
 metadata:
-  name: prod-users-db
-  labels:
-    backup.mogenius.io/role: source
-    backup.mogenius.io/db-type: postgres
-  annotations:
-    backup.mogenius.io/name: "prod-users"
-    backup.mogenius.io/schedule: "0 2 * * *"
-data:
-  host: <base64>
-  port: <base64>      # optional, defaults to 5432
-  database: <base64>
-  username: <base64>
-  password: <base64>
+  name: prod-users-credentials
+stringData:
+  password: <db password>
+---
+apiVersion: backup.mogenius.io/v1alpha1
+kind: BackupSource
+metadata:
+  name: prod-users          # also the target name in storage paths and metrics
+spec:
+  database:
+    type: postgres
+    host: pg.prod.svc
+    port: 5432              # optional, defaults to 5432
+    name: users
+    username: backup
+    credentialsSecretRef:
+      name: prod-users-credentials
+  schedule: "0 2 * * *"
 EOF
 
-# 4. Label a destination Secret (Hetzner Storage Box example)
+# 4. Declare a destination (Hetzner Storage Box example)
 kubectl -n backup apply -f - <<'EOF'
 apiVersion: v1
 kind: Secret
 metadata:
-  name: hetzner-sb
-  labels:
-    backup.mogenius.io/role: destination
-    backup.mogenius.io/storage-type: hetzner-sftp
-  annotations:
-    backup.mogenius.io/name: "hetzner"
-    backup.mogenius.io/path-prefix: "/cluster-prod"
-data:
-  host: <base64>
-  port: <base64>            # 23 for Hetzner
-  username: <base64>
-  ssh-private-key: <base64>
-  known-hosts: <base64>     # ssh-keyscan output, recommended
+  name: hetzner-credentials
+stringData:
+  ssh-private-key: |
+    -----BEGIN OPENSSH PRIVATE KEY-----
+    ...
+---
+apiVersion: backup.mogenius.io/v1alpha1
+kind: BackupDestination
+metadata:
+  name: hetzner
+spec:
+  type: sftp
+  pathPrefix: /cluster-prod
+  sftp:
+    host: u123.your-storagebox.de
+    port: 23                # Hetzner Storage Box
+    username: u123
+    knownHosts: |           # ssh-keyscan output, recommended
+      [u123.your-storagebox.de]:23 ssh-rsa AAAA...
+  credentialsSecretRef:
+    name: hetzner-credentials
 EOF
 
-# 5. Confirm a CronJob was created
+# 5. Confirm the source is Ready and a CronJob was created
+kubectl -n backup get backupsources
+# NAME         TYPE       SCHEDULE    SUSPENDED   LAST RUN   LAST SUCCESS   VERIFIED   READY   AGE
+# prod-users   postgres   37 2 * * *                                                  True    5s
 kubectl -n backup get cronjobs
-# NAME                       SCHEDULE      ...
-# backup-prod-users-db       0 2 * * *
+# NAME                 SCHEDULE      ...
+# backup-prod-users    37 2 * * *
 
 # 6. Trigger a manual run instead of waiting
-kubectl -n backup create job --from=cronjob/backup-prod-users-db manual-$(date +%s)
+kubectl -n backup create job --from=cronjob/backup-prod-users manual-$(date +%s)
 
 # 7. Restore
-backup-restore --storage-secret hetzner-sb -n backup --target prod-users \
+backup-restore --destination hetzner -n backup --target prod-users \
   --age-key ~/age.key --decompress | psql -h localhost prod_clone
+
+# Migrating from the pre-CRD model (Secrets labelled backup.mogenius.io/role):
+backup-restore migrate -n backup --age-secret backup-operator-age          # prints manifests
+backup-restore migrate -n backup --age-secret backup-operator-age --apply  # creates them
 ```
 
 ### 3.1 Securing the UI with an Authentication Proxy
@@ -201,7 +221,7 @@ spec:
                   number: 8081
 ```
 
-The operator UI exposes a full management interface: CRUD for source and destination Secrets, manual backup triggers, job status, and live SSE updates. Passwords and SSH keys are masked in API responses (`***`). Authentication prevents unauthorized users from modifying backup configurations or browsing backup history.
+The operator UI exposes a full management interface: CRUD for BackupSources, BackupDestinations and BackupRecipients (plus the credentials Secrets it creates for them), manual backup triggers, job status, and live SSE updates. Passwords and SSH keys are masked in API responses (`***`). Authentication prevents unauthorized users from modifying backup configurations or browsing backup history.
 
 ---
 
@@ -210,16 +230,19 @@ The operator UI exposes a full management interface: CRUD for source and destina
 ```
 src/
 ├── analyzer/            # Stats comparison: schema diffing, row-count drops, size collapse
+├── api/v1alpha1/        # backup.mogenius.io CRD types (BackupSource, BackupDestination, BackupRecipient) + generated DeepCopy; CRD YAML is generated into charts/backup-operator/files/crds (just generate)
 ├── assert/              # Fail-fast assertion utilities (panic on critical errors)
 ├── cmd/
 │   ├── main.go          # Operator binary — pure reconciler
 │   ├── worker/          # Worker binary — one-shot backup runner
-│   └── restore/         # Restore CLI — out-of-cluster
+│   └── restore/         # Restore CLI — out-of-cluster; also `backup-restore migrate` (legacy Secrets → CRs)
 ├── config/              # Singleton env-var config with schema validation
 ├── controllers/
-│   ├── cronjob_controller.go  # Source Secret → batch/v1.CronJob
+│   ├── cronjob_controller.go  # BackupSource → batch/v1.CronJob + Ready condition / materialised schedule in status
+│   ├── list.go                # Lists BackupSources + BackupDestinations and resolves destination credentials Secrets
 │   ├── metrics_refresher.go   # Reconstructs run-level Gauges from each destination's latest meta.json
-│   ├── recipient_reconciler.go # role=age-recipient Secrets → merged Secret AGE_PUBLIC_KEYS; one-time legacy migration in Bootstrap()
+│   ├── status.go / status_writer.go # Change-only status writers: run-level BackupSource status, Reachable on BackupDestination
+│   ├── recipient_reconciler.go # BackupRecipient objects → merged Secret AGE_PUBLIC_KEYS; Bootstrap() seeds chart-provided keys
 │   └── storage_scrub.go       # Periodic SHA256 verification of stored dumps (silent corruption detector)
 ├── crypto/              # age public-key encryption + private-key decryption
 ├── dumper/              # DB dump abstraction
@@ -228,11 +251,15 @@ src/
 │   ├── mysql/           # mysqldump exec + stats via go-sql-driver/mysql
 │   └── mongo/           # mongodump exec + stats via mongo-driver/v2
 ├── internal/
+│   ├── agekeys/         # Hash + object-name helpers for BackupRecipient (shared by operator bootstrap, UI, migrate)
 │   ├── backup/          # Pipeline (worker only): stats → dump → encrypt → fan-out → retention
-│   ├── labels/          # Constants for backup.mogenius.io/* labels & annotations
+│   ├── labels/          # Storage-layout constants: restore-verification modes, compression, dump suffixes, merged-recipients field
 │   ├── meta/            # MetaFile type — deserialized sidecar JSON (shared across pipeline, refresher, UI)
+│   ├── migrate/         # Legacy labelled-Secret → CR conversion (the only place the old label/annotation keys survive)
+│   ├── redact/          # Credential scrubbing for error strings (status fields, Events, UI diagnostics)
 │   ├── safe/            # safe.Goroutine — panic recovery + stack trace; used by every long-lived goroutine in the operator
-│   └── secrets/         # Parses Secrets into Source/Destination configs; FilterDestinations helper
+│   ├── scheduler/       # Cron jitter + next-run computation shared by reconciler, status writer and UI
+│   └── secrets/         # Flattens BackupSource/BackupDestination (+ credentials Secret) into Source/Destination; FilterDestinations
 ├── metrics/             # Prometheus metrics — semantic signals for Alertmanager
 ├── storage/             # Upload destination abstraction
 │   ├── factory/         # Creates the right Storage from storage-type label
@@ -252,9 +279,11 @@ src/
 │   ├── data.go          # Read-side aggregation: listTargets, target detail, estimateDuration, fleetHeatmap (combined heatmap+storage+anomalies+durations+verification). Holds the shared StoragePool reference.
 │   ├── errors_api.go    # Typed API error catalogue (codeValidation, codeNotFound, …) + writeError helper
 │   ├── handlers.go      # Legacy HTML template handlers + /download/<target>/<ts>/{dump|meta} (uses StoragePool)
-│   ├── handlers_api.go  # REST API: CRUD sources/destinations, trigger, SSE, destination-stats/health/consistency, dashboard heatmap; /api/jobs embeds duration estimate; test-connection does a real upload+readback+delete probe
-│   ├── handlers_age_keys.go  # Age recipient CRUD (`/api/age-keys`), backed by per-recipient Secrets
-│   ├── handlers_settings.go  # Settings API: GET/PUT /api/settings, values.yaml export
+│   ├── handlers_api.go  # REST API: trigger, jobs, destination-stats/health/consistency, dashboard heatmap, UI Events; /api/jobs embeds duration estimate
+│   ├── handlers_sources.go      # BackupSource CRUD (+ password-only credentials Secret owned by the CR)
+│   ├── handlers_destinations.go # BackupDestination CRUD (+ credentials Secret); test-connection does a real upload+readback+delete probe
+│   ├── handlers_age_keys.go  # Age recipient CRUD (`/api/age-keys`), backed by BackupRecipient objects
+│   ├── handlers_settings.go  # Settings API: GET /api/settings (effective operator defaults, read-only), values.yaml export
 │   ├── middleware_cache.go   # cachedJSON: ETag + gzip + short Cache-Control on high-volume read endpoints
 │   ├── server.go        # HTTP server, routing, SPA handler, SSE broker, StoragePool interface + storageFor helper
 │   ├── static/          # SPA frontend (vanilla JS, no build step)
@@ -273,7 +302,7 @@ src/
     ├── shell.go         # HTML shell + sidebar nav (no K8s client, no Secret access)
     ├── tech_stack.go    # Generates "tech stack" page from go.mod direct deps
     └── static/          # CSS/JS for the docs portal (vanilla, embedded)
-charts/backup-operator/   # Helm chart (Deployment, RBAC, Service, ServiceMonitor, PrometheusRule)
+charts/backup-operator/   # Helm chart (CRDs via templates/crds.yaml ← files/crds, Deployment, RBAC, Service, ServiceMonitor, PrometheusRule)
 test/local/              # Manifests for the Docker Desktop test stack (see section 16)
 Dockerfile               # Builds operator + worker into one alpine image with DB clients
 Justfile                 # Build/test/lint targets + local test setup
@@ -295,10 +324,10 @@ A pure Kubernetes reconciler. Does **not**:
 
 Does:
 
-- Watch Secrets in `WATCH_NAMESPACE` (filtered by role-label transition predicate)
-- For each Source Secret, ensure a managed `batch/v1.CronJob` exists with the right spec
-- Owns the CronJob via `OwnerReference` so deleting the Secret cascades to the CronJob
-- Detects role-label removal and deletes the orphaned CronJob
+- Watch `BackupSource` objects in `WATCH_NAMESPACE` (generation changes only — status writes don't wake it)
+- For each `BackupSource`, ensure a managed `batch/v1.CronJob` exists with the right spec, then write `Ready`, `cronJobName`, `materializedSchedule` and `nextScheduleTime` into its status
+- Owns the CronJob via `OwnerReference` so deleting the `BackupSource` cascades to the CronJob
+- Read Secrets uncached and by name only (destination credentials for probes, the merged age Secret) — the operator never holds an informer over the namespace's Secrets
 - Leader-elects so concurrent operator replicas don't race on `CreateOrUpdate`
 
 The CronJob's pod-spec is templated from `WORKER_*` env values that the operator carries. Helm sets these to mirror its own image, so worker pods always run the same release as the operator that created them.
@@ -309,12 +338,13 @@ Launched by Kubernetes when the CronJob fires. Runs once and exits.
 
 ```
 main()
-  ├── flags: --source-secret, --namespace
+  ├── flags: --source, --namespace
   ├── config.Initialize  # AGE_PUBLIC_KEYS, RUN_TIMEOUT_SECONDS, TEMP_DIR, ...
-  ├── load source Secret by name
-  ├── parse to secrets.Source (annotations resolved against defaults)
-  ├── list destination Secrets via label selector
-  ├── filter by source.AllowsDestination()  # honors backup.mogenius.io/destinations
+  ├── load BackupSource by name + its credentialsSecretRef Secret
+  ├── flatten to secrets.Source (spec resolved against defaults, password from the Secret)
+  ├── materialise spec.database.tls.caSecretRef to TEMP_DIR (if set)
+  ├── list BackupDestinations, resolve each credentialsSecretRef
+  ├── filter by source.AllowsDestination()  # honors spec.destinations
   ├── construct crypto.Encryptor from AGE_PUBLIC_KEYS
   ├── construct Pipeline with staticDestProvider
   └── pipeline.Run(ctx, src)  ── exit 0 / exit 1
@@ -332,161 +362,152 @@ The pipeline performs (in order):
 
 ### 5.3 Restore (`cmd/restore/main.go` → `backup-restore`)
 
-Local CLI. Uses your `~/.kube/config` to read the destination Secret, downloads the chosen artifact, decrypts with the offline private key, streams to stdout (or a file).
+Local CLI. Uses your `~/.kube/config` to read the `BackupDestination` and its credentials Secret, downloads the chosen artifact, decrypts with the offline private key, streams to stdout (or a file). A failed download removes the partial output file so a truncated dump can never pass for a good one.
 
 ```bash
 # Show what's available
-backup-restore --storage-secret hetzner-sb -n backup --target prod-users --list
+backup-restore --destination hetzner -n backup --target prod-users --list
 
 # Fetch the latest, gunzip, pipe to psql
-backup-restore --storage-secret hetzner-sb -n backup --target prod-users \
+backup-restore --destination hetzner -n backup --target prod-users \
   --age-key ~/age.key --decompress | psql -h localhost prod_clone
 
 # Specific timestamp to file
-backup-restore --storage-secret hetzner-sb -n backup --target prod-users \
+backup-restore --destination hetzner -n backup --target prod-users \
   --age-key ~/age.key --timestamp 20260428T020000Z -o dump.sql.gz
+
+# Convert a namespace from the legacy labelled-Secret model to CRs
+backup-restore migrate -n backup --age-secret backup-operator-age            # print manifests
+backup-restore migrate -n backup --age-secret backup-operator-age --apply    # create them (legacy Secrets kept)
+backup-restore migrate -n backup --apply --delete-legacy                     # ...and remove the legacy Secrets
 ```
 
 ---
 
 ## 6. The Discovery Contract
 
-### 6.1 Labels
+Discovery runs through three CustomResourceDefinitions in the API group
+`backup.mogenius.io/v1alpha1`, all namespaced. Everything non-secret is a
+typed field on the CR; every secret (DB password, SSH key, object-store
+keys) lives in a plain Secret the CR references by name. Validation (enums,
+ranges, name patterns, CEL rules) is enforced by the API server at
+admission, so a typo is rejected at `kubectl apply` instead of silently
+falling back to a default. The Go types are in `src/api/v1alpha1`; the
+generated schema in `charts/backup-operator/files/crds`.
 
-| Label | Required | Values |
+| Kind | Short name | Replaces | Status |
+|---|---|---|---|
+| `BackupSource` | `bsrc` | Secret with `role=source` | `Ready`, `LastRunSucceeded`, `Verified` conditions; run-level fields written by the operator |
+| `BackupDestination` | `bdst` | Secret with `role=destination` | `Reachable` condition from the metrics refresher |
+| `BackupRecipient` | `brcp` | Secret with `role=age-recipient` | none |
+
+`kubectl get backupsources` shows type, materialised schedule, suspended, last run status, last success, verifier verdict and Ready at a glance. The legacy labelled-Secret model is converted with `backup-restore migrate` (§5.3).
+
+### 6.1 `BackupSource.spec`
+
+| Field | Default | Effect |
 |---|---|---|
-| `backup.mogenius.io/role` | **yes** | `source` \| `destination` \| `age-recipient` |
-| `backup.mogenius.io/db-type` | yes (sources only) | `postgres` \| `mysql` \| `mariadb` \| `mongo` \| `redis` |
-| `backup.mogenius.io/storage-type` | yes (destinations only) | `sftp` \| `hetzner-sftp` \| `ftps` \| `s3` \| `azure` \| `gcs` |
+| `targetName` | `metadata.name` | Logical target name used in storage object paths, metric labels and the CronJob name. Validated against `^[A-Za-z0-9][A-Za-z0-9._-]*$` (no `/`, no leading `.`, ≤253 chars) both in the CRD schema and in the flattener, so `../other-tenant` can never escape a destination's prefix. Only set it on sources migrated from the legacy model whose logical name differed from the Secret name — renaming a live target orphans its run history. |
+| `database.type` | **required** | `postgres` \| `mysql` \| `mariadb` \| `mongo` \| `redis` (enum). |
+| `database.host` | **required** | DB hostname. |
+| `database.port` | per type | 5432 / 3306 / 27017 / 6379. |
+| `database.name` | — | Database to dump. Required for postgres/mysql/mariadb; optional for mongo (all non-system DBs) and redis (DB index or comma-separated list — narrows *stats* only, the RDB is always full-instance). |
+| `database.username` | — | Required for every engine except redis (pre-6 password-only AUTH). Ignored when `credentialsSecretRef.usernameKey` is set. |
+| `database.credentialsSecretRef.name` | **required** | Secret in the same namespace holding the password. |
+| `database.credentialsSecretRef.passwordKey` | `password` | Data key of the password. Lets a source point at the Secret the database chart itself produced (CloudNativePG, Bitnami) instead of copying the password. |
+| `database.credentialsSecretRef.usernameKey` | — | When set, the username is read from the Secret too. |
+| `database.tls.mode` | — | Engine-native TLS knob: postgres libpq `sslmode` values (`disable`, `prefer`, `require`, `verify-ca`, `verify-full`); mysql/mariadb and redis `true`/`false` plus `verify-ca`/`verify-identity` for mysql. Applies to BOTH the stats connection and the dump tool (§17.2). |
+| `database.tls.caSecretRef` | — | `{name, key}` of a Secret holding a CA bundle. The worker writes it to `TEMP_DIR` and hands the path to the dumper (`sslrootcert` / `ssl-ca`), which is what makes `verify-ca`/`verify-full` work. mongo/redis have no CA knob in the dumper; the ref is accepted but ignored there. |
+| `database.extra` | — | Free-form engine options (`max-allowed-packet` for MySQL/MariaDB, `authSource`/`replicaSet` for Mongo). Replaces the legacy `extra-<key>` annotations. |
+| `schedule` | `DEFAULT_SCHEDULE` (`0 2 * * *`) | 5-field cron expression (or `@daily`-style descriptor) for the managed CronJob. |
+| `jitterMinutes` | unset | Spread the cron's minute field across an N-minute window via a deterministic per-source hash (hash input: `metadata.name`). Default behaviour (unset): jitter only when the user wrote minute==`0`; non-zero literal minutes are respected. Setting it explicitly opts in on a non-zero literal minute; `0` pins the schedule. Multi-fire schedules (`*/15`, `0,30`, ranges, `*`) are always left alone. 0–60. |
+| `suspended` | `false` | `true` → `Spec.Suspend=true` on the managed CronJob. Existing artifacts and config are kept; manual triggers ignore Suspend. The CR is the source of truth — a manual `kubectl patch cronjob ... suspend=true` is overridden on the next reconcile. |
+| `destinations` | all | Allow-list of `BackupDestination` names (set semantics). Empty = fan out to every destination in the namespace. |
+| `retention.days` | `DEFAULT_RETENTION_DAYS` (30) | Delete dumps older than N days. `0` = keep forever. |
+| `retention.minKeep` | `DEFAULT_MIN_KEEP` (3) | Safety floor — never delete below this many newest dumps. |
+| `compression` | `gzip` | `gzip` or `zstd` (30–50 % better compression at comparable CPU). Stored in `meta.json` so restore and verifiers auto-detect the decompressor. |
+| `analyzer.enabled` | `true` | `false` → skip `CollectStats` and the run-to-run comparison. |
+| `analyzer.rowDropThresholdPercent` | `50` | Flag a table whose row count fell below this percentage of the previous run (1–100). Replaces the legacy `0.5` ratio. |
+| `analyzer.sizeDropThresholdPercent` | `50` | Same for the encrypted dump size. |
+| `analyzer.anonymizeTables` | `false` | Hash table names in `meta.json` with SHA256 (16 hex chars). Row counts preserved. |
+| `analyzer.emptyDumpCheck` | `true` | Hard-fail when the dump appears empty although the source has data (§14). Disable for intentionally schema-only sources. |
+| `restoreVerification.mode` | `off` | `off`, `stream-validate` (Phase 1, no DB-pod-spawn), `schema-only` / `sample` / `full` (Phase 2: spawn an ephemeral DB pod + restore; needs `restoreVerification.enableEphemeralPodSpawn` in the chart). Enum — a typo is rejected at admission, it cannot silently enable a heavyweight mode. |
+| `restoreVerification.interval` | `168h` | Minimum gap between verifier runs (Go duration). State-driven: the worker reads `latestMeta.restoreVerification.completedAt`. The very first verification runs as soon as a baseline meta exists. |
+| `restoreVerification.image` | per type | Verifier DB pod image (Phase 2 only). Defaults in `verifier/restore/engine.go`; the image's DB-user UID must match what the spawner runs the pod as (`runAsUIDForImage`). |
+| `restoreVerification.volumeSize` | per mode | `emptyDir.sizeLimit` of the verifier pod (`1Gi` / `5Gi` / `50Gi`). Kubernetes quantity. |
 
-### 6.2 Source Secret annotations
+### 6.2 `BackupSource.status`
 
-| Annotation | Default | Effect |
+Written by the operator only; the worker never touches it (worker RBAC stays minimal — everything here is reconstructed from the CronJob and the `meta.json` sidecars, exactly like the Prometheus gauges).
+
+| Field | Writer | Meaning |
 |---|---|---|
-| `backup.mogenius.io/name` | Secret name | Logical target name. Used in metrics labels, object paths, CronJob naming. Because it flows into storage object paths via `path.Join`, it is validated at parse time against `^[A-Za-z0-9][A-Za-z0-9._-]*$` (no `/`, no leading `.`, ≤253 chars) — a value like `../other-tenant` is rejected and the Secret is skipped, unlike feature-flag annotations which fall back to a default. |
-| `backup.mogenius.io/schedule` | `DEFAULT_SCHEDULE` (`0 2 * * *`) | Cron expression for the managed CronJob |
-| `backup.mogenius.io/jitter-minutes` | unset | Spread the cron's minute field across an N-minute window via a deterministic per-source hash, to avoid fleet-wide thundering-herd against the storage backend. Default behaviour (annotation absent): jitter only when the user wrote minute==`0` — non-zero literal minutes (e.g. `15 2 * * *`) are respected. Setting it explicitly opts in to spreading even on a non-zero literal minute (window = the value). `0` pins the schedule. Multi-fire schedules (`*/15 * * * *`, `0,30 * * * *`, `0-30 * * * *`, `* * * * *`) are always left alone. Capped at 60. |
-| `backup.mogenius.io/suspended` | `false` | `true` → reconciler sets `Spec.Suspend=true` on the managed CronJob. Existing artifacts and source config are kept; manual triggers (`kubectl create job --from=cronjob/...` or the UI's Run button) ignore Suspend and still run. The Secret is the source of truth — manual `kubectl patch cronjob ... suspend=true` is overridden on the next reconcile. |
-| `backup.mogenius.io/analyzer-enabled` | `true` | `false` → skip `CollectStats` and analyzer for this source |
-| `backup.mogenius.io/destinations` | unset | Comma-separated allow-list of destination *names*. Empty = fan out to all. |
-| `backup.mogenius.io/retention-days` | `DEFAULT_RETENTION_DAYS` (30) | Delete dumps older than N days. `0` = keep forever. |
-| `backup.mogenius.io/min-keep` | `DEFAULT_MIN_KEEP` (3) | Safety floor — never delete below this many newest dumps. |
-| `backup.mogenius.io/row-drop-threshold` | `0.5` | Analyzer anomaly threshold for row-count drops. `0.3` means flag when a table shrinks below 30% of its previous size. |
-| `backup.mogenius.io/size-drop-threshold` | `0.5` | Analyzer anomaly threshold for dump size drops. Same semantics as row-drop. |
-| `backup.mogenius.io/anonymize-tables` | `false` | `true` → hash table names in `meta.json` with SHA256 (16 hex chars). Row counts preserved. |
-| `backup.mogenius.io/empty-dump-check` | `true` | Hard-fail when the dump appears empty despite the source DB having data. Two detection paths: SQL (postgres/mysql/mariadb) compares dump-stream INSERT/COPY rows to pre-dump stats; mongo / redis use a size heuristic against pre-dump `collStats` / key counts. Set to `false` for sources that are intentionally schema-only (empty template DBs). |
-| `backup.mogenius.io/restore-verification-mode` | `off` | Restore-verification mode. `off` (default), `stream-validate` (Phase 1, no DB-pod-spawn), `schema-only` / `sample` / `full` (Phase 2: spawn ephemeral DB pod + restore). Phase-2 modes require the worker SA to have `pods: create/get/list/watch/delete`, `pods/status: get`, and `pods/log: get` in its own namespace — see `restoreVerification.enableEphemeralPodSpawn` in the chart. Unknown values fall back to `off` so a typo can't accidentally turn on a heavyweight mode. |
-| `backup.mogenius.io/restore-verification-interval` | `168h` (when mode is active) | Minimum gap between verifier-runs (Go duration). State-driven: worker reads `latestMeta.restoreVerification.completedAt` and skips this run when the interval has not elapsed. Manual runs (`kubectl create job --from=cronjob/...`) verify whenever they're overdue regardless of cron drift. The "first verification" path runs immediately when mode is set but no `RestoreVerification` block exists on the latest meta yet — operators see signal without waiting one full interval after enabling. |
-| `backup.mogenius.io/verification-image` | per-DB-type default | Container image for the verifier pod. Only consulted in Phase-2 modes. Pin this to match the source DB's exact major version when restore semantics depend on the engine version (charset defaults, function signatures, dump format compatibility). Per-DB defaults from `verifier/restore/engine.go.DefaultImage`: `postgres:16-alpine`, `mysql:8.0`, `mariadb:11`, `mongo:7`, `redis:7-alpine`. **The image's non-root DB user UID must match what the spawner runs the pod as** (`runAsUIDForImage`): the pod runs under `runAsNonRoot`, so a UID that doesn't own the image's DB user makes the entrypoint fail "could not look up effective user ID" and the pod never becomes ready. The spawner auto-selects `70` for `postgres:*-alpine` and `999` for a Debian postgres and for mysql/mariadb/mongo/redis — so a postgres override is safe across alpine↔Debian, but an override to an image with a different DB-user UID (a custom build) will not restore. |
-| `backup.mogenius.io/verification-volume-size` | per-mode default | `emptyDir.sizeLimit` for the verifier pod's data volume (e.g. `100Gi`, `5Gi`). Defaults: `1Gi` (schema-only), `5Gi` (sample), `50Gi` (full). Accepts decimal (`K`/`M`/`G`/`T`) and binary (`Ki`/`Mi`/`Gi`/`Ti`) suffixes. Override when a single source's restore needs more headroom — at scale, the node's ephemeral storage is a real budget. |
-| `backup.mogenius.io/compression` | `gzip` | Compression algorithm for the dump before age encryption. `gzip` (default, backward compatible) or `zstd` (30-50% better compression at comparable CPU). Stored in `meta.json` so restore CLI and verifiers auto-detect the decompressor. |
-| `backup.mogenius.io/extra-<key>` | none | Surfaced into `dumper.Config.Extra[key]`. Used for DB-specific options (e.g. `extra-sslmode`, `extra-authSource`, `extra-max-allowed-packet` for MySQL/MariaDB — default `1G`). |
+| `conditions[Ready]` | CronJob reconciler | `True` once the managed CronJob matches the spec; `False/InvalidSpec` when the spec cannot be flattened (unsafe `targetName`, missing host, …). |
+| `conditions[LastRunSucceeded]` | metrics refresher | Outcome of the most recent run found in storage; message carries the sanitized error. |
+| `conditions[Verified]` | metrics refresher | Most recent restore-verification verdict (`match` → True). Absent while verification is off. |
+| `cronJobName`, `materializedSchedule` | CronJob reconciler | The managed CronJob and its post-jitter schedule. |
+| `nextScheduleTime` | both | Next fire time of the materialised schedule; nil while suspended. |
+| `lastRunTime`, `lastRunStatus`, `lastRunError` | metrics refresher | Most recent run (any outcome). |
+| `lastSuccessTime`, `lastDumpSizeBytes`, `schemaChangedAt` | metrics refresher | Most recent successful run. |
+| `lastRunAnomalies` | metrics refresher | Analyzer anomaly count of the most recent run. |
+| `destinations[]` | metrics refresher | Per-destination upload outcome of the most recent run plus that destination's last success time. |
+| `restoreVerification` | metrics refresher | `{mode, verdict, completedAt, error}` of the latest verifier run. |
 
-A typo on a feature-flag annotation falls back to the default rather than rejecting the Secret — backups must keep running even if a flag is misspelled.
+Status writes are change-only (`updateSourceStatus` compares before writing), so a 30 s refresher tick on 10 000 sources produces writes only for sources whose run data actually moved.
 
-### 6.3 Source Secret `data` keys
+### 6.3 Source credentials Secret
 
 | Key | Required | Notes |
 |---|---|---|
-| `host` | **yes** | DB hostname |
-| `port` | no | Defaults: 5432 (pg), 3306 (mysql/mariadb), 27017 (mongo), 6379 (redis) |
-| `database` | (situational) | Postgres/MySQL/MariaDB: required for `pg_dump`/`mysqldump` to scope. Mongo: optional, omitted = all non-system DBs. Redis: optional DB index or **comma-separated list** of indexes (e.g. `0` or `0,3,7`) — narrows *stats* only; the RDB dump is always full-instance. |
-| `username` | **yes** for all except `redis` | Redis pre-6 uses password-only AUTH; ACL usernames came in 6.0 and are optional |
-| `password` | **yes** | |
+| `password` (or `credentialsSecretRef.passwordKey`) | **yes** (redis: optional) | The only key the worker reads unless `usernameKey` is set. |
+| `credentialsSecretRef.usernameKey` | no | Optional username key for Secrets produced by a database chart. |
 
-### 6.4 Destination Secret annotations
+Secrets created by the UI are named `<source>-credentials`, carry an `OwnerReference` to the `BackupSource` (deleting the source cascades), and are the only Secrets the UI will edit in place. A user-managed Secret (no OwnerReference) is never overwritten from the dashboard — the UI reports a conflict and tells you to edit it directly.
 
-| Annotation | Effect |
+### 6.4 `BackupDestination.spec`
+
+Exactly one backend block must be set and must match `type` (CEL rule); the credentials Secret carries the keys that backend needs.
+
+| Field | Effect |
 |---|---|
-| `backup.mogenius.io/name` | Logical destination name; matched against source allow-lists |
-| `backup.mogenius.io/path-prefix` | Prefix prepended to every uploaded object path. May contain `/` (it is the documented tenant/cluster isolation root), but a `..` path segment is rejected at parse time so one destination's prefix cannot climb into another's namespace. The logical destination `name` is validated with the same rule as the source target name. |
+| `type` | `sftp` \| `ftps` \| `s3` \| `azure` \| `gcs`. The legacy `hetzner-sftp` alias is gone — use `sftp` with `port: 23`. |
+| `pathPrefix` | Prefix prepended to every uploaded object path. May contain `/` (it is the documented tenant/cluster isolation root); a `..` segment is rejected by a CEL rule and again by the flattener. |
+| `credentialsSecretRef.name` | Secret holding the backend credentials (6.5). |
+| `sftp.{host, port, username, knownHosts, insecureSkipHostVerify}` | Generic SFTP and Hetzner Storage Boxes (port 23). Without `knownHosts` the connection is **rejected** unless `insecureSkipHostVerify: true` (logs an `INSECURE` warning). |
+| `ftps.{host, port, username, tlsMode, insecureSkipCertVerify}` | FTP over TLS for NAS firmware without SFTP. `tlsMode` `explicit` (port 21 + AUTH TLS, default) or `implicit` (port 990). Data channel is always PROT P. Prefer SFTP when both are available. |
+| `s3.{bucket, endpoint, region, pathStyle}` | AWS S3 and every S3-compatible store. `endpoint` is required for non-AWS (MinIO, Hetzner Object Storage, R2, B2, Wasabi); `pathStyle: true` for MinIO-style addressing. |
+| `azure.{accountName, container}` | Azure Blob Storage with shared-key auth. |
+| `gcs.bucket` | Google Cloud Storage. |
 
-### 6.5 Destination Secret `data` keys
+`metadata.name` is the logical destination name used in `BackupSource.spec.destinations` allow-lists, metric labels and the storage pool key. Names are unique per namespace by construction, so the legacy "duplicate logical name" de-duplication no longer exists.
 
-#### `storage-type: sftp` / `hetzner-sftp`
+`status.conditions[Reachable]` is `True` while the metrics refresher can list the destination for at least one source, `False` (with the scrubbed error in `status.lastError`) on the first tick that cannot, and `Unknown/NoSources` while no source fans out to it.
 
-| Key | Required | Notes |
-|---|---|---|
-| `host` | **yes** | |
-| `port` | no | Default 22; Hetzner Storage Box uses 23 |
-| `username` | **yes** | |
-| `ssh-private-key` | one of | PEM-encoded. Provide this OR `password`. Public-key auth is preferred when both are supplied. |
-| `password` | one of | Plain SFTP password. Provide this OR `ssh-private-key`. Key-based auth is the recommended path; password support is mostly for legacy servers. |
-| `known-hosts` | recommended | Standard `ssh-keyscan` output. Use `[host]:port` for non-22 ports. Without it the connection is **rejected** unless `insecure-skip-host-verify` is set. |
-| `insecure-skip-host-verify` | no | Set to `"true"` to accept any host key when `known-hosts` is absent. Logs an `INSECURE` warning. Use only for initial testing. |
+### 6.5 Destination credentials Secret
 
-#### `storage-type: ftps`
+The flattener (`secrets.FromBackupDestination`) merges exactly these keys into the `Data` map the storage factory consumes; any other key in the Secret is ignored, so a credentials Secret can never override a connection parameter the CR declares.
 
-For NAS firmware (QNAP, older Synology, FreeNAS) that only offers FTP over TLS, not SFTP. The data channel is always encrypted (PROT P) — plain control + plain data is intentionally not exposed. If your NAS supports SSH/SFTP, prefer that: FTPS has worse NAT/firewall behaviour (PASV data sockets), a weaker historical security record, and the protocol's data-channel/control-channel split makes it more fragile.
-
-| Key | Required | Notes |
-|---|---|---|
-| `host` | **yes** | |
-| `port` | no | Default 21 (explicit) / 990 (implicit) |
-| `username` | **yes** | |
-| `password` | **yes** | Key-based auth is not part of the FTP spec; password is the only option. |
-| `tls-mode` | no | `explicit` (default, port 21 + AUTH TLS — what most NAS UIs call "FTP with SSL/TLS (explicit)") or `implicit` (port 990, TLS from byte zero). |
-| `insecure-skip-cert-verify` | no | Set to `"true"` to skip TLS certificate validation. Logs an `INSECURE` warning. Use only when the NAS ships a self-signed cert you cannot replace. |
-
-#### `storage-type: s3`
-
-| Key | Required | Notes |
-|---|---|---|
-| `bucket` | **yes** | |
-| `access-key-id` | **yes** | |
-| `secret-access-key` | **yes** | |
-| `region` | no | Defaults to `us-east-1`; non-AWS providers usually ignore this |
-| `endpoint` | no | Required for non-AWS (MinIO, Hetzner Object Storage, R2, B2, Wasabi). Omit for AWS. |
-| `path-style` | no | `"true"` for MinIO etc. that require path-style addressing. |
-
-#### `storage-type: azure`
-
-Azure Blob Storage using shared-key (account name + key) authentication.
-
-| Key | Required | Notes |
-|---|---|---|
-| `account-name` | **yes** | Storage account name (the `<name>` in `<name>.blob.core.windows.net`). |
-| `account-key` | **yes** | Base64 account access key. |
-| `container` | **yes** | Blob container the dumps are written to. |
-| `path-prefix` | no | Optional object-name prefix for namespace isolation (shared with all backends). |
-
-#### `storage-type: gcs`
-
-Google Cloud Storage authenticated with a service-account JSON key.
-
-| Key | Required | Notes |
-|---|---|---|
-| `bucket` | **yes** | GCS bucket the dumps are written to. |
-| `service-account-json` | **yes** | Full service-account JSON key file (IAM → Service Accounts → Keys → Add Key). Needs object read/write on the bucket. |
-| `path-prefix` | no | Optional object-name prefix for namespace isolation (shared with all backends). |
-
-### 6.6 Age-recipient Secrets
-
-Each age public key the worker should encrypt to lives in its **own**
-Secret labeled `backup.mogenius.io/role=age-recipient`. The operator's
-`RecipientReconciler` watches them and materialises a single merged
-Secret (named by the operator's `AGE_SECRET_NAME` env, default
-`<release>-age`) which worker pods mount via `secretKeyRef`. This
-matches the source/destination discovery model — drop a labeled Secret,
-the operator picks it up.
-
-| Annotation | Effect |
+| `type` | Keys |
 |---|---|
-| `backup.mogenius.io/name` | Logical recipient name; surfaced in events and the UI Age-Keys page. |
+| `sftp` | `ssh-private-key` (PEM) **or** `password` — exactly one required; public-key auth is preferred when both are present. |
+| `ftps` | `password` — FTP has no key-based auth. |
+| `s3` | `access-key-id`, `secret-access-key`. |
+| `azure` | `account-key` (base64 account access key). |
+| `gcs` | `service-account-json` (full service-account JSON key; needs object read/write on the bucket). |
 
-| Data key | Required | Notes |
-|---|---|---|
-| `public-key` | **yes** | A single age recipient line (`age1...`). Newline-separated multi-key strings are *not* supported here — one Secret per key. |
+`secrets.CredentialKeys(type)` is the single table behind this: the UI masks exactly these keys as `***` on GET, and `backup-restore migrate` moves exactly these out of a legacy Secret. Adding a backend means extending that one function.
+
+### 6.6 `BackupRecipient`
+
+Each age public key the worker should encrypt to is one `BackupRecipient` with `spec.publicKey: age1...` (pattern-validated X25519 recipient, one key per object). The operator's `RecipientReconciler` merges every recipient in the namespace into a single Secret named by `AGE_SECRET_NAME` (default `<release>-age`, data key `AGE_PUBLIC_KEYS`, newline-joined, sorted, de-duplicated) which worker pods mount via `secretKeyRef` — the worker contract never changed.
 
 How they're created:
 
-- **Helm install bootstrap:** the chart fans out `agePublicKeys` (string or array) into one labeled Secret per entry, named `<release>-recipient-<index>`.
-- **UI Age-Keys page:** create-on-add, delete-on-remove. Names follow `backup-recipient-<sha256-prefix>` so re-adding the same key is idempotent.
-- **GitOps:** apply your own labeled Secret manifests under `recipients/`. The operator picks them up like any other.
+- **Helm install bootstrap:** the chart passes `agePublicKeys` to the operator as `BOOTSTRAP_AGE_RECIPIENTS`; at startup the operator creates one `BackupRecipient` per key, named `backup-recipient-<sha256-prefix>`. Idempotent; keys removed from values are NOT deleted (the object outlives the value — remove it with kubectl or the UI).
+- **UI Age-Keys page:** create-on-add, delete-on-remove, same deterministic naming so re-adding a key is a no-op.
+- **GitOps:** apply your own `BackupRecipient` manifests.
 
-Removing the last recipient is refused by the UI — leaving zero
-recipients makes the worker unable to encrypt at all. Apply via
-`kubectl delete` bypasses that guard at your own risk.
+Removing the last recipient is refused by the UI — zero recipients makes the worker unable to encrypt. `kubectl delete` bypasses that guard at your own risk. An out-of-band edit or delete of the merged Secret is repaired within `mergedResyncInterval` (10 min) — the reconciler deliberately does not watch Secrets.
 
 ---
 
@@ -498,7 +519,7 @@ The operator and the worker have separate (overlapping) config schemas. All valu
 
 | Key | Required | Default | Effect |
 |---|---|---|---|
-| `WATCH_NAMESPACE` | no | release namespace | Namespace cache scope |
+| `WATCH_NAMESPACE` | no | release namespace | Namespace the operator watches for `BackupSource` / `BackupDestination` / `BackupRecipient` objects |
 | `POD_NAMESPACE` | no | (downward API) | Lease namespace for leader election |
 | `LEADER_ELECTION_ID` | no | — | Empty = leader election disabled |
 | `DEFAULT_SCHEDULE` | no | `0 2 * * *` | Fallback schedule for sources without annotation |
@@ -511,7 +532,8 @@ The operator and the worker have separate (overlapping) config schemas. All valu
 | `WORKER_IMAGE_PULL_POLICY` | no | `IfNotPresent` | |
 | `WORKER_IMAGE_PULL_SECRETS` | no | — | Comma-separated pull-secret names, stamped into every worker pod so a private-registry image can be pulled on any node. Helm mirrors `imagePullSecrets` into this. Without it, private-registry installs hit node-dependent `ImagePullBackOff` on worker pods only. |
 | `WORKER_SERVICE_ACCOUNT` | **yes** | — | SA bound to worker pods (separate from operator SA, minimal privileges) |
-| `AGE_SECRET_NAME` | **yes** | — | Secret holding `AGE_PUBLIC_KEYS` for worker pods to mount |
+| `AGE_SECRET_NAME` | **yes** | — | Operator-managed merged Secret holding `AGE_PUBLIC_KEYS` for worker pods to mount; rebuilt from the `BackupRecipient` objects |
+| `BOOTSTRAP_AGE_RECIPIENTS` | no | — | Comma- or newline-separated age public keys seeded as `BackupRecipient` objects at startup (what the chart's `agePublicKeys` becomes). Idempotent; never deletes. Exists because Helm cannot ship a CR for a CRD it installs in the same release (§18). |
 | `WORKER_CPU_LIMIT` | no | `2000m` | CPU limit for worker pods |
 | `WORKER_MEMORY_LIMIT` | no | `2Gi` | Memory limit for worker pods |
 | `WORKER_CPU_REQUEST` | no | `250m` | CPU request for worker pods |
@@ -526,7 +548,6 @@ The operator and the worker have separate (overlapping) config schemas. All valu
 | `UI_MAX_SSE_CLIENTS` | no | `256` | Concurrent SSE subscribers allowed on `/api/events`. Excess clients receive `503` so they retry instead of pinning operator memory. |
 | `PROMETHEUS_URL` | no | — | When set (e.g. `http://prometheus-operated.alert.svc:9090`), `/api/alerts` proxies `/api/v1/alerts` filtered to `alertname=~"^Backup.*"` so the UI mirrors what Alertmanager will route. When unset, the UI falls back to a local heuristic over the operator's own metric registry — useful during onboarding but does not honor the rule's `for:` duration. |
 | `ALERTMANAGER_URL` | no | — | Used for the "open in Alertmanager" link on the Alerts page, the `/api/alerts/status` connectivity check (`GET /api/v2/status`), and the `/api/alerts/test` endpoint that sends a test alert (`POST /api/v2/alerts`). |
-| `SETTINGS_CONFIGMAP` | no | — | Name of the ConfigMap for runtime-configurable settings via the UI wizard. Set automatically by Helm when `ui.enabled=true`. |
 | `DOCS_ENABLED` | no | `false` | Enable the read-only documentation portal on `DOCS_ADDR`. Off by default — flip on to expose CLAUDE.md / README.md / generated tech-stack page. The docs server holds no credentials and reads no Kubernetes state, so it is safe to expose to a wider audience than the management UI. |
 | `DOCS_ADDR` | no | `:8083` | Listen address for the docs portal. Distinct port so cluster admins can scope ingress separately from the mutating UI. |
 | `DOCS_DIR` | no | `/app/docs` | Directory holding `CLAUDE.md`, `README.md`, `go.mod`. Populated by the Dockerfile at image build time. Locally, point at the repo root via `DOCS_DIR=..` for `just run`. |
@@ -543,18 +564,18 @@ The operator and the worker have separate (overlapping) config schemas. All valu
 | `TEMP_DIR` | no | `/tmp/backup-operator` |
 | `DEFAULT_RETENTION_DAYS` | no | `30` |
 | `DEFAULT_MIN_KEEP` | no | `3` |
-| `DEFAULT_SCHEDULE` | no | `0 2 * * *` (parser needs it for fallback) |
+| `DEFAULT_SCHEDULE` | no | `0 2 * * *` (the flattener needs it for fallback) |
 | `POD_NAMESPACE` | recommended | — (or pass via `--namespace`) |
 | `POD_NAME` | no (Phase-2) | — | Worker pod name (Downward API). Used as the `OwnerReference` name for spawned ephemeral verifier DB pods so K8s GC cascades them. Only needed for Phase-2 restore-verification modes. |
 | `POD_UID` | no (Phase-2) | — | Worker pod UID (Downward API); the `OwnerReference` UID for spawned verifier pods. Only needed for Phase-2 restore-verification modes. |
 
 ### Restore (`cmd/restore/main.go`)
 
-CLI flags only:
+CLI flags only. Worker flags are `--source <BackupSource name>` and `--namespace`.
 
 | Flag | Required | Default |
 |---|---|---|
-| `--storage-secret` | **yes** | — |
+| `--destination` | **yes** | — (name of the `BackupDestination`) |
 | `--target` | **yes** | — |
 | `--namespace` | no | `default` |
 | `--age-key` | yes (for download) | — |
@@ -562,6 +583,9 @@ CLI flags only:
 | `--list` | no | `false` |
 | `-o` | no | `-` (stdout) |
 | `--decompress` | no | `false` |
+| `--purge` / `--before` / `--dry-run` | no | right-to-erasure (§17.5) |
+
+`backup-restore migrate --namespace <ns> [--age-secret <name>] [--apply [--delete-legacy]]` converts legacy labelled Secrets into CRs + credentials Secrets. Without `--apply` it prints the manifests (including plaintext credentials — review before committing).
 
 ---
 
@@ -690,8 +714,8 @@ Operator's machine (offline):
 
 Cluster (online):
   Helm install --set agePublicKeys[0]=age1qx...
-   └── creates one labeled Secret per recipient (role=age-recipient)
-        └── operator's RecipientReconciler watches them
+   └── operator seeds one BackupRecipient per key at startup
+        └── operator's RecipientReconciler watches BackupRecipients
              └── materialises a merged Secret <release>-age with
                  AGE_PUBLIC_KEYS = newline-joined recipient list
                   └── mounted into every worker pod via secretKeyRef
@@ -777,7 +801,7 @@ The histograms (`dump_duration_seconds`, `upload_duration_seconds`, `run_duratio
 | `backup_operator_restore_verification_passed` | Gauge | `target`, `mode` | 1 if the most recent restore-verifier run for this target+mode produced verdict `match`, 0 if `mismatch`/`skipped`. Absent until a verifier has run at least once — present-with-zero is meaningful, absent is "not configured / not yet due". |
 | `backup_operator_restore_verification_last_timestamp_seconds` | Gauge | `target`, `mode` | Unix ts of the most recent restore-verifier completion for this pair. Drives the `BackupRestoreVerificationStale` alert. |
 | `backup_operator_restore_verification_duration_seconds` | Histogram | `target`, `mode` | Worker-only; not visible to Prometheus (same as the dump/upload histograms). |
-| `backup_operator_source_parse_errors_total` | Counter | `secret` | Source Secrets that failed annotation/data parsing during reconciliation. Incremented by both the CronJob reconciler and the MetricsRefresher when a still-present Secret can't be parsed (e.g. an invalid name annotation, a required key cleared mid-edit). Operator-side, scraped normally. Note: the refresher keeps a target's other series sticky across a transient parse error, so this counter is the signal that a Secret is misconfigured even while its gauges look healthy. |
+| `backup_operator_source_parse_errors_total` | Counter | `source` | BackupSources whose spec could not be flattened into a runnable source (unsafe `targetName`, missing host, unresolvable username). Incremented by both the CronJob reconciler and the MetricsRefresher. Operator-side, scraped normally. Most schema violations are already rejected at admission, so this fires rarely; the refresher keeps a target's other series sticky across a transient flatten error, so this counter (and the `Ready=False` condition) is the signal that an object is misconfigured even while its gauges look healthy. |
 | `backup_operator_http_request_duration_seconds` | Histogram | `method`, `path`, `status` | UI HTTP request latency. `path` is normalised to a closed label set (`normalizeMetricPath`) — parametric routes collapse to their prefix, unknown paths to `"other"` — so an unauthenticated path-scanner can't blow up series cardinality. |
 
 ---
@@ -828,15 +852,16 @@ These same conditions also surface in the operator UI under `/api/alerts` and `#
 | Verifier itself dies (decryptor init / open file) | `RestoreVerificationResult` written with `Verdict=skipped` and `Error` populated | Same alert path; treated same as a hard mismatch from an operator's perspective (something needs investigation). |
 | Run takes >`RUN_TIMEOUT_SECONDS` | K8s kills the pod via `activeDeadlineSeconds` | Job failed; configure higher timeout for big DBs |
 | Two cron ticks overlap (long run) | Second tick is **skipped** by `concurrencyPolicy: Forbid` | No second Job created; run continues |
-| Source Secret deleted | `OwnerReference` cascades; CronJob deleted by GC | No more runs; existing artifacts in storage untouched |
-| Role label removed OR changed `source`→`destination` (Secret kept) | Reconciler observes the transition and deletes the CronJob — but only after confirming the CronJob carries an OwnerReference back to this Secret's UID (a same-named CronJob the operator didn't create is left untouched) | Same as above for scheduling |
+| `BackupSource` deleted | `OwnerReference` cascades; CronJob (and a UI-created credentials Secret) deleted by GC | No more runs; existing artifacts in storage untouched |
+| `BackupSource` spec invalid (unsafe `targetName`, missing host) | Reconciler produces no CronJob and writes `Ready=False/InvalidSpec` with the reason; `source_parse_errors_total` increments | `kubectl get backupsource` shows READY False; most such errors are already rejected at admission by the CRD schema |
+| Credentials Secret missing | Source: worker exits 1 (`get credentials secret`), K8s retries. Destination: skipped by the operator and the worker with a log line; `Reachable` stays as before | Job failed / destination silently absent from fan-out — check `kubectl describe backupdestination` and the operator log |
 | Worker pod evicted mid-run | Job fails; next tick produces a fresh run | Partial uploads to destinations may exist (they have their own object names per timestamp, so no clashes) |
 | Retention can't delete (perms / list / session) | Old dumps remain; the run still succeeds (retention is best-effort) | Pipeline records the failure into the `retention` block of `meta.json`. Operator's `MetricsRefresher` reads it back and sets `retention_last_status{target,destination}=0`. After 24h of persistent failure → `BackupRetentionFailing` (warning) — long enough to ride out a single transient error, short enough to surface real problems before storage fills. Each pre/post-upload failure step (`init storage`, `open session`, `list`) also emits a Warning `RetentionFailed` Event tagged with the phase, so the cluster audit trail shows the failure even when the meta.json wasn't yet uploadable (post-upload phase). |
 | Analyzer baseline unreachable (every destination down at baseline-read time) | Run still succeeds; analyzer just skips the comparison this round | `analyzer_baseline_unavailable{target}=1`, plus per-destination V(1) log lines from the worker. Cleared (back to 0) on the next run that successfully reads any meta. Distinguishes silently from the "first run, no baseline yet" case (which keeps the gauge at 0). |
 | Long-lived operator goroutine panics (refresher, scrubber, UI handler) | `safe.Goroutine` recovers and logs an Error with `phase`, `key`, and the captured stack — the operator pod stays up | Single panic no longer crashes the operator (which would take down all reconcilers + the UI). Used by every long-lived goroutine; trivially auditable via grep `safe.Goroutine`. |
 | `known-hosts` mismatch | `ssh.NewClientConn` fails before any data leaves | Run fails; worker logs the host-key error |
-| `known-hosts` missing | Connection rejected unless `insecure-skip-host-verify: "true"` is set in destination Secret data | Run fails with descriptive error; set `insecure-skip-host-verify` or populate `known-hosts` via `ssh-keyscan` |
-| Helm upgrade from pre-RecipientReconciler chart | Helm deletes the legacy single `<release>-age` Secret as part of removing it from its manifest set; the new operator pod runs `Bootstrap` on startup which re-materialises the merged Secret from per-recipient Secrets | Brief gap (a few seconds) between Helm-delete and operator-recreate. A CronJob tick that races into the gap fails with `secret not found`; the next tick succeeds. One-time on the first upgrade; subsequent upgrades are gap-free. |
+| `knownHosts` missing | Connection rejected unless `spec.sftp.insecureSkipHostVerify: true` is set on the BackupDestination | Run fails with descriptive error; set `insecureSkipHostVerify` or populate `spec.sftp.knownHosts` via `ssh-keyscan` |
+| Upgrade from the labelled-Secret model (< CRD release) | The new operator ignores labelled Secrets entirely: no CronJobs are reconciled until `backup-restore migrate --apply` has created the CRs. Existing CronJobs keep firing on their old spec (the worker binary in the new image no longer understands `--source-secret`, so those runs fail) | Run the migration before or right after the upgrade; `kubectl get backupsources` is empty until you do. The merged age Secret is rebuilt from `BackupRecipient` objects — legacy per-recipient Secrets must be migrated too or the merged list is empty and workers refuse to start |
 
 ---
 
@@ -856,30 +881,27 @@ The Job runs the same worker code as a scheduled run; metrics, retention, fan-ou
 Three equivalent ways:
 
 ```bash
-# 1. Annotation on the source Secret (canonical — survives CronJob recreation)
-kubectl -n backup annotate secret prod-users-db \
-  backup.mogenius.io/suspended="true" --overwrite
+# 1. spec.suspended on the BackupSource (canonical — survives CronJob recreation)
+kubectl -n backup patch backupsource prod-users --type=merge -p '{"spec":{"suspended":true}}'
 
 # 2. UI: Pause / Resume button on the source card
-# 3. UI API: POST /api/sources/{secret-name}/suspend  body: {"suspend": true}
+# 3. UI API: POST /api/sources/{name}/suspend  body: {"suspend": true}
 ```
 
-The reconciler reads `backup.mogenius.io/suspended` and writes `Spec.Suspend` on the managed CronJob. **Manual `kubectl patch cronjob ... suspend=true` is overridden on the next reconcile** — the Secret is the source of truth. Use the annotation or the UI instead. Manual triggers (`kubectl create job --from=cronjob/...` and the UI's Run button) ignore Suspend, so paused sources can still be exercised on demand for restore drills. To resume: remove the annotation (preferred) or set it to `false`.
+The reconciler reads `spec.suspended` and writes `Spec.Suspend` on the managed CronJob. **Manual `kubectl patch cronjob ... suspend=true` is overridden on the next reconcile** — the `BackupSource` is the source of truth. Manual triggers (`kubectl create job --from=cronjob/...` and the UI's Run button) ignore Suspend, so paused sources can still be exercised on demand for restore drills. To resume: set `suspended: false` (or drop the field).
 
 ### Change the schedule
 
 ```bash
-kubectl -n backup annotate secret prod-users-db \
-  backup.mogenius.io/schedule="*/15 * * * *" --overwrite
+kubectl -n backup patch backupsource prod-users --type=merge -p '{"spec":{"schedule":"*/15 * * * *"}}'
 ```
 
-The reconciler observes the change, patches the CronJob within seconds.
+The reconciler observes the change, patches the CronJob within seconds, and `status.materializedSchedule` shows what actually runs.
 
 ### Disable analyzer for one source
 
 ```bash
-kubectl -n backup annotate secret prod-users-db \
-  backup.mogenius.io/analyzer-enabled="false" --overwrite
+kubectl -n backup patch backupsource prod-users --type=merge -p '{"spec":{"analyzer":{"enabled":false}}}'
 ```
 
 Useful when the backup user lacks `pg_stat_*` access.
@@ -887,16 +909,23 @@ Useful when the backup user lacks `pg_stat_*` access.
 ### Route one DB to a single destination
 
 ```bash
-kubectl -n backup annotate secret prod-users-db \
-  backup.mogenius.io/destinations="hetzner-offsite" --overwrite
+kubectl -n backup patch backupsource prod-users --type=merge -p '{"spec":{"destinations":["hetzner-offsite"]}}'
 ```
 
-The name is matched against the destination Secret's `backup.mogenius.io/name` annotation (or its Secret name if the annotation is absent).
+Names are `BackupDestination` object names.
+
+### See when it last worked
+
+```bash
+kubectl -n backup get backupsources
+kubectl -n backup describe backupsource prod-users   # conditions + Events (BackupStarted/Completed/Failed, RetentionDelete)
+kubectl -n backup get backupdestinations             # Reachable column
+```
 
 ### Inspect a run's metadata without restoring
 
 ```bash
-backup-restore --storage-secret hetzner-sb -n backup --target prod-users \
+backup-restore --destination hetzner -n backup --target prod-users \
   --age-key ~/age.key --list
 # Pick a timestamp, then fetch the meta file via your storage's CLI:
 # (the meta is unencrypted; a normal s3/sftp client retrieves it directly)
@@ -905,7 +934,7 @@ backup-restore --storage-secret hetzner-sb -n backup --target prod-users \
 ### Restore to a fresh database
 
 ```bash
-backup-restore --storage-secret hetzner-sb -n backup --target prod-users \
+backup-restore --destination hetzner -n backup --target prod-users \
   --age-key ~/age.key --decompress | psql -h fresh-host new_database
 ```
 
@@ -961,16 +990,18 @@ cp .env.example .env
 # 2. Build the worker/operator image into the local Docker daemon
 just build-image
 
-# 3. Generate an age key pair offline (idempotent — runs once)
-#    Public key is created as Secret backup-operator-age in the namespace.
+# 3. Generate an age key pair offline (idempotent — runs once). Installs the
+#    CRDs and registers the public key as BackupRecipient `local-test`.
 just gen-age-key
 
 # 4. Apply the test stack: namespace, worker SA/RBAC, in-cluster Postgres,
-#    in-cluster MinIO with bucket init, source + destination Secrets.
+#    in-cluster MinIO with bucket init, BackupSource + BackupDestination
+#    with their credentials Secrets.
 just test-up
 
 # 5. Run the operator locally — talks to the cluster via your kubeconfig.
-#    It produces a CronJob `backup-test-postgres` from the source Secret.
+#    It produces a CronJob `backup-test-postgres` from the BackupSource and
+#    materialises the merged age Secret from the BackupRecipients.
 just run
 
 # 6. In another terminal: trigger a run without waiting for the schedule.
@@ -991,8 +1022,13 @@ What lives where in this setup:
   it does not need its own ServiceAccount — only the worker does.
 - The **worker pod** runs inside the cluster with SA `backup-worker`,
   pulls `backup-operator:dev` from the local Docker daemon, mounts
-  `AGE_PUBLIC_KEYS` from the `backup-operator-age` Secret, and dumps
-  Postgres → encrypts → uploads to MinIO at `s3://backups/...`.
+  `AGE_PUBLIC_KEYS` from the operator-managed `backup-operator-age`
+  Secret, and dumps Postgres → encrypts → uploads to MinIO at
+  `s3://backups/...`. The kind node caches the `dev` tag: after a rebuild,
+  retag (`docker tag backup-operator:dev backup-operator:dev-2`) and set
+  `WORKER_IMAGE` accordingly, or the pod runs the previous build.
+- `just generate` regenerates DeepCopy + CRD YAML after editing
+  `src/api/v1alpha1`; `just check` fails when they drift.
 - The **age private key** stays at `~/age-backup-test.key`, never in
   the cluster — same security model as production. To download and
   decrypt a dump, use the `backup-restore` binary with `--age-key`.
@@ -1007,8 +1043,8 @@ This section documents the complete data lifecycle for compliance audits (DSGVO/
 
 | Location | Contents | Encryption | Retention |
 |---|---|---|---|
-| Source Secret (K8s) | DB credentials | Kubernetes Secret encryption (etcd) | Cluster lifecycle |
-| Destination Secret (K8s) | Storage credentials (SSH keys, S3 keys) | Kubernetes Secret encryption (etcd) | Cluster lifecycle |
+| `BackupSource` / `BackupDestination` (K8s) | Connection parameters and policy — no secrets | etcd (plain) | Cluster lifecycle |
+| Credentials Secrets (K8s) | DB password; storage credentials (SSH keys, S3 keys) | Kubernetes Secret encryption (etcd) | Cluster lifecycle; UI-created ones cascade with their CR |
 | Worker temp volume (`/tmp`) | Encrypted dump file (`.sql.gz.age`) | `age` public-key (X25519) | Pod lifecycle (emptyDir) |
 | Storage backend (SFTP/S3) | Encrypted dump + unencrypted `meta.json` | `age` public-key (X25519) | `retention-days` annotation |
 | Operator machine (offline) | `age` private key | Operator responsibility | Manual |
@@ -1027,16 +1063,16 @@ This section documents the complete data lifecycle for compliance audits (DSGVO/
 
 ### 17.3 Key Management
 
-- **Public keys** (`age` recipients): one Secret per recipient (`role=age-recipient` label, `public-key` data field). The operator's `RecipientReconciler` materialises a merged Secret (`<release>-age`) that worker pods mount via `secretKeyRef`. Used only for encryption. Per-Secret form means lifecycle is decoupled from Helm releases (UI-added or GitOps-applied recipients survive `helm uninstall`).
+- **Public keys** (`age` recipients): one `BackupRecipient` object per recipient (`spec.publicKey`). The operator's `RecipientReconciler` materialises a merged Secret (`<release>-age`) that worker pods mount via `secretKeyRef`. Used only for encryption. Per-object form means lifecycle is decoupled from Helm releases (UI-added or GitOps-applied recipients survive `helm uninstall`; the CRDs carry `helm.sh/resource-policy: keep`).
 - **Private key** (`age` identity): **never enters the cluster**. Lives on the operator's machine. Required only for `backup-restore` CLI.
-- **SSH keys** (SFTP destinations): stored in destination Secrets. Scoped to individual storage backends.
-- **S3 credentials**: stored in destination Secrets. Should use scoped IAM roles with minimal write permissions.
+- **SSH keys** (SFTP destinations) and **S3 credentials**: stored in the credentials Secret each `BackupDestination` references. Scoped to individual storage backends; S3 should use scoped IAM roles with minimal write permissions.
+- **DB passwords**: stored in the credentials Secret each `BackupSource` references — optionally the very Secret the database chart produced (`passwordKey` / `usernameKey`), so the password is never copied.
 
 ### 17.4 Audit Trail
 
 | Event | Source | Visible via |
 |---|---|---|
-| `BackupStarted` | Worker pod | `kubectl describe secret <source>`, cluster audit log |
+| `BackupStarted` | Worker pod | `kubectl describe backupsource <name>`, cluster audit log |
 | `BackupCompleted` | Worker pod | Same |
 | `BackupFailed` | Worker pod | Same, includes failure phase |
 | `RetentionDelete` | Worker pod | Same, lists deleted artifact + phase (`pre-upload`/`post-upload`) |
@@ -1049,15 +1085,15 @@ This section documents the complete data lifecycle for compliance audits (DSGVO/
 ### 17.5 Data Deletion
 
 - **Automated**: Retention policy deletes dumps older than `retention-days`, respecting `min-keep` safety floor. Deletion events are recorded as Kubernetes Events.
-- **Manual**: Delete the source Secret → OwnerReference cascades to CronJob → no new backups. Existing dumps in storage must be deleted manually from the backend.
+- **Manual**: Delete the `BackupSource` → OwnerReference cascades to the CronJob (and a UI-created credentials Secret) → no new backups. Existing dumps in storage must be deleted manually from the backend.
 - **Right to erasure (DSGVO Art. 17)**: Use `backup-restore --purge --target X --before YYYY-MM-DD` to delete all artifacts for a target from storage. Add `--dry-run` to preview. Without the private key, the dump is cryptographically inaccessible, but storage-level deletion may still be required by your DPO.
 
 ### 17.6 Access Control Summary
 
 | Principal | Can access | Cannot access |
 |---|---|---|
-| Operator pod | Source/Dest Secrets (CRUD), CronJobs (CRUD), ConfigMaps (get/list/watch/update/patch), Jobs (get/list/watch/create), Leases, Events, SubjectAccessReviews (create — a cluster-scoped role the UI uses to check the caller's own permissions), Prometheus query API (read), Alertmanager API (read status + write test alerts) | Private key, dump contents |
-| Worker pod | Source/Dest Secrets (read), Events (create), **Pods (create/delete) when `restoreVerification.enableEphemeralPodSpawn=true`** | CronJobs, Leases, private key |
+| Operator pod | BackupSources/BackupDestinations/BackupRecipients (get/list/watch + status; create/update/delete only with a writable UI), Secrets (get by name, create/update for the merged age Secret and UI-created credentials — never list/watch, read uncached), CronJobs (CRUD), Jobs (get/list/watch/create), Leases, Events, SubjectAccessReviews (create — cluster-scoped, only rendered with the UI), Prometheus query API (read), Alertmanager API (read status + write test alerts) | Private key, dump contents, the namespace's other Secrets (no list) |
+| Worker pod | Its BackupSource (get), BackupDestinations (get/list), the referenced credentials Secrets (get by name — no list), Events (create), **Pods (create/delete) when `restoreVerification.enableEphemeralPodSpawn=true`** | CronJobs, Leases, private key, enumeration of Secrets |
 | Storage backend | Encrypted dumps, unencrypted meta.json | Private key, DB credentials |
 | Restore operator (human) | Private key, storage backend | Cluster Secrets (unless they have kubectl access) |
 | Prometheus/Alertmanager | Metrics (sizes, counts, anomalies); operator reads status + posts test alerts | Dump contents, credentials |
@@ -1068,7 +1104,13 @@ This section documents the complete data lifecycle for compliance audits (DSGVO/
 
 The notable ones, with the reasoning that future readers should preserve.
 
-- **No CRDs.** Every backup operator the team has worked with has a CRD. They add a documentation surface, version-skew handling, and an installation step. Labelling a Secret is the entire contract here — the operator is just a reconciler that watches Secrets.
+- **CRDs after all: `BackupSource` / `BackupDestination` / `BackupRecipient`, credentials stay in Secrets.** The project started with the opposite decision ("labelling a Secret is the entire contract") to avoid the installation step, the version-skew surface and the documentation surface a CRD brings. Three things made that decision expire. (1) The annotation vocabulary grew to ~20 string-typed keys with no schema; the documented coping strategy was "a typo falls back to the default", which is exactly the failure mode a backup tool must not have — a misspelled `restore-verification-mode` silently ran no verification. (2) There was no place for status: last run, last success, verifier verdict all had to be reconstructed from `meta.json` into Prometheus, and `kubectl get` showed nothing. The Settings wizard ended up writing a ConfigMap nothing read, precisely because there was no typed object for the operator to consume. (3) Secret-as-config forced every GitOps user to seal schedule and retention together with the password, so config reviews were impossible and UI edits of the config implied Secret write access. The CRDs fix all three: OpenAPI enums/ranges plus CEL rules reject bad specs at admission; `status` carries conditions and run-level fields written change-only by the operator; the spec is plain reviewable YAML while `credentialsSecretRef` (with optional `passwordKey`/`usernameKey`) points at a Secret that can be the database chart's own. What stayed the same is everything below the discovery layer: both flatteners produce the identical `secrets.Source` / `secrets.Destination` structs, so the pipeline, analyzer, storage backends, verifiers, `meta.json` and the metrics did not change; the storage `Data` map is keyed exactly like the old destination Secret so no backend was touched. Cost accepted: a hard cut at 0.x (no dual-mode period) with `backup-restore migrate` as the one-shot converter — a transition period would have meant two parsers, two reconcile branches and two documentation tables for a product that is still pre-1.0. Second-order wins the CRD move made cheap: the operator no longer caches Secrets at all (`client.CacheOptions.DisableFor`), so it holds only the Secrets it reads by name instead of an informer over every Secret in the namespace; the worker and operator RBAC lost `secrets: list/watch`; and `targetName`/`pathPrefix` traversal is now rejected by the API server, not only by our parser.
+
+- **Chart ships CRDs as templates with `resource-policy: keep`, and ships no CRs — recipients are seeded by the operator.** Helm's `crds/` directory installs CRDs but never upgrades them, which would freeze the schema at the first install; templating them (`templates/crds.yaml` ← `files/crds/*.yaml` via `.Files.Glob` + `fromYaml`) lets `helm upgrade` evolve the schema, and the `keep` annotation stops `helm uninstall` from deleting every BackupSource in the cluster along with the CRD. The catch: Helm applies templated CRDs and CRs in one batch without waiting for the CRD to be established, so a `BackupRecipient` manifest in the chart fails the very first install with "no matches for kind". Hence `agePublicKeys` travels as the `BOOTSTRAP_AGE_RECIPIENTS` env var and the operator creates the objects at startup (idempotent, `AlreadyExists` ignored, never deletes). A `pre-install` hook Job was the alternative; rejected because it leaves permanent hook complexity in the chart for a one-time ordering problem the operator can solve in 30 lines.
+
+- **`BackupSource.status` is written by the operator only, change-only.** The worker could patch status directly for immediacy, but that would hand every worker pod `backupsources/status: patch` — and the project's standing principle is that the worker's RBAC stays at "read what you need, emit Events". So the same `MetricsRefresher` tick that rebuilds the Prometheus gauges from `meta.json` also mirrors them onto status, and the CronJob reconciler writes `Ready` / `cronJobName` / `materializedSchedule`. Both go through `updateSourceStatus`, which re-reads, mutates and compares before writing: at 10 000 sources a 30 s tick must not turn into 10 000 PATCHes, and every status write bumps the list ResourceVersion the refresher uses to skip idle ticks, so unconditional writes would have defeated that optimisation. The CronJob reconciler uses `GenerationChangedPredicate` on its `For` for the same reason — status writes do not bump generation, so they never wake it.
+
+- **RecipientReconciler watches `BackupRecipient` only; merged-Secret drift is repaired by requeue, not by a Secret watch.** The previous implementation watched the merged Secret itself to repair an out-of-band delete immediately. Keeping that would require a Secret informer (full data of every Secret in the namespace held in operator memory) or at least `secrets: list/watch` RBAC for a metadata-only informer — both contradict the point of moving config out of Secrets. The reconcile now returns `RequeueAfter: 10m`, so a deleted merged Secret is rebuilt within ten minutes; a worker pod that races into the gap fails to mount `AGE_PUBLIC_KEYS` and its Job retries, which is loud and self-healing.
 
 - **Operator does not run backups.** Earlier iteration ran them in goroutines under an in-process cron. That model couples backup capacity to the operator pod's resource limits, requires hand-rolled overlap protection, and makes per-run logs scattered. K8s CronJobs solve all three for free.
 
@@ -1086,7 +1128,7 @@ The notable ones, with the reasoning that future readers should preserve.
 
 - **`Storage.List()` returns logical paths.** Storage implementations apply `pathPrefix` internally on `Upload`/`Get`/`Delete`. Returning raw server-side paths from `List` would break the round-trip (caller passes `Object.Path` back to `Get`, gets double-prefixed). This is enforced by per-implementation `stripPrefix` helpers.
 
-- **Per-recipient Secrets via `role=age-recipient`, materialised by an operator reconciler.** Originally the chart shipped a single Secret containing all recipients newline-joined under `AGE_PUBLIC_KEYS`. Worker contract was clean, but the *human* contract had three rough edges: (a) UI-added keys lived inside a Helm-managed object, so `helm upgrade --reuse-values` could silently revert them; (b) lifecycle of "this person's recipient" was not a first-class object, only a substring of the central Secret; (c) the discovery story diverged from the rest of the system, where sources and destinations are picked up by labels. Refactor: each recipient is its own Secret labeled `role=age-recipient` with one `public-key` data field. A new `RecipientReconciler` watches them, sorts deterministically, joins `\n`, and writes the result to the operator-managed merged Secret named by `AGE_SECRET_NAME` — the very name the CronJob template already references via `secretKeyRef`. Worker contract therefore unchanged; what changed is *who creates and owns* the merged Secret. Migration: `Bootstrap()` runs at operator startup BEFORE the manager — if it sees a legacy single-Secret with `AGE_PUBLIC_KEYS` and zero per-recipient Secrets, it splits the legacy keys into per-recipient Secrets (idempotent: `AlreadyExists` on Create is treated as success). Helm-upgrade scenario: Helm deletes the old chart-managed merged Secret as part of removing it from its manifest set; operator's Bootstrap immediately re-materialises it from the per-recipient Secrets that the new chart created. Brief gap (a few seconds) on the first upgrade — documented in §14, accepted as a one-time migration cost rather than a permanent helm hook. Considered alternatives: (1) Helm `pre-upgrade` hook job that bridges the migration — rejected because it leaves permanent hook complexity in the chart for a one-time event; (2) renaming the merged Secret to a new name to avoid the helm-delete window — rejected because it would force every CronJob to be re-templated and re-applied. Trade-offs preserved: real names stay in Prometheus metrics (we never expose recipient *content* there anyway), the existing `agePublicKeys` Helm value still works (chart fans it out into N labeled Secrets), the UI Age-Keys page now CRUDs per-recipient Secrets directly so add/remove is atomic without RMW races on a shared blob.
+- **(Superseded by `BackupRecipient`, kept for the reasoning.) Per-recipient Secrets via `role=age-recipient`, materialised by an operator reconciler.** Originally the chart shipped a single Secret containing all recipients newline-joined under `AGE_PUBLIC_KEYS`. Worker contract was clean, but the *human* contract had three rough edges: (a) UI-added keys lived inside a Helm-managed object, so `helm upgrade --reuse-values` could silently revert them; (b) lifecycle of "this person's recipient" was not a first-class object, only a substring of the central Secret; (c) the discovery story diverged from the rest of the system, where sources and destinations are picked up by labels. Refactor: each recipient is its own Secret labeled `role=age-recipient` with one `public-key` data field. A new `RecipientReconciler` watches them, sorts deterministically, joins `\n`, and writes the result to the operator-managed merged Secret named by `AGE_SECRET_NAME` — the very name the CronJob template already references via `secretKeyRef`. Worker contract therefore unchanged; what changed is *who creates and owns* the merged Secret. Migration: `Bootstrap()` runs at operator startup BEFORE the manager — if it sees a legacy single-Secret with `AGE_PUBLIC_KEYS` and zero per-recipient Secrets, it splits the legacy keys into per-recipient Secrets (idempotent: `AlreadyExists` on Create is treated as success). Helm-upgrade scenario: Helm deletes the old chart-managed merged Secret as part of removing it from its manifest set; operator's Bootstrap immediately re-materialises it from the per-recipient Secrets that the new chart created. Brief gap (a few seconds) on the first upgrade — documented in §14, accepted as a one-time migration cost rather than a permanent helm hook. Considered alternatives: (1) Helm `pre-upgrade` hook job that bridges the migration — rejected because it leaves permanent hook complexity in the chart for a one-time event; (2) renaming the merged Secret to a new name to avoid the helm-delete window — rejected because it would force every CronJob to be re-templated and re-applied. Trade-offs preserved: real names stay in Prometheus metrics (we never expose recipient *content* there anyway), the existing `agePublicKeys` Helm value still works (chart fans it out into N labeled Secrets), the UI Age-Keys page now CRUDs per-recipient Secrets directly so add/remove is atomic without RMW races on a shared blob.
 
 - **`agePublicKeys` accepts both string and array in Helm values, normalised to newline-separated env-var.** The original interface was a single newline-separated string — clean for the worker (its env-var format is one big string anyway) but fragile at the operator-experience layer: `--set agePublicKeys="age1aaa\nage1bbb"` from the CLI silently produces a single bogus recipient because `\n` doesn't expand without double-quoting through several shells, and YAML multi-line block-scalar indentation is its own foot-gun. Worst case is loud (`crypto.NewFromPublicKeys` fails parse, worker crashes at startup) — not silent encryption to the wrong recipient — but "operator wrote two keys, only one took effect, runs all encrypt to one recipient" is plausible enough to be worth defending against. Fix: `secret-age.yaml` accepts either `string` or `[]string` via `kindIs "slice"`, joins arrays with `\n`, then `trimAll`s before the empty-check. Worker contract is unchanged. The string form is preserved for backward compatibility with installs that predate this; array form is recommended for multi-key rotation because `--set agePublicKeys[0]=age1qx... --set agePublicKeys[1]=age1yz...` works cleanly from any CI shell. The reviewer who flagged this also suggested making it array-only as a breaking change — the dual-form approach captures the ergonomic win at zero migration cost.
 
@@ -1120,7 +1162,7 @@ The notable ones, with the reasoning that future readers should preserve.
 
 - **K8s-native Job retries via `WORKER_BACKOFF_LIMIT` (default 2).** Previously hardcoded `BackoffLimit: 0` — one Job attempt, period. A 30-second DB blip during the cron tick meant no backup for a full cron interval (up to 24h on a daily schedule). The fix sets `BackoffLimit: 2` by default: initial attempt + 2 retries with K8s exponential backoff (10s, 20s, 40s, capped at 6m). Tradeoff considered: (a) typed error classification at the storage layer (sftp/s3 SDK error codes) to retry only transient errors; (b) leave it as-is and rely on the next cron tick. Picked (c) — dumb K8s-native retry: cheap, atomic at the pod level (a fresh worker pod re-resolves DNS, re-mounts age key, re-reads source secret), and bounded by `ActiveDeadlineSeconds` so permanent failures (wrong password) cost at most `(1 + N) × failure-time`. Concurrency stays safe: `concurrencyPolicy: Forbid` only blocks the *next scheduled tick*, not retries of the same logical run, which is exactly what we want. Range capped at 10 in the config validator so a typo can't accidentally turn a permanent-failure source into a thrash loop. Did not push classification down to storage backends (the alternative path) because the ADR's rationale for the existing `classifyUploadError` string-matching still holds: the marginal accuracy gain doesn't justify touching every backend, and false-classification cost was already bounded.
 
-- **Kubernetes Events as audit trail.** The worker emits `BackupStarted`, `BackupCompleted`, `BackupFailed`, and `RetentionDelete` events against the source Secret. Visible via `kubectl describe secret <source>` and preserved in cluster audit logs. Satisfies DSGVO Art. 30 and SOC2 requirements. The pipeline uses an `EventEmitter` interface so tests stay API-server-free (`NoopEventEmitter`). RBAC grants `events: create, patch` to the shared ServiceAccount.
+- **Kubernetes Events as audit trail.** The worker emits `BackupStarted`, `BackupCompleted`, `BackupFailed`, and `RetentionDelete` events against the `BackupSource` (against the source Secret before the CRD move). Visible via `kubectl describe backupsource <name>` and preserved in cluster audit logs. Satisfies DSGVO Art. 30 and SOC2 requirements. The pipeline uses an `EventEmitter` interface so tests stay API-server-free (`NoopEventEmitter`). RBAC grants `events: create, patch` to the shared ServiceAccount.
 
 - **Health probes on the operator.** controller-runtime's built-in `/healthz` and `/readyz` are served on `:8082` (separate from metrics `:8080` and UI `:8081`). Without probes, Kubernetes cannot detect a stuck operator and restart it.
 
@@ -1197,9 +1239,9 @@ The notable ones, with the reasoning that future readers should preserve.
 
 - **SSE over WebSocket for live updates.** Server-Sent Events are unidirectional (server→client), work through standard HTTP, require no protocol upgrade, and auto-reconnect natively. The broker pattern (subscribe/unsubscribe/publish via Go channels) fits Go idioms. WebSocket would add bidirectional complexity for a use case that only needs push.
 
-- **Secret CRUD via Kubernetes API, not a database.** Source and destination configurations already live in Kubernetes Secrets (the discovery contract). The UI writes Secrets directly via the K8s API using the operator's ServiceAccount, preserving the single-source-of-truth model. Adding a database for configuration would create a sync problem between the DB and the actual Secrets.
+- **UI CRUD via the Kubernetes API, not a database.** Source and destination configuration lives in `BackupSource` / `BackupDestination` objects (the discovery contract); the UI writes them directly using the operator's ServiceAccount, plus a credentials Secret it owns via OwnerReference. Adding a database for configuration would create a sync problem between the DB and the cluster. The UI only ever edits a credentials Secret that carries an OwnerReference to the CR — a Secret the user manages (say, the one CloudNativePG generated) is reported as a conflict instead of being overwritten from the backup dashboard.
 
-- **Sensitive field masking in API GET responses.** Passwords, SSH private keys, and S3 secret keys are returned as `***` in GET endpoints. The UI sends these values only on create/update. This prevents accidental exposure through browser dev tools, network logging, or screen sharing — even without an auth proxy. The mask set must mirror the actual destination Secret schema (§6.5): it covers `password`, `ssh-private-key`, `secret-access-key`, `access-key-id`, `account-key` (Azure), and `service-account-json` (GCS). The S3 `access-key-id` was previously absent from the set and leaked in plaintext on GET — masked now because, while an access-key id is semi-identifying rather than secret, returning it to an unauthenticated client narrows credential reconnaissance for no benefit. The Azure `account-key` and the full GCS `service-account-json` were also absent and leaked verbatim — those are outright secrets (full read/write to the bucket holding every dump), so their omission was a real credential-disclosure bug, not a reconnaissance nicety. The recurring lesson: adding a storage backend must extend this mask set in lockstep with the backend's credential keys — deriving the set from each backend's declared secret keys would make the omission impossible.
+- **Sensitive field masking in API GET responses.** Passwords, SSH private keys, and S3 secret keys are returned as `***` in GET endpoints. The UI sends these values only on create/update. This prevents accidental exposure through browser dev tools, network logging, or screen sharing — even without an auth proxy. The mask set is now `secrets.CredentialKeys(type)` — the same table the flattener and the migration tool use — so a backend's credential keys cannot be forgotten in one place and remembered in another. Historically the mask set had to mirror the destination Secret schema by hand (§6.5): it covered `password`, `ssh-private-key`, `secret-access-key`, `access-key-id`, `account-key` (Azure), and `service-account-json` (GCS). The S3 `access-key-id` was previously absent from the set and leaked in plaintext on GET — masked now because, while an access-key id is semi-identifying rather than secret, returning it to an unauthenticated client narrows credential reconnaissance for no benefit. The Azure `account-key` and the full GCS `service-account-json` were also absent and leaked verbatim — those are outright secrets (full read/write to the bucket holding every dump), so their omission was a real credential-disclosure bug, not a reconnaissance nicety. The recurring lesson: adding a storage backend must extend this mask set in lockstep with the backend's credential keys — deriving the set from each backend's declared secret keys would make the omission impossible.
 
 - **CSRF defence on mutating UI endpoints via `csrfMiddleware`.** The UI has no built-in auth (§3.1) and is commonly fronted by a cookie-based auth proxy; without a CSRF check a malicious page could drive `DELETE /api/destinations/...`, trigger jobs, or rotate age keys through the victim's browser. The middleware (in the global chain, so new endpoints inherit it) lets GET/HEAD/OPTIONS through, then rejects mutating requests whose `Sec-Fetch-Site` is `cross-site`/`same-site`. `Sec-Fetch-Site` is set by all modern browsers and computed client-side, so it survives reverse proxies. For older browsers that omit it but send `Origin`, the Origin host must match `Host` (or `X-Forwarded-Host` for the proxy deployment). Non-browser clients (curl, the restore CLI, monitoring) send neither header and pass through unchanged — this narrows the *browser* attack surface, it does not replace the auth proxy. Token-based CSRF (synchroniser tokens) was rejected: it needs server-side session state the stateless UI doesn't have, and the header-based check is sufficient because the SPA is same-origin. A `Content-Type: application/json` requirement was rejected because bodyless mutations (DELETE, `POST /api/trigger/`) legitimately omit it.
 
@@ -1209,9 +1251,9 @@ The notable ones, with the reasoning that future readers should preserve.
 
 - **Legacy template routes preserved.** The old Go HTML template routes are served under `/legacy` for backward compatibility. The SPA serves from `/` via a catch-all handler. This allows gradual migration without breaking existing bookmarks or monitoring that targets the old UI.
 
-- **Settings ConfigMap as runtime override layer.** Helm values are the master configuration source — they initialize the `{fullname}-settings` ConfigMap at install time. The UI Settings Wizard reads and writes this ConfigMap via the Kubernetes API (`GET/PUT /api/settings`), allowing live configuration changes without `helm upgrade`. An "Export values.yaml" button generates a downloadable values file so changes can be committed to Git for reproducible `helm upgrade` deployments. This gives operators the best of both worlds: interactive UI for quick tuning and declarative GitOps for controlled rollouts.
+- **Settings page is read-only; fleet defaults have one source of truth (the chart).** The earlier Settings wizard wrote a `{fullname}-settings` ConfigMap that no operator code ever read — the UI promised "takes effect immediately" and nothing happened. Rather than wire a second configuration layer into the reconcilers, the CRD move made the decision: everything per-source is a typed field on `BackupSource`; everything fleet-wide (`DEFAULT_SCHEDULE`, retention defaults, worker resources) stays a Helm value → env var. The page now shows the operator's effective defaults and exports them as `values.yaml`; `PUT /api/settings` answers 405 with a pointer to `helm upgrade`. A `BackupDefaults` singleton CR was considered and deferred — it would reintroduce the second layer for a benefit nobody has asked for yet.
 
-- **CRUD role verification on all Secret endpoints.** All GET, UPDATE, and DELETE handlers for sources and destinations verify the target Secret carries the expected `backup.mogenius.io/role` label before proceeding. This prevents the operator's expanded RBAC (full Secret CRUD) from being used to access or delete non-backup Secrets in the namespace.
+- **CRUD endpoints address typed kinds, so the "is this really a backup Secret" check is gone.** Under the Secret model every source/destination handler had to verify the role label before touching a Secret, because the operator's Secret CRUD could otherwise be steered at any Secret in the namespace. With `BackupSource` / `BackupDestination` the kind is the guard; Secret writes from the UI are limited to credentials Secrets that carry an OwnerReference to the CR being edited.
 
 - **Two-phase fan-out with per-destination result tracking.** The pipeline splits upload into Phase 1 (`fanOutDumps` — dump upload with retry) and Phase 2 (`uploadMeta` — meta upload with retry). Phase 1 collects `[]DestinationResult` (name, storageType, status, error per destination). Phase 2 builds `meta.json` including these results, then uploads to successful destinations only. This enables per-destination health monitoring in the UI without architecture changes to the storage layer. Previously, meta was uploaded alongside the dump in a single `uploadOne` call, so meta could not contain per-destination outcomes.
 
@@ -1285,7 +1327,7 @@ The notable ones, with the reasoning that future readers should preserve.
 
 - **Redis Phase-2 verification is auth + roundtrip, not RDB load.** `redis-cli` has no clean "load this RDB into a running server" path: the supported routes are all "restart the server with `dbfilename=...`", which doesn't fit the spawn-then-restore model. The `DEBUG RELOAD` strategy is fragile across versions. Redis Phase-2 currently confirms the verifier-pod is reachable and authenticatable, plus a `SET`/`GET` roundtrip; Phase-1 `stream-validate` already confirms decryptability + RDB header magic. Real RDB load is a follow-up. The `Notes` field on `SmokeResult` carries a `"redis Phase-2 verification is auth+roundtrip only"` advisory string so operators see the limitation in the meta without having to read the source.
 
-- **Suspended state lives on the source Secret, not on the CronJob.** Pausing a backup used to mean either deleting the source (loses config + history) or `kubectl patch cronjob ... suspend=true` (the previous CLAUDE.md claimed the reconciler "doesn't revert this", but it does — `current.Spec = desired.Spec` in the reconcile loop unconditionally rebuilds the spec, so manual patches were silently lost on the next Secret reconcile). The fix: a new `backup.mogenius.io/suspended` annotation on the source Secret, parsed into `Source.Suspended`, which the reconciler translates into `Spec.Suspend = ptr(src.Suspended)` on every reconcile — deterministic in both directions. Considered alternatives: (a) leave the documented-but-broken kubectl-patch flow alone; (b) preserve manual patches by reading `current.Spec.Suspend` before overwriting; (c) Secret-as-truth (chosen). (a) ships a known foot-gun — operators who follow the doc lose their pause on the next innocuous Secret edit. (b) introduces a third source of truth (kubectl, annotation, code default) and makes "why is this paused?" un-answerable from the Secret alone, which is exactly the property §6.2 guarantees for every other knob. (c) makes the user contract uniform: every behavior toggle is an annotation on the source Secret. UI exposes Pause/Resume buttons that hit a dedicated endpoint (`POST /api/sources/{name}/suspend`) so a one-click pause does not require sending the full source body and risk overwriting a concurrent edit. Manual triggers (`kubectl create job --from=cronjob/...` and the UI's Run button) intentionally ignore Suspend — that is the documented escape hatch for restore drills against paused sources.
+- **Suspended state lives on the source object (`spec.suspended` today, an annotation before the CRD move), not on the CronJob.** Pausing a backup used to mean either deleting the source (loses config + history) or `kubectl patch cronjob ... suspend=true` (the previous CLAUDE.md claimed the reconciler "doesn't revert this", but it does — `current.Spec = desired.Spec` in the reconcile loop unconditionally rebuilds the spec, so manual patches were silently lost on the next Secret reconcile). The fix: a new `backup.mogenius.io/suspended` annotation on the source Secret, parsed into `Source.Suspended`, which the reconciler translates into `Spec.Suspend = ptr(src.Suspended)` on every reconcile — deterministic in both directions. Considered alternatives: (a) leave the documented-but-broken kubectl-patch flow alone; (b) preserve manual patches by reading `current.Spec.Suspend` before overwriting; (c) Secret-as-truth (chosen). (a) ships a known foot-gun — operators who follow the doc lose their pause on the next innocuous Secret edit. (b) introduces a third source of truth (kubectl, annotation, code default) and makes "why is this paused?" un-answerable from the Secret alone, which is exactly the property §6.2 guarantees for every other knob. (c) makes the user contract uniform: every behavior toggle is an annotation on the source Secret. UI exposes Pause/Resume buttons that hit a dedicated endpoint (`POST /api/sources/{name}/suspend`) so a one-click pause does not require sending the full source body and risk overwriting a concurrent edit. Manual triggers (`kubectl create job --from=cronjob/...` and the UI's Run button) intentionally ignore Suspend — that is the documented escape hatch for restore drills against paused sources.
 
 - **`internal/safe.Goroutine` for every long-lived operator goroutine.** `pipeline.go` already had a private `recoverGoroutine` helper that wrapped each fan-out goroutine with `recover()`. The operator side did NOT — six goroutines in `MetricsRefresher`, `StorageScrubber`, and the multi-destination UI handlers (`destination-stats`, `destination-health`, `consistency-check`) were unprotected. A panic in any of them would crash the operator pod, which is a much bigger blast radius than a worker-pod crash: the worker is short-lived and K8s respawns the next tick, but the operator pod hosts every reconciler AND the UI. Resolution: extract the helper to `internal/safe`, add `runtime/debug.Stack()` capture (the original logged just `panic: %v` with no stack — recovered panics with no stack are nearly undebuggable in production), and apply at every long-lived goroutine call-site. Alternative considered: leave it inline per-package as a tiny duplicated helper. Rejected because the rule "long-lived operator goroutines must recover" is a uniform contract — having a single import path makes that contract greppable and prevents the next added goroutine from quietly being unprotected. Worker-pod fan-out goroutines now use the same helper too (consistency over preserving pipeline.go's local copy).
 
@@ -1378,8 +1420,11 @@ helm install backup-operator ./charts/backup-operator \
 #   --set agePublicKeys[0]=age1qx...primary --set agePublicKeys[1]=age1yz...dr
 ```
 
+The chart installs the three CRDs as templates (`crds.install`, default on) with `helm.sh/resource-policy: keep` (`crds.keep`), so `helm upgrade` updates the schema and `helm uninstall` leaves your BackupSources in place. CRDs that were applied with `kubectl` first (`just install-crds`) must be handed over before the chart can manage them — Helm refuses to adopt objects without its ownership metadata (`just adopt-crds`, or install with `crds.install=false`). Upgrading an install that still uses labelled Secrets: run `backup-restore migrate -n <ns> --age-secret <release>-age --apply` — the new operator does not read labelled Secrets (§14).
+
 **Defaults to know:**
 
+- `crds.install: true`, `crds.keep: true` — see above.
 - `prometheusReleaseLabel: kube-prometheus-stack` — applied as the `release:` label on `ServiceMonitor` and `PrometheusRule` so kube-prometheus-stack picks them up. Set to `""` to opt out.
 - `alerts.prometheusURL: http://prometheus-operated.alert.svc.cluster.local:9090` — assumes kube-prometheus-stack lives in the `alert` namespace. Override or set to `""` for the local heuristic.
 - `alerts.alertmanagerURL: http://alertmanager-operated.alert.svc.cluster.local:9093` — used for the "open in Alertmanager" UI link, the `/api/alerts/status` connectivity check, and the `/api/alerts/test` endpoint.
@@ -1406,29 +1451,20 @@ Releases are fully automated via [Semantic Release](https://github.com/semantic-
 
 No manual tagging required. The workflow runs `go test`, then semantic-release determines the next version, creates a GitHub Release, builds the Docker image, and publishes the Helm chart.
 
-### 19.4 Settings Wizard
+### 19.4 Settings page
 
-The UI Settings Wizard (`#/settings`) provides a 4-step form:
-
-| Step | Fields |
-|---|---|
-| 1. Schedule & Timeout | `defaultSchedule`, `runTimeoutSeconds` |
-| 2. Retention Policy | `defaultRetentionDays`, `defaultMinKeep`, `tempDir`, `tempDirSize` |
-| 3. Worker Resources | CPU/Memory limits and requests |
-| 4. Review & Apply | Summary of all settings, save button |
+`#/settings` shows the operator's **effective fleet-wide defaults** read-only — default schedule, run timeout, retention defaults, temp dir, worker resources — and exports them as a `values.yaml` for GitOps. Per-source configuration is edited on the Sources page and lands typed in `BackupSource.spec`.
 
 **API Endpoints:**
-- `GET /api/settings` — reads the settings ConfigMap
-- `PUT /api/settings` — validates and updates the ConfigMap
-- `GET /api/settings/export` — generates a downloadable `values.yaml`
+- `GET /api/settings` — effective defaults (`readOnly: true`)
+- `PUT /api/settings` — `405`; defaults are Helm-managed
+- `GET /api/settings/export` — downloadable `values.yaml`
 
-**Architecture:**
 ```
-Helm values.yaml → ConfigMap (install-time defaults)
-                         ↕
-                    UI Settings Wizard (runtime overrides)
-                         ↓
-                    Export values.yaml → Git → helm upgrade (GitOps)
+Helm values.yaml → env vars → operator (fleet defaults)
+BackupSource.spec                      (per-source overrides, typed)
+                 ↓
+        Export values.yaml → Git → helm upgrade (GitOps)
 ```
 
 ---
@@ -1436,7 +1472,7 @@ Helm values.yaml → ConfigMap (install-time defaults)
 ## 20. Important
 
 - Every change to the directory structure should be reflected in section 4.
-- New annotations or labels: update sections 6.1–6.5.
+- New CRD fields: update sections 6.1–6.6 and run `just generate` (DeepCopy + CRD YAML); CI fails on drift.
 - New env vars: update section 7.
 - New metrics: update section 12. New default alerts: update section 13.
 - New failure modes worth flagging: update section 14.

@@ -1,16 +1,31 @@
 {{- if .Values.rbac.create -}}
-# Operator Role — manages CronJobs, watches Secrets/Jobs, leader election.
+# Operator Role — reconciles backup.mogenius.io objects into CronJobs,
+# writes their status, observes Jobs, holds the leader-election lease.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "backup-operator.fullname" . }}
   labels: {{- include "backup-operator.labels" . | nindent 4 }}
 rules:
-  # Operator reconciles source/destination Secrets into CronJobs.
-  # create/update/delete needed for UI-driven CRUD of source/destination Secrets.
+  # Discovery contract: watch BackupSources / BackupDestinations /
+  # BackupRecipients and write their status subresources. create/update/
+  # delete only when the UI can mutate (CRUD pages); a read-only or UI-less
+  # install gets a read-only operator.
+  - apiGroups: ["backup.mogenius.io"]
+    resources: ["backupsources", "backupdestinations", "backuprecipients"]
+    verbs: ["get", "list", "watch"{{- if and .Values.ui.enabled (not .Values.ui.readOnly) }}, "create", "update", "patch", "delete"{{- end }}]
+  - apiGroups: ["backup.mogenius.io"]
+    resources: ["backupsources/status", "backupdestinations/status"]
+    verbs: ["get", "update", "patch"]
+
+  # Secrets: the operator reads destination credentials by name (metrics
+  # refresher, scrubber, UI probes) and writes the merged age Secret the
+  # worker pods mount. No list/watch — Secrets are read uncached, so the
+  # operator never holds every Secret in the namespace. create/update/
+  # delete on credentials Secrets only when the UI can mutate.
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "create", "update", "patch"{{- if and .Values.ui.enabled (not .Values.ui.readOnly) }}, "delete"{{- end }}]
 
   # Operator — manages CronJobs as the per-source materialised schedule.
   - apiGroups: ["batch"]
@@ -26,13 +41,6 @@ rules:
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-
-  # Operator — reads/writes the settings ConfigMap for the UI wizard.
-  # list/watch are required by controller-runtime's cached client to keep
-  # its informer in sync; without them every Get blocks until timeout.
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    verbs: ["get", "list", "watch", "update", "patch"]
 
   # Operator — emit events (worker, UI) and read them back for the
   # in-product audit view. get/list use the API reader directly to
@@ -54,14 +62,14 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "backup-operator.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+{{- if .Values.ui.enabled }}
 ---
-# Operator ClusterRole — cluster-scoped permissions only. Currently the
-# UI's /api/cluster/capabilities endpoint runs a SubjectAccessReview
-# against the worker SA to answer "would Phase-2 restore-verification
-# actually work?". SubjectAccessReview is a virtual cluster-scoped
-# resource (Create returns the answer; nothing persists), so it cannot
-# live in a namespaced Role. This binding is pure read intent — the
-# operator never escalates a real privilege through it.
+# Operator ClusterRole — cluster-scoped permissions only. The UI's
+# /api/cluster/capabilities endpoint runs a SubjectAccessReview against the
+# worker SA to answer "would Phase-2 restore-verification actually work?".
+# SubjectAccessReview is a virtual cluster-scoped resource (Create returns
+# the answer; nothing persists), so it cannot live in a namespaced Role.
+# Only rendered with the UI, which is the only consumer.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -85,20 +93,32 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "backup-operator.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+{{- end }}
 ---
-# Worker Role — minimal privileges: read Secrets, emit audit events.
+# Worker Role — minimal privileges: read its BackupSource, list
+# BackupDestinations, read the referenced credentials Secrets by name,
+# emit audit events.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "backup-operator.fullname" . }}-worker
   labels: {{- include "backup-operator.labels" . | nindent 4 }}
 rules:
-  # Worker reads the source Secret it was pointed at and lists destinations.
-  - apiGroups: [""]
-    resources: ["secrets"]
+  - apiGroups: ["backup.mogenius.io"]
+    resources: ["backupsources"]
+    verbs: ["get"]
+  - apiGroups: ["backup.mogenius.io"]
+    resources: ["backupdestinations"]
     verbs: ["get", "list"]
 
-  # Worker — audit-trail events attached to source Secrets.
+  # Credentials Secrets (source password, destination credentials, TLS CA)
+  # are fetched by name only — no list, so a compromised worker cannot
+  # enumerate the namespace's Secrets.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+
+  # Worker — audit-trail events attached to BackupSources.
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
@@ -111,7 +131,7 @@ rules:
   # spawns a short-lived DB Pod in this namespace, owns it via
   # OwnerReference (cascade-delete on worker exit), and tears it down.
   # Disabled by default — enable when you set
-  # restore-verification-mode to a Phase-2 mode.
+  # spec.restoreVerification.mode to a Phase-2 mode.
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["create", "get", "list", "watch", "delete"]

@@ -14,7 +14,7 @@ import (
 // known-hosts file or trip the insecure-warning code path).
 func s3Dest(name, bucket, accessKey, secret string) *secrets.Destination {
 	return &secrets.Destination{
-		SecretName:  name,
+		ObjectName:  name,
 		Namespace:   "backup",
 		Name:        name,
 		StorageType: "s3",

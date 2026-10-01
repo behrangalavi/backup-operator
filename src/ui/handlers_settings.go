@@ -1,214 +1,88 @@
 package ui
 
 import (
-	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
-
-	corev1 "k8s.io/api/core/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// settingsPayload is the JSON shape for GET and PUT /api/settings.
-type settingsPayload struct {
-	DefaultSchedule     string `json:"defaultSchedule"`
-	RunTimeoutSeconds   string `json:"runTimeoutSeconds"`
+// OperatorDefaults is the effective fleet-wide configuration the operator
+// started with (DEFAULT_SCHEDULE, retention defaults, worker resources).
+// These are Helm values → env vars; the UI shows them read-only and can
+// export them as a values.yaml, but never writes them: per-source
+// configuration lives typed in the BackupSource spec, and fleet defaults
+// have exactly one source of truth, the chart.
+type OperatorDefaults struct {
+	DefaultSchedule      string `json:"defaultSchedule"`
+	RunTimeoutSeconds    string `json:"runTimeoutSeconds"`
 	DefaultRetentionDays string `json:"defaultRetentionDays"`
-	DefaultMinKeep      string `json:"defaultMinKeep"`
-	TempDir             string `json:"tempDir"`
-	TempDirSize         string `json:"tempDirSize"`
-	WorkerCPULimit      string `json:"workerCpuLimit"`
-	WorkerMemoryLimit   string `json:"workerMemoryLimit"`
-	WorkerCPURequest    string `json:"workerCpuRequest"`
-	WorkerMemoryRequest string `json:"workerMemoryRequest"`
+	DefaultMinKeep       string `json:"defaultMinKeep"`
+	TempDir              string `json:"tempDir"`
+	TempDirSize          string `json:"tempDirSize"`
+	WorkerCPULimit       string `json:"workerCpuLimit"`
+	WorkerMemoryLimit    string `json:"workerMemoryLimit"`
+	WorkerCPURequest     string `json:"workerCpuRequest"`
+	WorkerMemoryRequest  string `json:"workerMemoryRequest"`
 }
 
-// settingsResponse wraps a settingsPayload with the standard API shape.
+// settingsResponse wraps the defaults with the standard API shape.
 type settingsResponse struct {
-	OK       bool            `json:"ok"`
-	Message  string          `json:"message,omitempty"`
-	Settings *settingsPayload `json:"settings,omitempty"`
+	OK       bool              `json:"ok"`
+	Message  string            `json:"message,omitempty"`
+	ReadOnly bool              `json:"readOnly"`
+	Settings *OperatorDefaults `json:"settings,omitempty"`
 }
 
-// handleGetSettings reads the settings ConfigMap and returns the current values.
+// handleGetSettings returns the operator's effective defaults.
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.SettingsConfigMap == "" {
-		writeJSON(w, http.StatusNotFound, settingsResponse{Message: "settings not configured"})
-		return
-	}
-
-	cm := &corev1.ConfigMap{}
-	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{
-		Namespace: s.cfg.Namespace,
-		Name:      s.cfg.SettingsConfigMap,
-	}, cm); err != nil {
-		s.cfg.Logger.Error(err, "get settings configmap")
-		writeJSON(w, http.StatusInternalServerError, settingsResponse{Message: "failed to read settings"})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, settingsResponse{
-		OK: true,
-		Settings: &settingsPayload{
-			DefaultSchedule:      cm.Data["defaultSchedule"],
-			RunTimeoutSeconds:    cm.Data["runTimeoutSeconds"],
-			DefaultRetentionDays: cm.Data["defaultRetentionDays"],
-			DefaultMinKeep:       cm.Data["defaultMinKeep"],
-			TempDir:              cm.Data["tempDir"],
-			TempDirSize:          cm.Data["tempDirSize"],
-			WorkerCPULimit:       cm.Data["workerCpuLimit"],
-			WorkerMemoryLimit:    cm.Data["workerMemoryLimit"],
-			WorkerCPURequest:     cm.Data["workerCpuRequest"],
-			WorkerMemoryRequest:  cm.Data["workerMemoryRequest"],
-		},
-	})
+	d := s.cfg.Defaults
+	writeJSON(w, http.StatusOK, settingsResponse{OK: true, ReadOnly: true, Settings: &d})
 }
 
-// handleUpdateSettings validates and writes new settings to the ConfigMap.
+// handleUpdateSettings refuses: defaults are Helm-managed. Kept as an
+// explicit endpoint (rather than a 404) so older SPAs get a clear message.
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.SettingsConfigMap == "" {
-		writeJSON(w, http.StatusNotFound, settingsResponse{Message: "settings not configured"})
-		return
-	}
-
-	var req settingsPayload
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.cfg.Logger.Error(err, "decode settings JSON")
-		writeJSON(w, http.StatusBadRequest, settingsResponse{Message: "invalid JSON"})
-		return
-	}
-
-	if err := validateSettings(req); err != nil {
-		writeJSON(w, http.StatusBadRequest, settingsResponse{Message: err.Error()})
-		return
-	}
-
-	cm := &corev1.ConfigMap{}
-	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{
-		Namespace: s.cfg.Namespace,
-		Name:      s.cfg.SettingsConfigMap,
-	}, cm); err != nil {
-		s.cfg.Logger.Error(err, "get settings configmap for update")
-		writeJSON(w, http.StatusInternalServerError, settingsResponse{Message: "failed to read settings"})
-		return
-	}
-
-	// Verify this is the settings ConfigMap (has the component label).
-	if cm.Labels["app.kubernetes.io/component"] != "settings" {
-		writeJSON(w, http.StatusForbidden, settingsResponse{Message: "not a settings configmap"})
-		return
-	}
-
-	if cm.Data == nil {
-		cm.Data = make(map[string]string)
-	}
-	cm.Data["defaultSchedule"] = req.DefaultSchedule
-	cm.Data["runTimeoutSeconds"] = req.RunTimeoutSeconds
-	cm.Data["defaultRetentionDays"] = req.DefaultRetentionDays
-	cm.Data["defaultMinKeep"] = req.DefaultMinKeep
-	cm.Data["tempDir"] = req.TempDir
-	cm.Data["tempDirSize"] = req.TempDirSize
-	cm.Data["workerCpuLimit"] = req.WorkerCPULimit
-	cm.Data["workerMemoryLimit"] = req.WorkerMemoryLimit
-	cm.Data["workerCpuRequest"] = req.WorkerCPURequest
-	cm.Data["workerMemoryRequest"] = req.WorkerMemoryRequest
-
-	if err := s.cfg.Client.Update(r.Context(), cm); err != nil {
-		s.cfg.Logger.Error(err, "update settings configmap")
-		writeJSON(w, http.StatusInternalServerError, settingsResponse{Message: "failed to save settings"})
-		return
-	}
-
-	s.emitConfigMapEvent(r.Context(), cm, "SettingsUpdated", "Settings updated via UI")
-	s.broadcast(sseEvent{Type: "settings_updated", Data: "settings"})
-	writeJSON(w, http.StatusOK, settingsResponse{OK: true, Message: "settings saved"})
+	writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed,
+		"operator defaults are managed by the Helm chart; export values.yaml and run helm upgrade")
 }
 
-// handleSettingsExport generates a values.yaml snippet from the current settings.
+// handleSettingsExport generates a values.yaml snippet from the effective
+// defaults, ready for a GitOps commit.
 func (s *Server) handleSettingsExport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "GET required")
 		return
 	}
-	if s.cfg.SettingsConfigMap == "" {
-		writeJSON(w, http.StatusNotFound, settingsResponse{Message: "settings not configured"})
-		return
-	}
-
-	cm := &corev1.ConfigMap{}
-	if err := s.cfg.Client.Get(r.Context(), client.ObjectKey{
-		Namespace: s.cfg.Namespace,
-		Name:      s.cfg.SettingsConfigMap,
-	}, cm); err != nil {
-		s.cfg.Logger.Error(err, "get settings configmap for export")
-		writeJSON(w, http.StatusInternalServerError, settingsResponse{Message: "failed to read settings"})
-		return
-	}
-
-	yaml := buildValuesYAML(cm.Data)
-
 	w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="values.yaml"`)
-	_, _ = w.Write([]byte(yaml))
+	_, _ = w.Write([]byte(buildValuesYAML(s.cfg.Defaults)))
 }
 
-func validateSettings(s settingsPayload) error {
-	if s.DefaultSchedule == "" {
-		return fmt.Errorf("defaultSchedule is required")
-	}
-	if s.DefaultSchedule != "" {
-		fields := strings.Fields(s.DefaultSchedule)
-		if len(fields) != 5 {
-			return fmt.Errorf("defaultSchedule must have exactly 5 cron fields")
-		}
-	}
-	if s.RunTimeoutSeconds != "" {
-		n, err := strconv.Atoi(s.RunTimeoutSeconds)
-		if err != nil || n < 1 {
-			return fmt.Errorf("runTimeoutSeconds must be a positive integer (>= 1)")
-		}
-	}
-	if s.DefaultRetentionDays != "" {
-		if n, err := strconv.Atoi(s.DefaultRetentionDays); err != nil || n < 0 {
-			return fmt.Errorf("defaultRetentionDays must be a non-negative integer")
-		}
-	}
-	if s.DefaultMinKeep != "" {
-		if n, err := strconv.Atoi(s.DefaultMinKeep); err != nil || n < 0 {
-			return fmt.Errorf("defaultMinKeep must be a non-negative integer")
-		}
-	}
-	return nil
-}
-
-func buildValuesYAML(data map[string]string) string {
+func buildValuesYAML(d OperatorDefaults) string {
 	var b strings.Builder
-	b.WriteString("# Generated by backup-operator Settings Wizard\n")
+	b.WriteString("# Generated by backup-operator — effective operator defaults\n")
 	b.WriteString("# Apply with: helm upgrade backup-operator ./charts/backup-operator -f values.yaml\n\n")
 
 	b.WriteString("config:\n")
-	writeYAMLField(&b, "  ", "defaultSchedule", data["defaultSchedule"])
-	writeYAMLField(&b, "  ", "runTimeoutSeconds", data["runTimeoutSeconds"])
-	writeYAMLField(&b, "  ", "defaultRetentionDays", data["defaultRetentionDays"])
-	writeYAMLField(&b, "  ", "defaultMinKeep", data["defaultMinKeep"])
-	writeYAMLField(&b, "  ", "tempDir", data["tempDir"])
+	writeYAMLField(&b, "  ", "defaultSchedule", d.DefaultSchedule)
+	writeYAMLField(&b, "  ", "runTimeoutSeconds", d.RunTimeoutSeconds)
+	writeYAMLField(&b, "  ", "defaultRetentionDays", d.DefaultRetentionDays)
+	writeYAMLField(&b, "  ", "defaultMinKeep", d.DefaultMinKeep)
+	writeYAMLField(&b, "  ", "tempDir", d.TempDir)
 
 	b.WriteString("\ntempDirSize: ")
-	b.WriteString(quote(data["tempDirSize"]))
+	b.WriteString(quote(d.TempDirSize))
 	b.WriteString("\n")
 
 	b.WriteString("\nworkerResources:\n")
 	b.WriteString("  limits:\n")
-	writeYAMLField(&b, "    ", "cpu", data["workerCpuLimit"])
-	writeYAMLField(&b, "    ", "memory", data["workerMemoryLimit"])
+	writeYAMLField(&b, "    ", "cpu", d.WorkerCPULimit)
+	writeYAMLField(&b, "    ", "memory", d.WorkerMemoryLimit)
 	b.WriteString("  requests:\n")
-	writeYAMLField(&b, "    ", "cpu", data["workerCpuRequest"])
-	writeYAMLField(&b, "    ", "memory", data["workerMemoryRequest"])
+	writeYAMLField(&b, "    ", "cpu", d.WorkerCPURequest)
+	writeYAMLField(&b, "    ", "memory", d.WorkerMemoryRequest)
 
 	b.WriteString("\nui:\n  enabled: true\n")
-
 	return b.String()
 }
 

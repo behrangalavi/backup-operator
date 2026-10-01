@@ -193,9 +193,9 @@ var (
 	sourceParseErrors = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "backup_operator_source_parse_errors_total",
-			Help: "Source Secrets that failed annotation/data parsing during reconciliation",
+			Help: "BackupSources whose spec could not be flattened into a runnable source during reconciliation",
 		},
-		[]string{"secret"},
+		[]string{"source"},
 	)
 
 	// Storage scrub metrics — produced by the operator-side scrubber that
@@ -435,8 +435,8 @@ func SetStorageScrubLastCheck(target, destination string, t time.Time) {
 	storageScrubLastCheck.WithLabelValues(target, destination).Set(float64(t.Unix()))
 }
 
-func IncSourceParseError(secret string) {
-	sourceParseErrors.WithLabelValues(secret).Inc()
+func IncSourceParseError(source string) {
+	sourceParseErrors.WithLabelValues(source).Inc()
 }
 
 func IncStorageScrubFailed(target, destination string) {

@@ -34,7 +34,7 @@ A Kubernetes-native backup operator in Go for **PostgreSQL**, **MySQL**, **Maria
 
 K8up, Stash, and Velero solve adjacent problems but none of them satisfy all three of:
 
-1. **Discovery via labelled `Secret`s, not CRDs.** Labelling a Secret is the entire user contract. No CRD to install, no API surface to learn, no version skew to worry about.
+1. **Typed configuration, credentials apart.** A `BackupSource` is validated at admission and reports `Ready` / last success / verifier verdict in `kubectl get`; the password stays in a plain Secret — optionally the one your database chart already created, so nothing is copied.
 2. **Semantic dump analysis.** Alerts fire on dump *content* — table disappeared, row-count collapsed, schema fingerprint changed — not just on job exit codes. A backup that "succeeds" with an empty dump is a silent disaster everywhere else; here it pages you.
 3. **Multi-destination fan-out as first-class.** One dump streams to N storage backends in parallel, mixed protocols (SFTP + S3 + …). Failure of one destination doesn't fail the run.
 
@@ -45,10 +45,10 @@ If you don't need all three, you have simpler choices.
 ## How it works
 
 ```
-   user labels a Secret               ┌──────────────────────────────────────────┐
+   user applies a BackupSource        ┌──────────────────────────────────────────┐
             │                         │ Kubernetes API                           │
             ▼                         │                                          │
-   ┌──────────────────┐  watch        │   Source Secret  ──┐                     │
+   ┌──────────────────┐  watch        │   BackupSource ────┐  (+ creds Secret)   │
    │ Operator pod     ├───────────────┤                     │ OwnerReference     │
    │ (backup-operator)│  reconcile    │                     ▼                    │
    └──────────────────┘               │   batch/v1.CronJob ──tick──▶ Job pod     │
@@ -77,7 +77,7 @@ If you don't need all three, you have simpler choices.
 
 | Binary | Where it runs | Job |
 |---|---|---|
-| `backup-operator` | Operator Deployment | Reconciles `Source` Secret → managed `CronJob`. Optionally hosts the read-only Dashboard UI. |
+| `backup-operator` | Operator Deployment | Reconciles `BackupSource` → managed `CronJob`, writes status. Optionally hosts the Dashboard UI. |
 | `backup-worker` | CronJob-spawned Job pod | One-shot: dump → encrypt → fan-out → retention. Exits 0 / 1. |
 | `backup-restore` | Operator's laptop | Lists, downloads, and decrypts artifacts. The only place the age private key ever lives. |
 
@@ -103,57 +103,70 @@ helm install backup-operator oci://ghcr.io/behrangalavi/charts/backup-operator \
 #   -n backup --create-namespace \
 #   --set agePublicKeys="age1qx...your-recipient-here"
 
-# 3. Label a database Secret as a backup source.
+# 3. Declare a backup source: connection + policy in the CR, password in a Secret.
 kubectl -n backup apply -f - <<'EOF'
 apiVersion: v1
 kind: Secret
 metadata:
-  name: prod-users-db
-  labels:
-    backup.mogenius.io/role: source
-    backup.mogenius.io/db-type: postgres
-  annotations:
-    backup.mogenius.io/name: "prod-users"
-    backup.mogenius.io/schedule: "0 2 * * *"
+  name: prod-users-credentials
 type: Opaque
 stringData:
-  host: postgres.production.svc.cluster.local
-  port: "5432"
-  database: users
-  username: backup
   password: super-secret
+---
+apiVersion: backup.mogenius.io/v1alpha1
+kind: BackupSource
+metadata:
+  name: prod-users
+spec:
+  database:
+    type: postgres
+    host: postgres.production.svc.cluster.local
+    port: 5432
+    name: users
+    username: backup
+    credentialsSecretRef:
+      name: prod-users-credentials
+  schedule: "0 2 * * *"
 EOF
 
-# 4. Label a destination Secret (S3 example).
+# 4. Declare a destination (S3 example).
 kubectl -n backup apply -f - <<'EOF'
 apiVersion: v1
 kind: Secret
 metadata:
-  name: prod-s3
-  labels:
-    backup.mogenius.io/role: destination
-    backup.mogenius.io/storage-type: s3
-  annotations:
-    backup.mogenius.io/name: "prod-s3"
-    backup.mogenius.io/path-prefix: "backups/prod"
+  name: prod-s3-credentials
 type: Opaque
 stringData:
-  bucket: my-backups
   access-key-id: AKIA...
   secret-access-key: ...
-  region: eu-central-1
+---
+apiVersion: backup.mogenius.io/v1alpha1
+kind: BackupDestination
+metadata:
+  name: prod-s3
+spec:
+  type: s3
+  pathPrefix: backups/prod
+  s3:
+    bucket: my-backups
+    region: eu-central-1
+  credentialsSecretRef:
+    name: prod-s3-credentials
 EOF
 
-# 5. Confirm the CronJob was reconciled.
+# 5. Confirm the source is Ready and the CronJob was reconciled.
+kubectl -n backup get backupsources
+# NAME         TYPE       SCHEDULE    SUSPENDED   LAST RUN   LAST SUCCESS   VERIFIED   READY   AGE
+# prod-users   postgres   37 2 * * *                                                  True    5s
 kubectl -n backup get cronjobs
-# NAME                       SCHEDULE      ...
-# backup-prod-users-db       0 2 * * *
+# NAME                 SCHEDULE      ...
+# backup-prod-users    37 2 * * *
 
 # 6. Trigger a manual run instead of waiting for the schedule.
-kubectl -n backup create job --from=cronjob/backup-prod-users-db manual-$(date +%s)
+kubectl -n backup create job --from=cronjob/backup-prod-users manual-$(date +%s)
 
 # 7. Restore (run from your laptop, with the offline private key).
-backup-restore --storage-secret prod-s3 -n backup --target prod-users \
+backup-restore --destination prod-s3 -n backup --target prod-users \
   --age-key ~/age.key --decompress | psql -h localhost prod_clone
 ```
 
@@ -191,7 +204,8 @@ helm install backup-operator ./backup-operator/charts/backup-operator \
 
 | Value | Default | Description |
 |---|---|---|
-| `agePublicKeys` | (required) | Newline-separated age public keys for encryption |
+| `agePublicKeys` | (required) | age public keys (array or newline-separated string); seeded as `BackupRecipient` objects at startup |
+| `crds.install` / `crds.keep` | `true` / `true` | Install the CRDs as chart templates (upgradable); keep them on `helm uninstall` |
 | `config.defaultSchedule` | `0 2 * * *` | Default cron schedule for new sources |
 | `config.runTimeoutSeconds` | `3600` | Max seconds per backup run |
 | `config.defaultRetentionDays` | `30` | Days to keep backups (0 = forever) |
@@ -208,38 +222,42 @@ See `charts/backup-operator/values.yaml` for the full list.
 
 ## Defining a Backup Target (Source)
 
-A **Source** is any `Secret` with `backup.mogenius.io/role=source` in the operator's watch namespace. The operator parses the Secret's labels and annotations, materialises a `batch/v1.CronJob`, and mounts an `OwnerReference` so deleting the Secret cascades to the CronJob.
+A **Source** is a `BackupSource` object (`backup.mogenius.io/v1alpha1`) in the operator's watch namespace. The spec carries everything non-secret — connection, schedule, retention, analyzer and verification settings — and references a Secret that holds the password. The operator materialises a `batch/v1.CronJob`, owns it via `OwnerReference` (deleting the source cascades), and writes `status` so `kubectl get backupsources` shows when it last succeeded.
 
-### Required labels
+Invalid values are rejected by the API server at `kubectl apply` (enums, ranges, name patterns), not silently defaulted.
 
-| Label | Value |
-|---|---|
-| `backup.mogenius.io/role` | `source` |
-| `backup.mogenius.io/db-type` | `postgres` \| `mysql` \| `mariadb` \| `mongo` \| `redis` |
+### `spec.database`
 
-### Required `data` keys
-
-| Key | Required | Notes |
+| Field | Required | Notes |
 |---|---|---|
+| `type` | yes | `postgres` \| `mysql` \| `mariadb` \| `mongo` \| `redis` |
 | `host` | yes | Reachable hostname from the worker pod |
 | `port` | no | Defaults: 5432 (pg), 3306 (mysql/mariadb), 27017 (mongo), 6379 (redis) |
-| `database` | yes for pg/mysql/mariadb; optional for mongo/redis | Mongo: omit to back up all non-system databases. Redis: optional DB index `0`–`15` — narrows stats only; the RDB dump is always full-instance. |
-| `username` | yes for all except `redis` | Redis pre-6 uses password-only AUTH; ACL usernames came in 6.0 and are optional |
-| `password` | yes | |
+| `name` | pg/mysql/mariadb: yes; mongo/redis: optional | Mongo: omit to back up all non-system databases. Redis: optional DB index or comma-separated list — narrows stats only; the RDB dump is always full-instance. |
+| `username` | all except `redis` | Redis pre-6 uses password-only AUTH. Ignored when `credentialsSecretRef.usernameKey` is set. |
+| `credentialsSecretRef.name` | yes | Secret holding the password |
+| `credentialsSecretRef.passwordKey` | no (`password`) | Point at the Secret your database chart already produced (CloudNativePG, Bitnami) instead of copying the password |
+| `credentialsSecretRef.usernameKey` | no | Read the username from the Secret too |
+| `tls.mode` | no | Engine-native TLS mode: postgres `sslmode` values, mysql/mariadb/redis `true`/`false` (+ `verify-ca`/`verify-identity` for mysql). Applies to the stats connection AND the dump tool. |
+| `tls.caSecretRef` | no | `{name, key}` of a Secret holding a CA bundle; the worker materialises it and enables certificate verification |
+| `extra` | no | Engine-specific options, e.g. `max-allowed-packet: "1G"` (MySQL/MariaDB), `authSource: admin` / `replicaSet` (Mongo) |
 
-### Annotations
+### Other `spec` fields
 
-| Annotation | Default | Effect |
+| Field | Default | Effect |
 |---|---|---|
-| `backup.mogenius.io/name` | Secret name | Logical target name. Used in metrics, object paths, CronJob name. |
-| `backup.mogenius.io/schedule` | `0 2 * * *` (chart default) | Cron expression. Standard Linux/Vixie syntax. |
-| `backup.mogenius.io/analyzer-enabled` | `true` | Set to `false` if the user lacks `pg_stat_*` access. Disables stats collection and dump analysis for this target. |
-| `backup.mogenius.io/destinations` | unset | CSV allow-list of destination *names*. Empty = fan out to all destinations in the namespace. |
-| `backup.mogenius.io/retention-days` | `30` (chart default) | Delete dumps older than N days. `0` = keep forever. |
-| `backup.mogenius.io/min-keep` | `3` (chart default) | Safety floor: never delete below this many newest dumps. |
-| `backup.mogenius.io/extra-<key>` | none | Surfaced into `dumper.Config.Extra[key]` for db-specific options (e.g. `extra-sslmode=require`, `extra-authSource=admin`). For MySQL/MariaDB, `extra-max-allowed-packet` overrides the mysqldump client packet ceiling (default `1G`); raise it if a wide row aborts the dump with `Error 2026: TLS/SSL error: unexpected eof`. |
-
-A typo on a feature-flag annotation (`analyzer-enabled: tru`) silently falls back to the default — backups must keep running even if a flag is misspelled.
+| `targetName` | `metadata.name` | Logical target name used in metrics, object paths and the CronJob name. Only set when migrating a source whose legacy name differed from its Secret name. |
+| `schedule` | `0 2 * * *` (chart default) | Cron expression. Standard 5-field syntax or `@daily`-style descriptors. |
+| `jitterMinutes` | unset | Spread the cron minute per source (0–60). Default: only when the minute is literally `0`. `0` pins the schedule. |
+| `suspended` | `false` | Pause scheduled runs; manual triggers still work. |
+| `destinations` | all | Allow-list of `BackupDestination` names. |
+| `retention.days` / `retention.minKeep` | `30` / `3` (chart defaults) | Delete dumps older than N days (`0` = forever), never below `minKeep` newest. |
+| `compression` | `gzip` | `gzip` or `zstd`. |
+| `analyzer.enabled` | `true` | Set to `false` if the user lacks `pg_stat_*` access. |
+| `analyzer.rowDropThresholdPercent` / `sizeDropThresholdPercent` | `50` | Flag a table / the dump when it shrinks below this percentage of the previous run. |
+| `analyzer.anonymizeTables` | `false` | Hash table names in `meta.json`. |
+| `analyzer.emptyDumpCheck` | `true` | Hard-fail a dump that has no data although the source has rows. |
+| `restoreVerification.*` | `mode: off` | See [Restore Verification](#restore-verification). |
 
 ### Examples
 
@@ -248,141 +266,153 @@ A typo on a feature-flag annotation (`analyzer-enabled: tru`) silently falls bac
 apiVersion: v1
 kind: Secret
 metadata:
-  name: orders-db
-  labels:
-    backup.mogenius.io/role: source
-    backup.mogenius.io/db-type: postgres
-  annotations:
-    backup.mogenius.io/name: "orders"
-    backup.mogenius.io/schedule: "*/30 * * * *"
-    backup.mogenius.io/extra-sslmode: "require"
-type: Opaque
+  name: orders-credentials
 stringData:
-  host: postgres.orders.svc.cluster.local
-  database: orders
-  username: backup
   password: ...
+---
+apiVersion: backup.mogenius.io/v1alpha1
+kind: BackupSource
+metadata:
+  name: orders
+spec:
+  database:
+    type: postgres
+    host: postgres.orders.svc.cluster.local
+    name: orders
+    username: backup
+    credentialsSecretRef: { name: orders-credentials }
+    tls: { mode: require }
+  schedule: "*/30 * * * *"
 ```
 
-**MySQL:**
+**PostgreSQL managed by CloudNativePG** (reuse the cluster's own app Secret, nothing copied):
 ```yaml
-apiVersion: v1
-kind: Secret
+apiVersion: backup.mogenius.io/v1alpha1
+kind: BackupSource
 metadata:
-  name: legacy-mysql
-  labels:
-    backup.mogenius.io/role: source
-    backup.mogenius.io/db-type: mysql
-  annotations:
-    backup.mogenius.io/name: "legacy"
-    backup.mogenius.io/schedule: "0 3 * * *"
-type: Opaque
-stringData:
-  host: mysql.legacy.svc.cluster.local
-  database: app
-  username: backup
-  password: ...
+  name: orders
+spec:
+  database:
+    type: postgres
+    host: orders-rw.orders.svc.cluster.local
+    name: app
+    credentialsSecretRef:
+      name: orders-app          # created by CNPG
+      usernameKey: username
+      passwordKey: password
+```
+
+**MySQL / MariaDB** (same `mysqldump` tool; set `type: mariadb` for MariaDB):
+```yaml
+apiVersion: backup.mogenius.io/v1alpha1
+kind: BackupSource
+metadata:
+  name: legacy
+spec:
+  database:
+    type: mysql
+    host: mysql.legacy.svc.cluster.local
+    name: app
+    username: backup
+    credentialsSecretRef: { name: legacy-credentials }
+    extra:
+      max-allowed-packet: "1G"
+  schedule: "0 3 * * *"
 ```
 
 **MongoDB:**
 ```yaml
-apiVersion: v1
-kind: Secret
+apiVersion: backup.mogenius.io/v1alpha1
+kind: BackupSource
 metadata:
-  name: events-mongo
-  labels:
-    backup.mogenius.io/role: source
-    backup.mogenius.io/db-type: mongo
-  annotations:
-    backup.mogenius.io/name: "events"
-    backup.mogenius.io/schedule: "0 4 * * *"
-    backup.mogenius.io/extra-authSource: "admin"
-type: Opaque
-stringData:
-  host: mongo.events.svc.cluster.local
-  username: backup
-  password: ...
-```
-
-**MariaDB** (uses the MySQL wire protocol — same `mysqldump` tool):
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: cms-mariadb
-  labels:
-    backup.mogenius.io/role: source
-    backup.mogenius.io/db-type: mariadb
-  annotations:
-    backup.mogenius.io/name: "cms"
-type: Opaque
-stringData:
-  host: mariadb.cms.svc.cluster.local
-  database: cms
-  username: backup
-  password: ...
+  name: events
+spec:
+  database:
+    type: mongo
+    host: mongo.events.svc.cluster.local
+    username: backup
+    credentialsSecretRef: { name: events-credentials }
+    extra:
+      authSource: admin
+  schedule: "0 4 * * *"
 ```
 
 **Redis** (RDB snapshot via `redis-cli --rdb`; full-instance, all DB indexes):
 ```yaml
-apiVersion: v1
-kind: Secret
+apiVersion: backup.mogenius.io/v1alpha1
+kind: BackupSource
 metadata:
-  name: sessions-redis
-  labels:
-    backup.mogenius.io/role: source
-    backup.mogenius.io/db-type: redis
-  annotations:
-    backup.mogenius.io/name: "sessions"
-type: Opaque
-stringData:
-  host: redis.sessions.svc.cluster.local
-  # username is optional — only needed for Redis 6+ ACL users
-  password: ...
+  name: sessions
+spec:
+  database:
+    type: redis
+    host: redis.sessions.svc.cluster.local
+    # username is optional — only needed for Redis 6+ ACL users
+    credentialsSecretRef: { name: sessions-credentials }
 ```
+
+### Status
+
+```bash
+kubectl -n backup get backupsources
+kubectl -n backup describe backupsource orders    # conditions + Events
+```
+
+| Status field | Meaning |
+|---|---|
+| `conditions[Ready]` | The managed CronJob matches the spec (`False/InvalidSpec` with the reason otherwise) |
+| `conditions[LastRunSucceeded]`, `lastRunTime`, `lastRunStatus`, `lastRunError` | Most recent run found in storage |
+| `lastSuccessTime`, `lastDumpSizeBytes`, `schemaChangedAt` | Most recent successful run |
+| `destinations[]` | Per-destination outcome of the last run |
+| `restoreVerification`, `conditions[Verified]` | Latest verifier verdict |
+| `cronJobName`, `materializedSchedule`, `nextScheduleTime` | What actually runs, and when |
 
 ---
 
 ## Defining a Destination
 
-A **Destination** is any `Secret` with `backup.mogenius.io/role=destination`. Destinations are discovered at run time by each worker — there is no managed object for them.
+A **Destination** is a `BackupDestination` object. Destinations are discovered at run time by each worker; the operator probes them for the `Reachable` status condition and the dashboard.
 
-### Required label
-
-| Label | Value |
+| Field | Effect |
 |---|---|
-| `backup.mogenius.io/role` | `destination` |
-| `backup.mogenius.io/storage-type` | `s3` \| `sftp` \| `hetzner-sftp` |
+| `type` | `s3` \| `sftp` \| `ftps` \| `azure` \| `gcs` |
+| `pathPrefix` | Prepended to every object path. Useful for separating clusters/environments inside a shared bucket. `..` segments are rejected. |
+| `credentialsSecretRef.name` | Secret holding the backend credentials (see per-type tables) |
+| `<type>` block | Exactly one of `s3`, `sftp`, `ftps`, `azure`, `gcs`, matching `type` |
 
-### Annotations
+`metadata.name` is the logical destination name matched against `BackupSource.spec.destinations`.
 
-| Annotation | Effect |
-|---|---|
-| `backup.mogenius.io/name` | Logical destination name. Matched against source's `destinations` allow-list. Defaults to Secret name. |
-| `backup.mogenius.io/path-prefix` | Prepended to every object path. Useful for separating clusters/environments inside a shared bucket. |
-
-### S3-compatible (`storage-type: s3`)
+### S3-compatible (`type: s3`)
 
 Works with **AWS S3, MinIO, Hetzner Object Storage, Cloudflare R2, Backblaze B2, Wasabi**, and anything else speaking the S3 API.
 
-| Key | Required | Notes |
+| `spec.s3` field | Required | Notes |
 |---|---|---|
 | `bucket` | yes | Must already exist; the operator does not create buckets. |
-| `access-key-id` | yes | |
-| `secret-access-key` | yes | |
 | `region` | no | Defaults to `us-east-1`; non-AWS providers usually ignore this. |
-| `endpoint` | no | Required for non-AWS (e.g. `https://s3.eu-central-1.amazonaws.com` for AWS implicit, `https://gateway.eu1.storjshare.io` for Storj, etc.). |
-| `path-style` | no | `"true"` for MinIO and others that require path-style addressing. |
+| `endpoint` | no | Required for non-AWS (`http://minio.backup.svc:9000`, `https://gateway.eu1.storjshare.io`, …). |
+| `pathStyle` | no | `true` for MinIO and others that require path-style addressing. |
 
-### SFTP (`storage-type: sftp` or `hetzner-sftp`)
+Credentials Secret keys: `access-key-id`, `secret-access-key`.
 
-| Key | Required | Notes |
+### SFTP (`type: sftp`)
+
+| `spec.sftp` field | Required | Notes |
 |---|---|---|
 | `host` | yes | |
 | `port` | no | Defaults to 22; Hetzner Storage Box uses 23. |
 | `username` | yes | |
-| `ssh-private-key` | yes | PEM-encoded. |
-| `known-hosts` | recommended | Output of `ssh-keyscan host`. Use `[host]:port` for non-22 ports. **Without it the worker logs a loud `INSECURE` warning and uses `InsecureIgnoreHostKey`.** |
+| `knownHosts` | recommended | Output of `ssh-keyscan host`. Use `[host]:port` for non-22 ports. **Without it the connection is rejected** unless `insecureSkipHostVerify: true` (logs an `INSECURE` warning). |
+
+Credentials Secret keys: `ssh-private-key` (PEM) **or** `password` — exactly one.
+
+### FTPS (`type: ftps`), Azure (`type: azure`), GCS (`type: gcs`)
+
+| Type | `spec.<type>` fields | Credentials Secret keys |
+|---|---|---|
+| `ftps` | `host`, `port`, `username`, `tlsMode` (`explicit`/`implicit`), `insecureSkipCertVerify` | `password` |
+| `azure` | `accountName`, `container` | `account-key` |
+| `gcs` | `bucket` | `service-account-json` |
 
 ### Examples
 
@@ -391,39 +421,37 @@ Works with **AWS S3, MinIO, Hetzner Object Storage, Cloudflare R2, Backblaze B2,
 apiVersion: v1
 kind: Secret
 metadata:
-  name: aws-prod
-  labels:
-    backup.mogenius.io/role: destination
-    backup.mogenius.io/storage-type: s3
-  annotations:
-    backup.mogenius.io/name: "aws-prod"
-    backup.mogenius.io/path-prefix: "cluster-prod"
-type: Opaque
+  name: aws-prod-credentials
 stringData:
-  bucket: my-backups
   access-key-id: AKIA...
   secret-access-key: ...
-  region: eu-central-1
+---
+apiVersion: backup.mogenius.io/v1alpha1
+kind: BackupDestination
+metadata:
+  name: aws-prod
+spec:
+  type: s3
+  pathPrefix: cluster-prod
+  s3:
+    bucket: my-backups
+    region: eu-central-1
+  credentialsSecretRef: { name: aws-prod-credentials }
 ```
 
 **MinIO (in-cluster):**
 ```yaml
-apiVersion: v1
-kind: Secret
+apiVersion: backup.mogenius.io/v1alpha1
+kind: BackupDestination
 metadata:
   name: minio
-  labels:
-    backup.mogenius.io/role: destination
-    backup.mogenius.io/storage-type: s3
-  annotations:
-    backup.mogenius.io/name: "minio"
-type: Opaque
-stringData:
-  bucket: backups
-  access-key-id: minioadmin
-  secret-access-key: minioadmin
-  endpoint: http://minio.backup.svc.cluster.local:9000
-  path-style: "true"
+spec:
+  type: s3
+  s3:
+    bucket: backups
+    endpoint: http://minio.backup.svc.cluster.local:9000
+    pathStyle: true
+  credentialsSecretRef: { name: minio-credentials }
 ```
 
 **Hetzner Storage Box (SFTP, port 23):**
@@ -431,25 +459,40 @@ stringData:
 apiVersion: v1
 kind: Secret
 metadata:
-  name: hetzner-sb
-  labels:
-    backup.mogenius.io/role: destination
-    backup.mogenius.io/storage-type: hetzner-sftp
-  annotations:
-    backup.mogenius.io/name: "hetzner"
-    backup.mogenius.io/path-prefix: "/cluster-prod"
-type: Opaque
+  name: hetzner-credentials
 stringData:
-  host: u123456.your-storagebox.de
-  port: "23"
-  username: u123456
   ssh-private-key: |-
     -----BEGIN OPENSSH PRIVATE KEY-----
     ...
     -----END OPENSSH PRIVATE KEY-----
-  known-hosts: |-
-    [u123456.your-storagebox.de]:23 ssh-ed25519 AAAA...
+---
+apiVersion: backup.mogenius.io/v1alpha1
+kind: BackupDestination
+metadata:
+  name: hetzner
+spec:
+  type: sftp
+  pathPrefix: /cluster-prod
+  sftp:
+    host: u123456.your-storagebox.de
+    port: 23
+    username: u123456
+    knownHosts: |-
+      [u123456.your-storagebox.de]:23 ssh-ed25519 AAAA...
+  credentialsSecretRef: { name: hetzner-credentials }
 ```
+
+### Migrating from the labelled-Secret model
+
+Releases before the CRDs discovered sources and destinations through Secrets labelled `backup.mogenius.io/role`. The new operator does not read those. Convert them once:
+
+```bash
+backup-restore migrate -n backup --age-secret backup-operator-age          # print manifests (contain credentials!)
+backup-restore migrate -n backup --age-secret backup-operator-age --apply  # create CRs + credentials Secrets, keep legacy Secrets
+backup-restore migrate -n backup --apply --delete-legacy                   # ...and delete the legacy Secrets
+```
+
+Object names follow the legacy Secret names (sources) and logical names (destinations), so CronJob names, jitter offsets and storage paths are preserved; a destination whose logical name was not a valid DNS name is renamed and every allow-list is rewritten accordingly (printed as a warning).
 
 ---
 
@@ -493,14 +536,14 @@ kubectl -n backup port-forward svc/backup-operator 8081:8081
 | `GET` | `/api/targets` | List all backup sources with latest run status |
 | `GET` | `/api/targets/{name}/runs` | Run history for one target |
 | `GET` | `/api/sources/{name}` | Get source configuration |
-| `POST` | `/api/sources` | Create a new source Secret |
+| `POST` | `/api/sources` | Create a BackupSource plus its credentials Secret |
 | `PUT` | `/api/sources/{name}` | Update source configuration |
-| `DELETE` | `/api/sources/{name}` | Delete source (verifies role label) |
+| `DELETE` | `/api/sources/{name}` | Delete the BackupSource (CronJob and UI-created credentials cascade) |
 | `GET` | `/api/destinations` | List all destinations |
-| `POST` | `/api/destinations` | Create a new destination Secret |
+| `POST` | `/api/destinations` | Create a BackupDestination plus its credentials Secret |
 | `GET` | `/api/destinations/{name}` | Get destination configuration |
 | `PUT` | `/api/destinations/{name}` | Update destination |
-| `DELETE` | `/api/destinations/{name}` | Delete destination (verifies role label) |
+| `DELETE` | `/api/destinations/{name}` | Delete the BackupDestination |
 | `POST` | `/api/trigger/{target}` | Trigger a manual backup run |
 | `GET` | `/api/jobs` | List running/recent jobs |
 | `GET` | `/api/settings` | Get current operator settings |
@@ -513,54 +556,31 @@ kubectl -n backup port-forward svc/backup-operator 8081:8081
 
 ### Security model
 
-- **Role-verified CRUD.** All Secret operations (GET, UPDATE, DELETE) verify the target Secret carries the expected `backup.mogenius.io/role` label before proceeding. Non-backup Secrets cannot be accessed or deleted through the API.
+- **Typed CRUD, owned credentials.** The API addresses `BackupSource` / `BackupDestination` / `BackupRecipient` objects, never arbitrary Secrets. The only Secrets it writes are credentials Secrets that carry an `OwnerReference` to the object being edited; a Secret you manage yourself (for example the one your database chart created) is reported as a conflict instead of being overwritten.
 - **No built-in auth.** Cluster-internal use is the assumed default. To expose externally, put `oauth2-proxy`, an Ingress with basic-auth annotation, or your platform's SSO in front of the Service (see CLAUDE.md §3.1 for examples).
 - **Sensitive data masked.** Passwords, SSH keys, and access keys are returned as `***` in API responses. They are only written, never read back.
 - **Pass-through downloads.** The operator streams encrypted bytes from the destination to the client without decrypting. The age private key never enters the cluster.
 
 ---
 
-## Settings Wizard
+## Settings
 
-The Settings Wizard (`#/settings`) provides a guided 4-step form to configure the operator at runtime — no `helm upgrade` needed.
-
-### Steps
-
-| Step | What you configure |
-|---|---|
-| 1. Schedule & Timeout | Default cron schedule, run timeout |
-| 2. Retention Policy | Retention days, minimum keep, temp directory, temp dir size |
-| 3. Worker Resources | CPU/Memory limits and requests for backup worker pods |
-| 4. Review & Apply | Summary of all settings, save button |
-
-### How it works
-
-Settings are stored in a Kubernetes ConfigMap (`{release}-settings`), created automatically when `ui.enabled=true`. The wizard reads and writes this ConfigMap via the API.
-
-```
-Helm values.yaml → ConfigMap (install-time defaults)
-                         ↕
-                    UI Settings Wizard (runtime overrides)
-                         ↓
-                    Export values.yaml → Git → helm upgrade (GitOps)
-```
+The Settings page (`#/settings`) shows the operator's **effective fleet-wide defaults** — default cron schedule, run timeout, retention defaults, temp directory, worker resources — read-only. These are Helm values turned into env vars, and the chart is their single source of truth. Per-source settings are typed fields on each `BackupSource` and are edited on the Sources page.
 
 ### Export for GitOps
 
-Click **"Export values.yaml"** to download the current settings as a Helm-compatible values file. Commit it to your repo and apply with:
+Click **"Export values.yaml"** to download the effective defaults as a Helm-compatible values file. Commit it to your repo and apply with:
 
 ```bash
 helm upgrade backup-operator oci://ghcr.io/behrangalavi/charts/backup-operator \
   -n backup -f values.yaml
 ```
 
-This gives you the best of both worlds: interactive UI for quick tuning and declarative GitOps for controlled rollouts.
-
 ---
 
 ## Restore
 
-The `backup-restore` CLI runs **on your machine**, not in the cluster. It reads the destination Secret via your kubeconfig, downloads the chosen artifact, and decrypts with the offline private key.
+The `backup-restore` CLI runs **on your machine**, not in the cluster. It reads the `BackupDestination` and its credentials Secret via your kubeconfig, downloads the chosen artifact, and decrypts with the offline private key. If a download fails midway the partial output file is removed.
 
 ### Build the binary
 
@@ -572,7 +592,7 @@ just build-restore
 ### List available dumps
 
 ```bash
-backup-restore --storage-secret aws-prod -n backup --target prod-users --list
+backup-restore --destination aws-prod -n backup --target prod-users --list
 
 # 20260428T020005Z  prod-users/2026/04/28/dump-20260428T020005Z.sql.gz.age
 # 20260427T020003Z  prod-users/2026/04/27/dump-20260427T020003Z.sql.gz.age
@@ -583,14 +603,14 @@ backup-restore --storage-secret aws-prod -n backup --target prod-users --list
 
 ```bash
 # To stdout, decompressed, ready to pipe into psql/mysql/mongorestore:
-backup-restore --storage-secret aws-prod -n backup --target prod-users \
+backup-restore --destination aws-prod -n backup --target prod-users \
   --age-key ~/age.key --decompress | psql -h localhost new_users_db
 ```
 
 ### Restore a specific timestamp
 
 ```bash
-backup-restore --storage-secret aws-prod -n backup --target prod-users \
+backup-restore --destination aws-prod -n backup --target prod-users \
   --age-key ~/age.key --timestamp 20260428T020005Z -o dump.sql.gz
 gunzip dump.sql.gz   # or pipe `--decompress` directly
 ```
@@ -599,7 +619,7 @@ gunzip dump.sql.gz   # or pipe `--decompress` directly
 
 | Flag | Required | Default |
 |---|---|---|
-| `--storage-secret` | yes | — |
+| `--destination` | yes | — |
 | `--target` | yes | — |
 | `--namespace` (`-n`) | no | `default` |
 | `--age-key` | yes (for download) | — |
@@ -607,6 +627,9 @@ gunzip dump.sql.gz   # or pipe `--decompress` directly
 | `--list` | no | false |
 | `--decompress` | no | false |
 | `-o` | no | `-` (stdout) |
+| `--purge` + `--before` + `--dry-run` | no | right-to-erasure: delete every artifact of a target (optionally older than a date) |
+
+`backup-restore migrate ...` converts legacy labelled Secrets into CRs — see [Migrating from the labelled-Secret model](#migrating-from-the-labelled-secret-model).
 
 ---
 
@@ -618,7 +641,7 @@ The operator can prove on a configurable cadence that an encrypted dump can actu
 
 ### Modes
 
-Set on a source via `backup.mogenius.io/restore-verification-mode`. Off by default. A typo on the annotation falls back to `off` (parsed via `parseRestoreVerificationMode` in `internal/secrets/parser.go`).
+Set on a source via `spec.restoreVerification.mode`. Off by default. The field is an enum in the CRD schema, so a typo is rejected at `kubectl apply` instead of silently running no verification.
 
 | Mode | What it does | RBAC needed | Cost |
 |---|---|---|---|
@@ -628,14 +651,25 @@ Set on a source via `backup.mogenius.io/restore-verification-mode`. Off by defau
 | `sample` | Spawns an ephemeral DB pod, restores schema + a sample of data. Catches data-encoding issues a schema-only run would miss. From the engine's perspective `sample` is currently equivalent to `full`; pre-filtering hooks are reserved for a future iteration. | same as above | small pod, modest disk |
 | `full` | Spawns an ephemeral DB pod, restores the entire dump, runs smoke queries (per-table `SELECT count(*)` for SQL engines; ping + auth roundtrip for Redis whose RDB-restore is deferred to a follow-up iteration). Highest fidelity. | same as above | full-size pod and emptyDir; node needs the headroom |
 
-### Annotations
+### `spec.restoreVerification`
 
-| Annotation | Default | Effect |
+| Field | Default | Effect |
 |---|---|---|
-| `backup.mogenius.io/restore-verification-mode` | `off` | One of the modes above. Unknown values fall back to `off`. |
-| `backup.mogenius.io/restore-verification-interval` | `168h` (weekly) | Minimum gap between verifier runs (Go duration: `30m`, `48h`, `7d` …). **State-driven:** the worker reads `latestMeta.restoreVerification.completedAt` and skips when `now - completedAt < interval`. Cron drift doesn't matter; manual runs (`kubectl create job --from=cronjob/...`) verify whenever overdue. The very first run after enabling verification falls through to a "first verification" path that runs immediately so operators see signal without waiting one full interval. |
-| `backup.mogenius.io/verification-image` | per-DB-type default | Container image for the verifier pod. Pin to the source DB's exact major version when restore semantics depend on it (charset defaults, function signatures, dump-format compatibility). **Phase-2 modes only** (`schema-only` / `sample` / `full`) — `stream-validate` ignores it. Per-engine defaults: `postgres:16-alpine`, `mysql:8.0`, `mariadb:11`, `mongo:7`, `redis:7-alpine`. |
-| `backup.mogenius.io/verification-volume-size` | `1Gi` (schema-only), `5Gi` (sample), `50Gi` (full) | `emptyDir.sizeLimit` for the verifier pod's data volume. Accepts `K`/`M`/`G`/`T` (decimal) and `Ki`/`Mi`/`Gi`/`Ti` (binary) suffixes. Override when one source's restore needs more headroom — at scale, the node's ephemeral storage is a real budget. **Phase-2 modes only.** |
+| `mode` | `off` | One of the modes above (enum). |
+| `interval` | `168h` (weekly) | Minimum gap between verifier runs (Go duration: `30m`, `48h`, `168h` …). **State-driven:** the worker reads `latestMeta.restoreVerification.completedAt` and skips when `now - completedAt < interval`. Cron drift doesn't matter; manual runs (`kubectl create job --from=cronjob/...`) verify whenever overdue. The very first run after enabling verification falls through to a "first verification" path that runs immediately so operators see signal without waiting one full interval. |
+| `image` | per-DB-type default | Container image for the verifier pod. Pin to the source DB's exact major version when restore semantics depend on it (charset defaults, function signatures, dump-format compatibility). **Phase-2 modes only** (`schema-only` / `sample` / `full`) — `stream-validate` ignores it. Per-engine defaults: `postgres:16-alpine`, `mysql:8.0`, `mariadb:11`, `mongo:7`, `redis:7-alpine`. |
+| `volumeSize` | `1Gi` (schema-only), `5Gi` (sample), `50Gi` (full) | `emptyDir.sizeLimit` for the verifier pod's data volume (Kubernetes quantity). Override when one source's restore needs more headroom — at scale, the node's ephemeral storage is a real budget. **Phase-2 modes only.** |
+
+```yaml
+spec:
+  restoreVerification:
+    mode: schema-only
+    interval: 72h
+    image: postgres:15.5-alpine
+    volumeSize: 20Gi
+```
+
+The result lands in `status.restoreVerification` and the `Verified` condition.
 
 ### Enabling Phase 2 in the chart
 
@@ -678,7 +712,7 @@ A failed or skipped verification does **not** fail the backup run itself — ver
 ### What the UI shows
 
 - **Target Detail (`#/target/<name>`):** every run carries a verification badge — `match` / `mismatch` / `skipped` / `not configured` — plus the verifier mode, completed-at, and ephemeral-recipient fingerprint. The fingerprint is per-run; seeing the same one twice in a row would itself be a bug, since the keypair regenerates on every verifier-run.
-- **Source form / Settings → "Restore Verification":** four fields mirroring the annotations above (mode, interval, verifier image, volume size). Phase-2-only fields are disabled in the form when mode is `off` or `stream-validate`.
+- **Source form → "Restore Verification":** four fields mirroring `spec.restoreVerification` (mode, interval, verifier image, volume size). Phase-2-only fields are disabled in the form when mode is `off` or `stream-validate`.
 
 ---
 
@@ -888,8 +922,10 @@ Operator's machine (offline):
 
 Cluster (online):
   Helm install --set agePublicKeys="age1qx..."
-   └── creates Secret backup-operator-age with key AGE_PUBLIC_KEYS
-        └── mounted into every worker pod via secretKeyRef
+   └── operator seeds one BackupRecipient per key at startup
+        └── RecipientReconciler merges all BackupRecipients into
+            Secret backup-operator-age (key AGE_PUBLIC_KEYS)
+             └── mounted into every worker pod via secretKeyRef
 
 Worker pod runtime:
   pg_dump | gzip | age encrypt -r <recipient>  →  dump.sql.gz.age
@@ -910,7 +946,7 @@ Restore (offline):
 
 - **Keep the private key offline.** Putting it in the cluster collapses the entire security model.
 - **Back up the private key separately.** Paper, hardware token, password manager, anything but the cluster. Losing it means losing every backup it can decrypt.
-- **Rotate by adding, then retiring.** Add a new recipient to `agePublicKeys`, run a few backups (so they're encrypted to both keys), then remove the old recipient. New recipients can decrypt going forward; old recipients still work for older artifacts.
+- **Rotate by adding, then retiring.** Add a new `BackupRecipient` (via `kubectl`, GitOps or the UI Age-Keys page), run a few backups (so they're encrypted to both keys), then delete the old recipient object. New recipients can decrypt going forward; old recipients still work for older artifacts.
 - **For multi-region recovery, distribute multiple public keys to the cluster** and keep each region's private key in that region's safe.
 
 ---
@@ -996,12 +1032,13 @@ cp .env.example .env
 # Build the operator/worker image into the (now-shared) containerd store.
 just build-image
 
-# Generate an age key pair offline + apply the public key as a Secret.
+# Generate an age key pair offline + register the public key as a
+# BackupRecipient (installs the CRDs first).
 just gen-age-key
 
 # Apply the test stack: namespace, worker SA/RBAC, in-cluster Postgres
-# (with a seed table), in-cluster MinIO (with bucket init), source +
-# destination Secrets.
+# (with a seed table), in-cluster MinIO (with bucket init), BackupSource +
+# BackupDestination with their credentials Secrets.
 just test-up
 
 # Install the operator via Helm.
@@ -1087,7 +1124,7 @@ False positive. The first run has no `previous` to compare against; `dump_size_c
 
 ### `INSECURE` warnings in worker logs (SFTP destinations)
 
-The destination Secret is missing `known-hosts`. Add the output of `ssh-keyscan -p <port> <host>` to the Secret's `data.known-hosts` field. Without it the worker accepts any host key — a downgrade in security but not a backup failure.
+The BackupDestination is missing `spec.sftp.knownHosts`. Add the output of `ssh-keyscan -p <port> <host>` there. Without it the worker accepts any host key — a downgrade in security but not a backup failure.
 
 ### `analyzer-enabled: false` not detected
 

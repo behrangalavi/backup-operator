@@ -1,13 +1,18 @@
 // Restore CLI — runs OUTSIDE the cluster on an operator's machine.
 //
-//	backup-restore --storage-secret hetzner-sb --namespace backup \
+//	backup-restore --destination hetzner-sb --namespace backup \
 //	               --target prod-users --age-key ~/age.key > dump.sql.gz
 //
 // The age private key is read from a local file the operator controls; the
 // service running in the cluster has no access to it. The restore tool:
-//   1. Loads the storage destination Secret from the cluster (kubeconfig).
-//   2. Lists or downloads the requested artifact for the target.
-//   3. Streams: download → age decrypt → (optional gunzip) → stdout/file.
+//  1. Loads the BackupDestination and its credentials Secret from the
+//     cluster (kubeconfig).
+//  2. Lists or downloads the requested artifact for the target.
+//  3. Streams: download → age decrypt → (optional gunzip) → stdout/file.
+//
+// `backup-restore migrate` converts a namespace from the legacy labelled-
+// Secret discovery model to BackupSource / BackupDestination /
+// BackupRecipient objects — see migrate.go.
 //
 // The output stream matches what was dumped: a gzip-compressed dump (Postgres/
 // MySQL SQL or Mongo --archive). Pipe to gunzip + the matching restore tool.
@@ -25,6 +30,7 @@ import (
 	"strings"
 	"time"
 
+	"backup-operator/api/v1alpha1"
 	"backup-operator/crypto"
 	"backup-operator/internal/labels"
 	"backup-operator/internal/meta"
@@ -34,9 +40,10 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/go-logr/logr/funcr"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/clientcmd"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // knownDumpSuffixes lists every encrypted-dump file extension the restore
@@ -54,24 +61,29 @@ type dumpEntry struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		os.Exit(runMigrate(os.Args[2:]))
+	}
 	var (
-		namespace     = flag.String("namespace", "default", "namespace of the storage Secret")
-		storageSecret = flag.String("storage-secret", "", "name of the destination Secret to read from")
-		target        = flag.String("target", "", "logical name of the backup target")
-		ageKeyFile    = flag.String("age-key", "", "path to the age private key file (required for download)")
-		timestamp     = flag.String("timestamp", "", "specific dump timestamp (e.g. 20260429T020000Z); empty = latest")
-		listOnly      = flag.Bool("list", false, "list available dumps for the target instead of downloading")
-		output        = flag.String("o", "-", "output file; '-' = stdout")
-		decompress    = flag.Bool("decompress", false, "decompress the decrypted stream before writing to output")
-		compression   = flag.String("compression", "", "compression algorithm (gzip or zstd); auto-detected from meta.json when omitted")
-		purge         = flag.Bool("purge", false, "delete all dumps for the target (use --before to limit)")
-		before        = flag.String("before", "", "only purge dumps older than this date (YYYY-MM-DD or 20060102T150405Z)")
-		dryRun        = flag.Bool("dry-run", false, "show what --purge would delete without actually deleting")
+		namespace   = flag.String("namespace", "default", "namespace of the BackupDestination")
+		destination = flag.String("destination", "", "name of the BackupDestination to read from")
+		target      = flag.String("target", "", "logical name of the backup target")
+		ageKeyFile  = flag.String("age-key", "", "path to the age private key file (required for download)")
+		timestamp   = flag.String("timestamp", "", "specific dump timestamp (e.g. 20260429T020000Z); empty = latest")
+		listOnly    = flag.Bool("list", false, "list available dumps for the target instead of downloading")
+		output      = flag.String("o", "-", "output file; '-' = stdout")
+		decompress  = flag.Bool("decompress", false, "decompress the decrypted stream before writing to output")
+		compression = flag.String("compression", "", "compression algorithm (gzip or zstd); auto-detected from meta.json when omitted")
+		purge       = flag.Bool("purge", false, "delete all dumps for the target (use --before to limit)")
+		before      = flag.String("before", "", "only purge dumps older than this date (YYYY-MM-DD or 20060102T150405Z)")
+		dryRun      = flag.Bool("dry-run", false, "show what --purge would delete without actually deleting")
 	)
+	// -n mirrors kubectl; both names write the same variable.
+	flag.StringVar(namespace, "n", "default", "alias for --namespace")
 	flag.Parse()
 
-	if *storageSecret == "" || *target == "" {
-		die("flags --storage-secret and --target are required")
+	if *destination == "" || *target == "" {
+		die("flags --destination and --target are required")
 	}
 	if !*listOnly && !*purge && *ageKeyFile == "" {
 		die("flag --age-key is required (omit only with --list or --purge)")
@@ -80,18 +92,14 @@ func main() {
 	log := newStderrLogger()
 	ctx := context.Background()
 
-	cs, err := loadClient()
+	cl, err := loadClient()
 	if err != nil {
 		die("kubernetes client: %v", err)
 	}
 
-	sec, err := cs.CoreV1().Secrets(*namespace).Get(ctx, *storageSecret, metav1.GetOptions{})
+	dest, err := loadDestination(ctx, cl, *namespace, *destination)
 	if err != nil {
-		die("get secret %s/%s: %v", *namespace, *storageSecret, err)
-	}
-	dest, err := secrets.ParseDestination(sec)
-	if err != nil {
-		die("parse destination: %v", err)
+		die("%v", err)
 	}
 
 	st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, log)
@@ -187,14 +195,47 @@ func main() {
 
 	if _, err := io.Copy(out, srcReader); err != nil {
 		_ = closer()
+		removePartial(*output)
 		die("copy: %v", err)
 	}
 	// Check the output Close error explicitly rather than deferring-and-ignoring:
 	// a flush/close failure (NFS, quota) on the restored file must not exit 0
 	// leaving a truncated dump — this is a recovery tool.
 	if err := closer(); err != nil {
+		removePartial(*output)
 		die("close output %s: %v", *output, err)
 	}
+}
+
+// removePartial deletes a half-written output file so a failed restore
+// cannot leave behind something that looks like a valid dump. Stdout is
+// never touched.
+func removePartial(target string) {
+	if target == "-" || target == "" {
+		return
+	}
+	if err := os.Remove(target); err == nil {
+		fmt.Fprintf(os.Stderr, "removed partial output %s\n", target)
+	}
+}
+
+// loadDestination fetches the BackupDestination and its credentials Secret
+// and flattens them for the storage factory.
+func loadDestination(ctx context.Context, cl client.Client, namespace, name string) (*secrets.Destination, error) {
+	var bd v1alpha1.BackupDestination
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &bd); err != nil {
+		return nil, fmt.Errorf("get backupdestination %s/%s: %w", namespace, name, err)
+	}
+	var creds corev1.Secret
+	credsKey := client.ObjectKey{Namespace: namespace, Name: bd.Spec.CredentialsSecretRef.Name}
+	if err := cl.Get(ctx, credsKey, &creds); err != nil {
+		return nil, fmt.Errorf("get credentials secret %s/%s: %w", namespace, credsKey.Name, err)
+	}
+	dest, err := secrets.FromBackupDestination(&bd, &creds)
+	if err != nil {
+		return nil, fmt.Errorf("flatten destination: %w", err)
+	}
+	return dest, nil
 }
 
 // pickDumps filters listed objects down to dump artifacts and parses their
@@ -237,8 +278,9 @@ func openOutput(target string) (io.Writer, func() error, error) {
 
 // loadClient resolves a kubeconfig the way kubectl does — $KUBECONFIG first,
 // then ~/.kube/config — so the restore tool works exactly like every other
-// out-of-cluster CLI on the operator's machine.
-func loadClient() (*kubernetes.Clientset, error) {
+// out-of-cluster CLI on the operator's machine. The scheme knows core
+// Secrets and the backup.mogenius.io group.
+func loadClient() (client.Client, error) {
 	cfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		clientcmd.NewDefaultClientConfigLoadingRules(),
 		&clientcmd.ConfigOverrides{},
@@ -246,7 +288,10 @@ func loadClient() (*kubernetes.Clientset, error) {
 	if err != nil {
 		return nil, err
 	}
-	return kubernetes.NewForConfig(cfg)
+	s := runtime.NewScheme()
+	_ = corev1.AddToScheme(s)
+	_ = v1alpha1.AddToScheme(s)
+	return client.New(cfg, client.Options{Scheme: s})
 }
 
 func newStderrLogger() logr.Logger {

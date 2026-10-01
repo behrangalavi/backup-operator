@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"backup-operator/internal/labels"
+	"backup-operator/api/v1alpha1"
 	"backup-operator/internal/meta"
 	"backup-operator/internal/safe"
 	"backup-operator/internal/scheduler"
@@ -15,7 +15,6 @@ import (
 	"backup-operator/storage"
 
 	"github.com/go-logr/logr"
-	"github.com/robfig/cron/v3"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -27,6 +26,10 @@ type dataSource interface {
 	target(ctx context.Context, name string) (*targetDetail, error)
 	estimateDuration(ctx context.Context, name string, n int) (time.Duration, int, error)
 	fleetHeatmap(ctx context.Context, days int) (*dashboardSummary, error)
+	// listDestinations resolves every BackupDestination with its credentials;
+	// getDestination resolves one by name (NotFound error when absent).
+	listDestinations(ctx context.Context) ([]*secrets.Destination, error)
+	getDestination(ctx context.Context, name string) (*secrets.Destination, error)
 }
 
 // dashboardSummary bundles every "across the fleet" dataset the
@@ -34,11 +37,11 @@ type dataSource interface {
 // the same per-target run history scan, so paying for the meta-file
 // reads once instead of five separate endpoints.
 type dashboardSummary struct {
-	Heatmap           []heatmapRow            `json:"heatmap"`
-	Storage           []storageDayPoint       `json:"storage"`
-	Anomalies         []anomalyEntry          `json:"anomalies"`
-	Durations         []durationStat          `json:"durations"`
-	VerificationDaily []verificationDayPoint  `json:"verificationDaily"`
+	Heatmap           []heatmapRow           `json:"heatmap"`
+	Storage           []storageDayPoint      `json:"storage"`
+	Anomalies         []anomalyEntry         `json:"anomalies"`
+	Durations         []durationStat         `json:"durations"`
+	VerificationDaily []verificationDayPoint `json:"verificationDaily"`
 }
 
 // durationStat is one bar in the per-target duration distribution
@@ -124,10 +127,10 @@ func anomalySeverity(kind string) string {
 
 // targetSummary is what the index page needs per source.
 type targetSummary struct {
-	Name         string
-	SecretName   string
-	DBType       string
-	Schedule     string
+	Name       string
+	ObjectName string
+	DBType     string
+	Schedule   string
 	// NextRun is the next time the CronJob will fire after now, computed
 	// from the materialised (post-jitter) Schedule. nil if the schedule
 	// could not be parsed (invalid cron expression) or the source is
@@ -136,7 +139,7 @@ type targetSummary struct {
 	NextRun      *time.Time `json:"nextRun,omitempty"`
 	Suspended    bool
 	Destinations []string
-	CreatedAt    time.Time      // Secret CreationTimestamp; read off raw corev1 at access time
+	CreatedAt    time.Time      // BackupSource CreationTimestamp; read off the raw object at access time
 	Latest       *meta.MetaFile // nil if no runs yet
 
 	// Analysis surfaces the per-source analyzer toggles. The UI uses this to
@@ -154,19 +157,19 @@ type targetSummary struct {
 }
 
 type analysisFlags struct {
-	AnalyzerEnabled    bool    `json:"analyzerEnabled"`
-	EmptyDumpCheck     bool    `json:"emptyDumpCheck"`
-	RowDropThreshold   float64 `json:"rowDropThreshold"`  // -1 = default
-	SizeDropThreshold  float64 `json:"sizeDropThreshold"` // -1 = default
+	AnalyzerEnabled   bool    `json:"analyzerEnabled"`
+	EmptyDumpCheck    bool    `json:"emptyDumpCheck"`
+	RowDropThreshold  float64 `json:"rowDropThreshold"`  // -1 = default
+	SizeDropThreshold float64 `json:"sizeDropThreshold"` // -1 = default
 }
 
 // verificationFlags mirrors the per-source verification configuration
 // so the source list can render configuration-state badges without
 // re-querying the Source secret.
 type verificationFlags struct {
-	Mode     string `json:"mode"`               // "off" / stream-validate / schema-only / sample / full
-	Interval string `json:"interval,omitempty"` // raw annotation value (Go duration)
-	Image    string `json:"image,omitempty"`
+	Mode       string `json:"mode"`               // "off" / stream-validate / schema-only / sample / full
+	Interval   string `json:"interval,omitempty"` // raw annotation value (Go duration)
+	Image      string `json:"image,omitempty"`
 	VolumeSize string `json:"volumeSize,omitempty"`
 }
 
@@ -177,36 +180,29 @@ type targetDetail struct {
 	Runs         []*meta.MetaFile
 }
 
-// k8sData implements dataSource using a controller-runtime client to enumerate
-// labelled Secrets in the watched namespace and the storage abstraction to
-// fetch meta.json files from destinations.
-// cronParser parses standard 5-field cron expressions ("M H DoM Mo DoW"),
-// matching what Kubernetes CronJobs accept. The default robfig parser
-// adds an extra leading-seconds field which would reject every valid
-// CronJob schedule — we use the explicit Standard parser to match.
-var cronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-
 // nextRunAfter returns the next time the schedule will fire after `now`,
 // or nil if the schedule is invalid or the source is suspended. UTC.
 func nextRunAfter(schedule string, suspended bool, now time.Time) *time.Time {
-	if suspended || schedule == "" {
+	if suspended {
 		return nil
 	}
-	sched, err := cronParser.Parse(schedule)
-	if err != nil {
-		return nil
-	}
-	next := sched.Next(now)
-	if next.IsZero() {
+	next, ok := scheduler.NextRun(schedule, now)
+	if !ok {
 		return nil
 	}
 	return &next
 }
 
+// k8sData implements dataSource using a controller-runtime client to
+// enumerate BackupSources / BackupDestinations in the watched namespace and
+// the storage abstraction to fetch meta.json files from destinations.
 type k8sData struct {
 	client    client.Client
 	namespace string
 	log       logr.Logger
+	// defaultSchedule mirrors the operator's DEFAULT_SCHEDULE so a source
+	// without spec.schedule shows the schedule its CronJob actually runs on.
+	defaultSchedule string
 
 	latestCache *cache[map[string]*meta.MetaFile] // per-destination → target→meta
 	runsCache   *cache[[]*meta.MetaFile]          // per (target,destination)
@@ -240,7 +236,7 @@ func (d *k8sData) storageFor(dest *secrets.Destination) (storage.Storage, error)
 // trips backend bruteforce protection (the QNAP IP-block incident, §18 ADR).
 const maxBackgroundRefreshes = 6
 
-func newK8sData(c client.Client, namespace string, log logr.Logger) *k8sData {
+func newK8sData(c client.Client, namespace, defaultSchedule string, log logr.Logger) *k8sData {
 	// One semaphore shared by both caches so the bound is on total in-flight
 	// probes, not per-cache.
 	sem := make(chan struct{}, maxBackgroundRefreshes)
@@ -254,20 +250,21 @@ func newK8sData(c client.Client, namespace string, log logr.Logger) *k8sData {
 	runsCache.log = cacheLog
 	runsCache.name = "runs"
 	return &k8sData{
-		client:      c,
-		namespace:   namespace,
-		log:         log,
-		latestCache: latestCache,
-		runsCache:   runsCache,
+		client:          c,
+		namespace:       namespace,
+		log:             log,
+		defaultSchedule: defaultSchedule,
+		latestCache:     latestCache,
+		runsCache:       runsCache,
 	}
 }
 
 func (d *k8sData) listTargets(ctx context.Context) ([]targetSummary, error) {
-	sources, createdAt, err := d.listSourceSecretsWithMeta(ctx)
+	sources, createdAt, err := d.listSourcesWithMeta(ctx)
 	if err != nil {
 		return nil, err
 	}
-	dests, err := d.listDestinationSecrets(ctx)
+	dests, err := d.listDestinations(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -318,11 +315,11 @@ func (d *k8sData) listTargets(ctx context.Context) ([]targetSummary, error) {
 	out := make([]targetSummary, 0, len(sources))
 	now := time.Now().UTC()
 	for _, src := range sources {
-		materialisedSchedule := scheduler.ApplyJitter(src.Schedule, src.JitterMinutes, src.SecretName)
+		materialisedSchedule := scheduler.ApplyJitter(src.Schedule, src.JitterMinutes, src.ObjectName)
 		summary := targetSummary{
-			Name:         src.TargetName,
-			SecretName:   src.SecretName,
-			DBType:       src.DBType,
+			Name:       src.TargetName,
+			ObjectName: src.ObjectName,
+			DBType:     src.DBType,
 			// The materialised schedule is what the CronJob actually
 			// runs after per-source minute jitter. Operators reading
 			// the dashboard need to see the effective time, not the
@@ -333,7 +330,7 @@ func (d *k8sData) listTargets(ctx context.Context) ([]targetSummary, error) {
 			NextRun:      nextRunAfter(materialisedSchedule, src.Suspended, now),
 			Suspended:    src.Suspended,
 			Destinations: destinationsAllowedFor(src, dests),
-			CreatedAt:    createdAt[src.SecretName],
+			CreatedAt:    createdAt[src.ObjectName],
 			Latest:       latestByTarget[src.TargetName],
 			Analysis: analysisFlags{
 				AnalyzerEnabled:   src.AnalyzerEnabled,
@@ -372,7 +369,7 @@ func (d *k8sData) listTargets(ctx context.Context) ([]targetSummary, error) {
 // immediately and let the background refresh + onRefresh SSE event fill
 // in the estimate on a later render.
 func (d *k8sData) estimateDuration(ctx context.Context, name string, n int) (time.Duration, int, error) {
-	sources, err := d.listSourceSecrets(ctx)
+	sources, err := d.listSources(ctx)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -386,7 +383,7 @@ func (d *k8sData) estimateDuration(ctx context.Context, name string, n int) (tim
 	if src == nil {
 		return 0, 0, nil
 	}
-	allDests, err := d.listDestinationSecrets(ctx)
+	allDests, err := d.listDestinations(ctx)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -429,7 +426,7 @@ func (d *k8sData) estimateDuration(ctx context.Context, name string, n int) (tim
 }
 
 func (d *k8sData) target(ctx context.Context, name string) (*targetDetail, error) {
-	sources, err := d.listSourceSecrets(ctx)
+	sources, err := d.listSources(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -444,7 +441,7 @@ func (d *k8sData) target(ctx context.Context, name string) (*targetDetail, error
 		return nil, fmt.Errorf("target %q not found", name)
 	}
 
-	allDests, err := d.listDestinationSecrets(ctx)
+	allDests, err := d.listDestinations(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -538,11 +535,11 @@ func (d *k8sData) fleetHeatmap(ctx context.Context, days int) (*dashboardSummary
 	if days > 90 {
 		days = 90
 	}
-	sources, _, err := d.listSourceSecretsWithMeta(ctx)
+	sources, _, err := d.listSourcesWithMeta(ctx)
 	if err != nil {
 		return nil, err
 	}
-	allDests, err := d.listDestinationSecrets(ctx)
+	allDests, err := d.listDestinations(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -757,25 +754,26 @@ func (d *k8sData) fleetHeatmap(ctx context.Context, days int) (*dashboardSummary
 	}, nil
 }
 
-func (d *k8sData) listSourceSecrets(ctx context.Context) ([]*secrets.Source, error) {
-	return d.listParsedSecrets(ctx, labels.RoleSource)
+func (d *k8sData) listSources(ctx context.Context) ([]*secrets.Source, error) {
+	out, _, err := d.listSourcesWithMeta(ctx)
+	return out, err
 }
 
-// listSourceSecretsWithMeta returns parsed sources alongside a secretName→creationTimestamp
-// map so UI callers can sort by creation time without bloating secrets.Source itself.
-func (d *k8sData) listSourceSecretsWithMeta(ctx context.Context) ([]*secrets.Source, map[string]time.Time, error) {
-	var list corev1.SecretList
-	if err := d.client.List(ctx, &list, client.InNamespace(d.namespace), client.MatchingLabels{
-		labels.LabelRole: labels.RoleSource,
-	}); err != nil {
+// listSourcesWithMeta returns flattened sources alongside an objectName →
+// creationTimestamp map so UI callers can sort by creation time without
+// bloating secrets.Source itself. Sources are flattened spec-only (no
+// credentials Secret read): the UI never connects to a database.
+func (d *k8sData) listSourcesWithMeta(ctx context.Context) ([]*secrets.Source, map[string]time.Time, error) {
+	var list v1alpha1.BackupSourceList
+	if err := d.client.List(ctx, &list, client.InNamespace(d.namespace)); err != nil {
 		return nil, nil, err
 	}
 	out := make([]*secrets.Source, 0, len(list.Items))
 	createdAt := make(map[string]time.Time, len(list.Items))
 	for i := range list.Items {
-		src, err := secrets.ParseSource(&list.Items[i], "")
+		src, err := secrets.FromBackupSource(&list.Items[i], nil, d.defaultSchedule)
 		if err != nil {
-			d.log.V(1).Info("skipping invalid source", "secret", list.Items[i].Name, "err", err.Error())
+			d.log.V(1).Info("skipping invalid source", "source", list.Items[i].Name, "err", err.Error())
 			continue
 		}
 		out = append(out, src)
@@ -784,18 +782,21 @@ func (d *k8sData) listSourceSecretsWithMeta(ctx context.Context) ([]*secrets.Sou
 	return out, createdAt, nil
 }
 
-func (d *k8sData) listDestinationSecrets(ctx context.Context) ([]*secrets.Destination, error) {
-	var list corev1.SecretList
-	if err := d.client.List(ctx, &list, client.InNamespace(d.namespace), client.MatchingLabels{
-		labels.LabelRole: labels.RoleDestination,
-	}); err != nil {
+// listDestinations resolves every BackupDestination with its credentials
+// Secret. A destination whose Secret is missing or whose spec does not
+// flatten is logged and skipped so one broken destination doesn't blank the
+// dashboard. Secrets are read uncached (the manager disables the Secret
+// informer), so this costs one API read per destination.
+func (d *k8sData) listDestinations(ctx context.Context) ([]*secrets.Destination, error) {
+	var list v1alpha1.BackupDestinationList
+	if err := d.client.List(ctx, &list, client.InNamespace(d.namespace)); err != nil {
 		return nil, err
 	}
 	out := make([]*secrets.Destination, 0, len(list.Items))
 	for i := range list.Items {
-		dest, err := secrets.ParseDestination(&list.Items[i])
+		dest, err := d.resolveDestination(ctx, &list.Items[i])
 		if err != nil {
-			d.log.V(1).Info("skipping invalid destination", "secret", list.Items[i].Name, "err", err.Error())
+			d.log.V(1).Info("skipping destination", "destination", list.Items[i].Name, "err", err.Error())
 			continue
 		}
 		out = append(out, dest)
@@ -803,25 +804,23 @@ func (d *k8sData) listDestinationSecrets(ctx context.Context) ([]*secrets.Destin
 	return out, nil
 }
 
-func (d *k8sData) listParsedSecrets(ctx context.Context, role string) ([]*secrets.Source, error) {
-	var list corev1.SecretList
-	if err := d.client.List(ctx, &list, client.InNamespace(d.namespace), client.MatchingLabels{
-		labels.LabelRole: role,
-	}); err != nil {
+// getDestination resolves one BackupDestination by name. A missing object
+// surfaces as the API server's NotFound error so handlers can map it to 404.
+func (d *k8sData) getDestination(ctx context.Context, name string) (*secrets.Destination, error) {
+	var bd v1alpha1.BackupDestination
+	if err := d.client.Get(ctx, client.ObjectKey{Namespace: d.namespace, Name: name}, &bd); err != nil {
 		return nil, err
 	}
-	out := make([]*secrets.Source, 0, len(list.Items))
-	for i := range list.Items {
-		// Default schedule is unimportant for UI display; we only consume
-		// the parsed source's own metadata, never trigger runs from it.
-		src, err := secrets.ParseSource(&list.Items[i], "")
-		if err != nil {
-			d.log.V(1).Info("skipping invalid source", "secret", list.Items[i].Name, "err", err.Error())
-			continue
-		}
-		out = append(out, src)
+	return d.resolveDestination(ctx, &bd)
+}
+
+func (d *k8sData) resolveDestination(ctx context.Context, bd *v1alpha1.BackupDestination) (*secrets.Destination, error) {
+	var creds corev1.Secret
+	key := client.ObjectKey{Namespace: bd.Namespace, Name: bd.Spec.CredentialsSecretRef.Name}
+	if err := d.client.Get(ctx, key, &creds); err != nil {
+		return nil, fmt.Errorf("credentials secret %q: %w", key.Name, err)
 	}
-	return out, nil
+	return secrets.FromBackupDestination(bd, &creds)
 }
 
 // findRun resolves a (target, timestamp) pair to the MetaFile that the
@@ -859,4 +858,3 @@ func destinationsAllowedFor(src *secrets.Source, all []*secrets.Destination) []s
 	sort.Strings(names)
 	return names
 }
-

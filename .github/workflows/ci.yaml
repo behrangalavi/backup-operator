@@ -30,6 +30,28 @@ jobs:
         working-directory: src
         run: go vet ./...
 
+  # Generated code (DeepCopy, CRD manifests) must match the API types in
+  # src/api/v1alpha1. Uses the same pinned controller-gen run as `just
+  # generate`, in its own module context so src/go.mod is left alone.
+  generate-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
+
+      - name: Regenerate
+        working-directory: src
+        run: |
+          go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.22.0 object paths=./api/...
+          go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.22.0 crd paths=./api/... output:crd:dir=../charts/backup-operator/files/crds
+
+      - name: Verify no drift
+        run: git diff --exit-code -- src/api charts/backup-operator/files/crds
+
   lint:
     runs-on: ubuntu-latest
     steps:

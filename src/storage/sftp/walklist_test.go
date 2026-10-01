@@ -59,10 +59,10 @@ func TestWalkList_ExistingTreeListsFiles(t *testing.T) {
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(sub, "dump-a.age"), []byte("x"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sub, "dump-a.age"), []byte("x"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(sub, "dump-a.meta.json"), []byte("{}"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sub, "dump-a.meta.json"), []byte("{}"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 

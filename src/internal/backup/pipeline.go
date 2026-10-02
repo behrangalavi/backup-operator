@@ -186,13 +186,6 @@ func restoreVerificationActive(src *secrets.Source) bool {
 	return m != "" && m != labels.RestoreVerificationOff
 }
 
-// Run executes a full backup. Errors during destination uploads are reported
-// per-destination via metrics; the function returns nil unless the dump itself
-// fails or no destination accepts the artifact.
-//
-// Failed runs are persisted as failure-meta sidecars to every reachable
-// destination so the UI can list them next to successful runs. Best-effort:
-// failure-meta upload errors are logged but never alter the returned error.
 func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	log := p.logger.WithValues("target", src.TargetName, "db_type", src.DBType)
 	runStart := time.Now()
@@ -205,154 +198,54 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	// Resolve destinations up-front so we can persist a failure-meta even
 	// when the dump itself fails.
 	dests := secrets.FilterDestinations(src, p.destProvider.Destinations())
+	rc := runContext{ctx: ctx, src: src, dests: dests, timestamp: timestamp, runStart: runStart, log: log}
 
 	d, err := dumperFactory.NewDumper(src.DBType, src.Config, log)
 	if err != nil {
-		metrics.SetLastRunStatus(src.TargetName, false)
-		p.events.Emit("Warning", "BackupFailed",
+		return p.failRun(rc, "dumper-init", err, fmt.Errorf("dumper: %w", err),
 			fmt.Sprintf("Backup failed for target %s in phase dumper-init: %v", src.TargetName, err))
-		p.recordFailure(ctx, dests, src, timestamp, "dumper-init", runStart, err, log)
-		return fmt.Errorf("dumper: %w", err)
 	}
 
-	var preStats *dumper.Stats
-	var preStatsError string
-	if src.AnalyzerEnabled {
-		s, statsErr := d.CollectStats(ctx)
-		if statsErr != nil {
-			// Sanitize before persisting/logging — driver errors can echo the
-			// connection URI (and thus the password) back. Surfaced at Info
-			// level and into meta.json so a silent permission failure stops
-			// presenting as an unexplained "skipped" verifier verdict.
-			preStatsError = dumper.SanitizeStderr(statsErr.Error(), src.Config.Password)
-			log.Info("pre-dump stats collection failed; preStats unavailable for analyzer and verifier",
-				"target", src.TargetName, "reason", preStatsError)
-		} else {
-			preStats = s
-		}
-	} else {
-		log.V(1).Info("analyzer disabled by annotation; skipping stats collection")
-	}
+	preStats, preStatsError := p.collectPreStats(ctx, d, src, log)
 
 	if err := os.MkdirAll(p.tempDir, 0o755); err != nil {
-		metrics.SetLastRunStatus(src.TargetName, false)
-		p.events.Emit("Warning", "BackupFailed",
+		return p.failRun(rc, "temp-dir", err, fmt.Errorf("create temp dir: %w", err),
 			fmt.Sprintf("Backup failed for target %s in phase temp-dir: %v", src.TargetName, err))
-		p.recordFailure(ctx, dests, src, timestamp, "temp-dir", runStart, err, log)
-		return fmt.Errorf("create temp dir: %w", err)
 	}
 	dumpFile := path.Join(p.tempDir, fmt.Sprintf("%s-%s.%s", src.TargetName, timestamp, labels.DumpSuffix(src.Compression)))
 
 	// Decide whether THIS run gets a restore-verifier attached BEFORE we
-	// build the encryptor — if yes, we generate an ephemeral keypair and
-	// add its public half as an additional age recipient so the same
-	// dump can be decrypted by either the long-lived DR key (offline)
-	// or this single ephemeral identity (in-memory only). The ephemeral
-	// identity is wiped at the end of Run via defer.
-	//
-	// ShouldVerify needs the latest meta to compute interval-elapsed,
-	// so loading is pulled forward here. We re-use the same loader the
-	// analyzer block uses below.
-	var (
-		ephID         *crypto.EphemeralIdentity
-		runEncryptor  = p.encryptor
-		preloadedMeta *meta.MetaFile
-	)
-	if p.verifierFactory != nil && src.RestoreVerificationMode != "" {
-		preloadedMeta = p.loadPreviousMeta(ctx, dests, src.TargetName)
-		shouldVerify, reason := verifier.ShouldVerify(src, preloadedMeta, runStart)
-		log.V(1).Info("restore-verification decision", "should_verify", shouldVerify, "reason", reason, "mode", src.RestoreVerificationMode)
-		if shouldVerify {
-			id, err := crypto.GenerateEphemeralIdentity()
-			if err != nil {
-				log.Error(err, "ephemeral keypair generation failed; running without restore-verification this run")
-			} else {
-				re, err := crypto.NewEncryptorWithExtraRecipient(p.encryptor, id.PublicLine())
-				if err != nil {
-					log.Error(err, "encryptor extra-recipient wrap failed; running without restore-verification this run")
-					id.Wipe()
-				} else {
-					ephID = id
-					runEncryptor = re
-					log.Info("restore-verification armed for this run", "mode", src.RestoreVerificationMode, "ephemeralFingerprint", id.RecipientFingerprint())
-				}
-			}
-		}
-	}
-	defer func() {
-		if ephID != nil {
-			ephID.Wipe()
-		}
-	}()
+	// build the encryptor — if yes, an ephemeral keypair's public half is
+	// added as an additional age recipient so the same dump can be decrypted
+	// by either the long-lived DR key (offline) or this single in-memory
+	// identity, which is wiped at the end of Run.
+	arm := p.armRestoreVerifier(ctx, src, dests, runStart, log)
+	defer arm.wipe()
 
 	rowCounter := dumper.NewRowCounter(nil, src.DBType) // writer set inside dumpToFile
 	dumpStart := time.Now()
-	dumpRes, err := p.dumpToFileWithEncryptor(ctx, d, dumpFile, rowCounter, runEncryptor, src.Compression)
+	dumpRes, err := p.dumpToFileWithEncryptor(ctx, d, dumpFile, rowCounter, arm.encryptor, src.Compression)
 	encryptedSize, sha256sum := dumpRes.EncryptedSize, dumpRes.SHA256
 	dumpDuration := time.Since(dumpStart)
 	metrics.ObserveDumpDuration(src.TargetName, src.DBType, dumpDuration)
 
 	if err != nil {
-		metrics.SetLastRunStatus(src.TargetName, false)
 		_ = os.Remove(dumpFile)
-		p.events.Emit("Warning", "BackupFailed",
+		return p.failRun(rc, "dump", err, fmt.Errorf("dump: %w", err),
 			fmt.Sprintf("Backup failed for target %s in phase dump: %v", src.TargetName, err))
-		p.recordFailure(ctx, dests, src, timestamp, "dump", runStart, err, log)
-		return fmt.Errorf("dump: %w", err)
 	}
 	defer func() { _ = os.Remove(dumpFile) }()
 
 	if encryptedSize == 0 {
-		metrics.SetLastRunStatus(src.TargetName, false)
 		emptyErr := errors.New("dump produced zero bytes")
-		p.events.Emit("Warning", "BackupFailed",
+		return p.failRun(rc, "dump-empty", emptyErr, emptyErr,
 			fmt.Sprintf("Backup failed for target %s: dump produced zero bytes (possible empty database or dump tool misconfiguration)", src.TargetName))
-		p.recordFailure(ctx, dests, src, timestamp, "dump-empty", runStart, emptyErr, log)
-		return emptyErr
 	}
 
 	metrics.SetDumpSize(src.TargetName, encryptedSize)
 
-	// Post-dump stats collection for verification.
-	//
-	// Only collected when the row counter is INACTIVE (mongo/redis). There the
-	// pre/post comparison is the only verdict path BuildVerification has — no
-	// dump-stream count exists. For SQL engines the row counter already saw
-	// every INSERT/COPY row, so the verdict comes from dumpCounts-vs-preStats
-	// and postStats would be purely informational meta content that nothing
-	// downstream consumes for a decision. Skipping it there saves a full
-	// CollectStats roundtrip (a pg_stat_user_tables / INFORMATION_SCHEMA query)
-	// on every SQL backup — real load at 10k+ daily runs.
-	var postStats *dumper.Stats
-	if src.AnalyzerEnabled && !rowCounter.Active() {
-		s, statsErr := d.CollectStats(ctx)
-		if statsErr != nil {
-			log.V(1).Info("post-dump stats collection skipped", "reason", statsErr.Error())
-		} else {
-			postStats = s
-		}
-	}
-
-	// Build dump verification result.
-	// When the row counter ran (SQL dumpers), pass its counts even if empty —
-	// an empty map signals "the dump produced 0 INSERTs", which the empty-dump
-	// detector needs to distinguish from "we cannot count rows on this format"
-	// (mongo). For inactive counters (mongo, redis), pass nil so the
-	// verification falls back to pre/post stats comparison.
-	var dumpCounts map[string]int64
-	if rowCounter.Active() {
-		if scanErr := rowCounter.Err(); scanErr != nil {
-			// The parser hit an error (typically a dump line exceeding the
-			// scanner's 10 MB buffer). The counts are incomplete, so trusting
-			// them would let the empty-dump detector hard-fail a perfectly good
-			// large-row dump. Leave dumpCounts nil → BuildVerification falls
-			// back to pre/post stats comparison instead of acting on bad data.
-			log.Info("row counter parse error; skipping count-based empty-dump check, falling back to stats",
-				"err", scanErr.Error())
-		} else {
-			dumpCounts = rowCounter.Counts()
-		}
-	}
+	postStats := p.collectPostStats(ctx, d, src, rowCounter, log)
+	dumpCounts := resolveDumpCounts(rowCounter, log)
 	verification := meta.BuildVerification(preStats, postStats, dumpCounts, src.DBType, encryptedSize, dumpRes.RawSize)
 	if verification.Verdict == meta.VerificationMismatch {
 		log.Info("dump verification mismatch detected", "summary", verification.Summary)
@@ -361,34 +254,13 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	// Hard-fail when the dump appears to be empty despite the source DB having
 	// rows. Without this, mysqldump exits 0 on permission failures (it can list
 	// the database but can't SELECT) and we'd happily store DDL-only artifacts.
-	// Opt-out via backup.mogenius.io/empty-dump-check=false for schema-only
-	// sources (e.g. an empty template DB).
+	// Opt-out via spec.analyzer.emptyDumpCheck=false for schema-only sources.
 	if src.EmptyDumpCheck && verification.LooksEmpty {
-		metrics.SetLastRunStatus(src.TargetName, false)
 		emptyErr := fmt.Errorf("empty dump detected: %s", verification.Summary)
-		p.events.Emit("Warning", "BackupFailed",
+		return p.failRun(rc, "dump-empty-content", emptyErr, emptyErr,
 			fmt.Sprintf("Backup failed for target %s: %s", src.TargetName, emptyErr.Error()))
-		p.recordFailure(ctx, dests, src, timestamp, "dump-empty-content", runStart, emptyErr, log)
-		return emptyErr
 	}
-
-	// Empty-dump detection needs a pre-dump stats baseline: SQL engines
-	// compare stream row counts against preStats, mongo/redis compare the
-	// encrypted size against preStats total. When stats are unavailable
-	// (analyzer disabled, or CollectStats failed — e.g. redis AUTH on INFO),
-	// BuildVerification returns "skipped" and the check silently can't fire,
-	// so a header-only dump (server exited 0 but emitted nothing) would pass.
-	// We do NOT hard-fail on an absolute byte floor: encryptedSize includes
-	// the age header, whose size scales with recipient count, so any fixed
-	// floor would either miss real failures or false-fail legitimate tiny
-	// dumps — and a noisy false-positive is worse than a rare miss here.
-	// Instead surface the degraded check loudly so the gap is visible.
-	if src.EmptyDumpCheck && preStats == nil {
-		log.Info("empty-dump check degraded: no pre-dump stats baseline; cannot verify the dump is non-empty",
-			"target", src.TargetName, "dbType", src.DBType)
-		p.events.Emit("Warning", "BackupEmptyCheckDegraded",
-			fmt.Sprintf("Backup for target %s: empty-dump check could not run (no pre-dump stats baseline); confirm the dump is non-empty or set backup.mogenius.io/analyzer-enabled=true", src.TargetName))
-	}
+	p.warnEmptyCheckDegraded(src, preStats, log)
 
 	if len(dests) == 0 {
 		metrics.SetLastRunStatus(src.TargetName, false)
@@ -396,134 +268,23 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	}
 
 	if err := ctx.Err(); err != nil {
-		metrics.SetLastRunStatus(src.TargetName, false)
-		p.events.Emit("Warning", "BackupFailed",
+		return p.failRun(rc, "cancelled", err, fmt.Errorf("cancelled after dump: %w", err),
 			fmt.Sprintf("Backup cancelled for target %s after dump phase: %v", src.TargetName, err))
-		p.recordFailure(ctx, dests, src, timestamp, "cancelled", runStart, err, log)
-		return fmt.Errorf("cancelled after dump: %w", err)
 	}
 
 	objectPath := buildObjectPath(src.TargetName, timestamp, labels.DumpSuffix(src.Compression))
 	metaPath := buildObjectPath(src.TargetName, timestamp, "meta.json")
 
-	// Use preStats for analyzer comparison (same as before)
 	stats := preStats
-	var report *analyzer.Report
-	var schemaChangedAt time.Time
-	if src.AnalyzerEnabled {
-		prevMeta := preloadedMeta
-		if prevMeta == nil {
-			prevMeta = p.loadPreviousMeta(ctx, dests, src.TargetName)
-		}
-		var prevStats *dumper.Stats
-		var prevSize int64
-		var prevSchemaChangedAt time.Time
-		if prevMeta != nil {
-			prevStats = prevMeta.Stats
-			prevSize = prevMeta.EncryptedSizeBytes
-			prevSchemaChangedAt = prevMeta.SchemaChangedAt
-			// SizeChangeRatio compares ENCRYPTED+COMPRESSED sizes across runs.
-			// If the compression algorithm changed since the previous run (e.g.
-			// the user switched gzip->zstd, which is 30-50% smaller), the ratio
-			// drops below the collapse threshold and BackupDumpSizeCollapsed
-			// (critical) fires on a perfectly healthy dump. Zero prevSize for
-			// this one run so the size comparison is skipped (Compare treats
-			// prevSize<=0 as "no comparable baseline"); the next run compares
-			// like-for-like. Empty prevMeta.Compression means a legacy gzip meta.
-			prevComp := prevMeta.Compression
-			if prevComp == "" {
-				prevComp = labels.CompressionGzip
-			}
-			if prevComp != src.Compression {
-				log.Info("compression changed since last run; skipping size-collapse check for this run",
-					"previous", prevComp, "current", src.Compression)
-				prevSize = 0
-			}
-		}
-		// AnonymizeTables persists hashed table names into meta.json, so the
-		// previous run's Stats.Tables[].Name is already in hashed form.
-		// Compare against fresh real names would treat every prev-table as
-		// "disappeared" — hash the current stats too so prev/curr names line
-		// up and only real schema drift surfaces as anomalies. Real names
-		// stay available via the original `stats` for the metrics path.
-		//
-		// Transition case: when anonymize-tables is freshly enabled, the
-		// last meta.json was written with real names. Hashing only the
-		// current stats then mismatches against still-real prev stats and
-		// produces N false-positive `table-disappeared` anomalies for one
-		// run. Detect that and hash prev too so the very first post-toggle
-		// run is clean.
-		cmpStats := stats
-		cmpPrev := prevStats
-		switch {
-		case src.AnonymizeTables:
-			if stats != nil {
-				cmpStats = anonymizeStats(stats)
-			}
-			if prevStats != nil && !looksAnonymized(prevStats) {
-				cmpPrev = anonymizeStats(prevStats)
-			}
-		case prevStats != nil && looksAnonymized(prevStats):
-			// Reverse transition: anonymize-tables was just turned off. The
-			// last meta.json holds hashed names; the current run produced
-			// real names. Hashes are one-way, so the per-table comparison
-			// can't be reconciled for this single run — clearing prev's
-			// Tables suppresses N false-positive `table-disappeared`
-			// anomalies. Schema-hash, charset and size comparisons remain
-			// intact (they don't depend on table names). The next run
-			// will have real names on both sides and analyzes normally.
-			cleared := *prevStats
-			cleared.Tables = nil
-			cmpPrev = &cleared
-			log.Info("anonymize-tables disabled; prev meta still hashed — skipping per-table comparison for this run only")
-		}
-		an := p.analyzerForSource(src)
-		report = an.Compare(cmpPrev, cmpStats, prevSize, encryptedSize)
-		emitAnalyzerMetrics(src.TargetName, report, stats)
-		// Carry forward the schema-change timestamp: only bump it on real
-		// drift, otherwise the caller can use the recorded value to age the
-		// schema. First run with no prev: pin to current run timestamp.
-		switch {
-		case report != nil && report.SchemaChanged:
-			schemaChangedAt = runStart.UTC()
-		case !prevSchemaChangedAt.IsZero():
-			schemaChangedAt = prevSchemaChangedAt
-		default:
-			schemaChangedAt = runStart.UTC()
-		}
-		metrics.SetSchemaLastChange(src.TargetName, schemaChangedAt)
-	}
-
-	metaStats := stats
-	metaReport := report
-	var metaVerification *meta.DumpVerification
-	if src.AnonymizeTables {
-		if stats != nil {
-			metaStats = anonymizeStats(stats)
-		}
-		// `report` is already in hashed-name form because the analyzer was
-		// fed cmpStats above (hashed when AnonymizeTables=true). Calling
-		// anonymizeReport here would double-hash Anomalies subjects and
-		// re-process Current/Previous tables that are already hashed —
-		// metaReport keeps the report as-is.
-		if verification != nil {
-			metaVerification = anonymizeVerification(verification)
-		}
-	} else {
-		metaVerification = verification
-	}
+	report, schemaChangedAt := p.analyzeRun(ctx, src, dests, arm.preloadedMeta, stats, encryptedSize, runStart, log)
+	metaStats, metaReport, metaVerification := metaViewOf(src, stats, report, verification)
 
 	// Pre-upload retention sweep: free space on destinations BEFORE uploading.
 	// Without this, a full storage stays full forever (upload fails → retention
 	// never runs → deadlock). Safe because MinKeep protects the N most recent
-	// existing backups. Best-effort: failures here do not abort the run.
-	//
-	// The pre-upload sweep's per-destination result is the one we persist
-	// into meta.json. The post-upload sweep below runs after the meta is
-	// already in storage, so its results would arrive too late for the same
-	// artifact. Pre-upload is the load-bearing path anyway: if it fails,
-	// storage is filling up; if post-upload fails, we just have one extra
-	// timestamp until next run.
+	// existing backups. Best-effort: failures here do not abort the run. Its
+	// per-destination result is the one persisted into meta.json — the
+	// post-upload sweep runs after the meta is already in storage.
 	policy := p.resolvePolicy(src)
 	var retentionResults []meta.RetentionResult
 	if !policy.Disabled() {
@@ -540,45 +301,12 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 		}
 	}
 	if successCount == 0 {
-		metrics.SetLastRunStatus(src.TargetName, false)
-		p.events.Emit("Warning", "BackupFailed",
+		uploadErr := errors.New("all destination uploads failed")
+		return p.failRun(rc, "upload", uploadErr, uploadErr,
 			fmt.Sprintf("Backup failed for target %s: all %d destination uploads failed", src.TargetName, len(dests)))
-		p.recordFailure(ctx, dests, src, timestamp, "upload", runStart, errors.New("all destination uploads failed"), log)
-		return errors.New("all destination uploads failed")
 	}
 
-	// Phase 2 prologue: run the restore-verifier (if armed) against the
-	// local temp file before we serialise the meta. We deliberately
-	// verify the LOCAL file rather than re-downloading from a
-	// destination — Storage Scrubber already covers byte-level upload
-	// integrity (see CLAUDE.md §18 ADR), and the local file's
-	// decryptability is the property we care about here.
-	var prevRV *meta.RestoreVerificationResult
-	if preloadedMeta != nil {
-		prevRV = preloadedMeta.RestoreVerification
-	}
-	var restoreVerification *meta.RestoreVerificationResult
-	if ephID != nil && p.verifierFactory != nil {
-		restoreVerification = p.runRestoreVerifier(ctx, src, dumpFile, ephID, preStats, dumpCounts, prevRV, log)
-	}
-	// Carry the previous run's verification result forward when this run
-	// produced none because it wasn't due (interval not elapsed, not armed).
-	// A budget timeout is handled inside runRestoreVerifier (it re-stamps the
-	// previous verdict with a fresh CompletedAt so the interval clock moves);
-	// a real verdict (match/mismatch/genuine failure) is non-nil and kept as-is.
-	if restoreVerification == nil && restoreVerificationActive(src) && preloadedMeta != nil {
-		// This run did not verify (interval not yet elapsed). Carry the
-		// previous run's verification result forward so its CompletedAt clock
-		// persists in this meta.json. Without this, a skipped run writes a meta
-		// with no RestoreVerification block; the next run reads that meta, sees
-		// nil, takes ShouldVerify's "first verification" path, and verifies —
-		// so the verifier fires every OTHER run instead of once per interval
-		// (e.g. mode=full on an hourly schedule would spawn a full-restore pod
-		// every 2h instead of weekly). Same carry-forward pattern as
-		// schemaChangedAt. Gated on the mode being active so turning
-		// verification off lets the block (and its refresher gauge) lapse.
-		restoreVerification = preloadedMeta.RestoreVerification
-	}
+	restoreVerification := p.resolveRestoreVerification(ctx, src, dumpFile, arm, preStats, dumpCounts, log)
 
 	// Phase 2: build meta with destination results, upload to successful destinations.
 	metaBytes, marshalErr := metaJSON(src, metaStats, preStatsError, metaReport, metaVerification, encryptedSize, sha256sum, timestamp, runStart, dumpDuration, schemaChangedAt, destResults, restoreVerification, retentionResults)
@@ -618,32 +346,287 @@ func (p *Pipeline) Run(ctx context.Context, src *secrets.Source) error {
 	p.events.Emit("Normal", "BackupCompleted",
 		fmt.Sprintf("Backup completed for target %s (%d/%d destinations, %d bytes, verification: %s)",
 			src.TargetName, successCount, len(dests), encryptedSize, verification.Verdict))
-	log.Info("backup completed", "destinations_succeeded", successCount, "destinations_total", len(dests),
+	log.Info("backup completed", "destinationsSucceeded", successCount, "destinationsTotal", len(dests),
 		"verification", verification.Verdict)
 
-	// Post-upload retention: now that the fresh artifact is safely stored,
-	// prune again in case the newly uploaded backup pushed the count above
-	// the retention threshold. Best-effort: results are not persisted to
-	// the (already-uploaded) meta.json, but per-destination outcomes are
-	// logged and failures emit RetentionFailed Events so the audit trail
-	// is complete. If a post-upload sweep persistently fails, storage
-	// gradually grows by one extra cohort per run rather than catastrophically;
-	// the pre-upload sweep is the load-bearing path with the alerting.
 	if !policy.Disabled() {
-		postResults := p.applyRetention(ctx, dests, src.TargetName, "post-upload", policy, time.Now(), log)
-		for _, r := range postResults {
-			if r.Status == meta.StatusFailed {
-				log.Info("post-upload retention failed",
-					"destination", r.Name, "target", src.TargetName, "err", r.Error)
-				continue
-			}
-			if r.DeletedDumps+r.DeletedMetas+r.DeletedOther > 0 {
-				log.Info("post-upload retention pruned",
-					"destination", r.Name, "target", src.TargetName,
-					"dumps", r.DeletedDumps, "metas", r.DeletedMetas, "other", r.DeletedOther)
-			}
+		p.postUploadRetention(ctx, dests, src, policy, log)
+	}
+	return nil
+}
+
+// runContext bundles the identifiers every failure path needs.
+type runContext struct {
+	ctx       context.Context
+	src       *secrets.Source
+	dests     []*secrets.Destination
+	timestamp string
+	runStart  time.Time
+	log       logr.Logger
+}
+
+// failRun is the single failure path: mark the run failed, emit the
+// BackupFailed Event, persist a failure meta (so the run is discoverable) and
+// hand back the error the caller returns. recordErr is what lands in the
+// failure meta, returnErr the (usually wrapped) error for the worker's exit.
+func (p *Pipeline) failRun(rc runContext, phase string, recordErr, returnErr error, eventMsg string) error {
+	metrics.SetLastRunStatus(rc.src.TargetName, false)
+	p.events.Emit("Warning", "BackupFailed", eventMsg)
+	p.recordFailure(rc.ctx, rc.dests, rc.src, rc.timestamp, phase, rc.runStart, recordErr, rc.log)
+	return returnErr
+}
+
+// collectPreStats runs the pre-dump stats query when the analyzer is on.
+// Failure is non-fatal: the sanitized reason is persisted into meta.json so a
+// silent permission failure stops presenting as an unexplained "skipped"
+// verifier verdict.
+func (p *Pipeline) collectPreStats(ctx context.Context, d dumper.Dumper, src *secrets.Source, log logr.Logger) (*dumper.Stats, string) {
+	if !src.AnalyzerEnabled {
+		log.V(1).Info("analyzer disabled by spec; skipping stats collection")
+		return nil, ""
+	}
+	s, statsErr := d.CollectStats(ctx)
+	if statsErr != nil {
+		// Sanitize before persisting/logging — driver errors can echo the
+		// connection URI (and thus the password) back.
+		reason := dumper.SanitizeStderr(statsErr.Error(), src.Config.Password)
+		log.Info("pre-dump stats collection failed; preStats unavailable for analyzer and verifier",
+			"target", src.TargetName, "reason", reason)
+		return nil, reason
+	}
+	return s, ""
+}
+
+// collectPostStats re-queries stats after the dump ONLY for engines whose
+// row counter is inactive (mongo/redis): there the pre/post comparison is the
+// only verdict path BuildVerification has. For SQL engines the row counter
+// already saw every INSERT/COPY row and postStats would be purely
+// informational, so the second CollectStats roundtrip is skipped — real load
+// at 10k+ daily runs.
+func (p *Pipeline) collectPostStats(ctx context.Context, d dumper.Dumper, src *secrets.Source, rowCounter *dumper.RowCounter, log logr.Logger) *dumper.Stats {
+	if !src.AnalyzerEnabled || rowCounter.Active() {
+		return nil
+	}
+	s, statsErr := d.CollectStats(ctx)
+	if statsErr != nil {
+		log.V(1).Info("post-dump stats collection skipped", "reason", statsErr.Error())
+		return nil
+	}
+	return s
+}
+
+// resolveDumpCounts returns the row counter's per-table counts for SQL
+// engines (an empty map means "the dump produced 0 INSERTs", which the
+// empty-dump detector needs), nil for inactive counters (mongo/redis → fall
+// back to pre/post stats) and nil when the scan errored — a dump line past
+// the scanner buffer leaves the counts incomplete, and trusting them would
+// let the empty-dump detector hard-fail a perfectly good large-row dump.
+func resolveDumpCounts(rowCounter *dumper.RowCounter, log logr.Logger) map[string]int64 {
+	if !rowCounter.Active() {
+		return nil
+	}
+	if scanErr := rowCounter.Err(); scanErr != nil {
+		log.Info("row counter parse error; skipping count-based empty-dump check, falling back to stats",
+			"err", scanErr.Error())
+		return nil
+	}
+	return rowCounter.Counts()
+}
+
+// warnEmptyCheckDegraded surfaces that the empty-dump check could not run:
+// it needs a pre-dump stats baseline (SQL compares stream row counts against
+// it, mongo/redis compare the dump size against its total). We deliberately
+// do NOT hard-fail on an absolute byte floor — encryptedSize includes the age
+// header, whose size scales with recipient count, so any fixed floor would
+// either miss real failures or false-fail legitimate tiny dumps.
+func (p *Pipeline) warnEmptyCheckDegraded(src *secrets.Source, preStats *dumper.Stats, log logr.Logger) {
+	if !src.EmptyDumpCheck || preStats != nil {
+		return
+	}
+	log.Info("empty-dump check degraded: no pre-dump stats baseline; cannot verify the dump is non-empty",
+		"target", src.TargetName, "dbType", src.DBType)
+	p.events.Emit("Warning", "BackupEmptyCheckDegraded",
+		fmt.Sprintf("Backup for target %s: empty-dump check could not run (no pre-dump stats baseline); confirm the dump is non-empty or set spec.analyzer.enabled=true", src.TargetName))
+}
+
+// armedVerifier is the outcome of the pre-dump restore-verification decision.
+type armedVerifier struct {
+	id            *crypto.EphemeralIdentity
+	encryptor     crypto.Encryptor
+	preloadedMeta *meta.MetaFile
+}
+
+func (a *armedVerifier) wipe() {
+	if a.id != nil {
+		a.id.Wipe()
+	}
+}
+
+// armRestoreVerifier decides whether this run verifies and, if so, wraps the
+// encryptor with an ephemeral recipient. ShouldVerify needs the latest meta
+// to compute interval-elapsed, so the baseline load is pulled forward here
+// and reused by the analyzer. Any failure to arm degrades to "no verification
+// this run" — never to a failed backup.
+func (p *Pipeline) armRestoreVerifier(ctx context.Context, src *secrets.Source, dests []*secrets.Destination, runStart time.Time, log logr.Logger) armedVerifier {
+	arm := armedVerifier{encryptor: p.encryptor}
+	if p.verifierFactory == nil || src.RestoreVerificationMode == "" {
+		return arm
+	}
+	arm.preloadedMeta = p.loadPreviousMeta(ctx, dests, src.TargetName)
+	shouldVerify, reason := verifier.ShouldVerify(src, arm.preloadedMeta, runStart)
+	log.V(1).Info("restore-verification decision", "shouldVerify", shouldVerify, "reason", reason, "mode", src.RestoreVerificationMode)
+	if !shouldVerify {
+		return arm
+	}
+	id, err := crypto.GenerateEphemeralIdentity()
+	if err != nil {
+		log.Error(err, "ephemeral keypair generation failed; running without restore-verification this run")
+		return arm
+	}
+	re, err := crypto.NewEncryptorWithExtraRecipient(p.encryptor, id.PublicLine())
+	if err != nil {
+		log.Error(err, "encryptor extra-recipient wrap failed; running without restore-verification this run")
+		id.Wipe()
+		return arm
+	}
+	arm.id, arm.encryptor = id, re
+	log.Info("restore-verification armed for this run", "mode", src.RestoreVerificationMode, "ephemeralFingerprint", id.RecipientFingerprint())
+	return arm
+}
+
+// resolveRestoreVerification runs the armed verifier against the LOCAL temp
+// file (the Storage Scrubber already covers byte-level upload integrity) or,
+// when this run was not due, carries the previous verdict forward so its
+// CompletedAt clock persists — otherwise the next run would see no block,
+// take ShouldVerify's "first verification" path, and the verifier would fire
+// every other run instead of once per interval. A budget timeout is handled
+// inside runRestoreVerifier (it re-stamps the previous verdict).
+func (p *Pipeline) resolveRestoreVerification(ctx context.Context, src *secrets.Source, dumpFile string, arm armedVerifier, preStats *dumper.Stats, dumpCounts map[string]int64, log logr.Logger) *meta.RestoreVerificationResult {
+	var prevRV *meta.RestoreVerificationResult
+	if arm.preloadedMeta != nil {
+		prevRV = arm.preloadedMeta.RestoreVerification
+	}
+	if arm.id != nil && p.verifierFactory != nil {
+		if rv := p.runRestoreVerifier(ctx, src, dumpFile, arm.id, preStats, dumpCounts, prevRV, log); rv != nil {
+			return rv
 		}
 	}
-
+	if restoreVerificationActive(src) && arm.preloadedMeta != nil {
+		return arm.preloadedMeta.RestoreVerification
+	}
 	return nil
+}
+
+// analyzeRun compares this run's stats against the previous meta and derives
+// the carried-forward schema-change timestamp. Returns (nil, zero) when the
+// analyzer is disabled.
+func (p *Pipeline) analyzeRun(ctx context.Context, src *secrets.Source, dests []*secrets.Destination, preloadedMeta *meta.MetaFile, stats *dumper.Stats, encryptedSize int64, runStart time.Time, log logr.Logger) (*analyzer.Report, time.Time) {
+	if !src.AnalyzerEnabled {
+		return nil, time.Time{}
+	}
+	prevMeta := preloadedMeta
+	if prevMeta == nil {
+		prevMeta = p.loadPreviousMeta(ctx, dests, src.TargetName)
+	}
+	var prevStats *dumper.Stats
+	var prevSize int64
+	var prevSchemaChangedAt time.Time
+	if prevMeta != nil {
+		prevStats = prevMeta.Stats
+		prevSize = prevMeta.EncryptedSizeBytes
+		prevSchemaChangedAt = prevMeta.SchemaChangedAt
+		// SizeChangeRatio compares ENCRYPTED+COMPRESSED sizes across runs. If
+		// the compression algorithm changed since the previous run (gzip→zstd
+		// is 30-50% smaller) the ratio would trip BackupDumpSizeCollapsed on
+		// a healthy dump — zero prevSize for this one run so the size check
+		// is skipped; the next run compares like-for-like. Empty
+		// prevMeta.Compression means a legacy gzip meta.
+		prevComp := prevMeta.Compression
+		if prevComp == "" {
+			prevComp = labels.CompressionGzip
+		}
+		if prevComp != src.Compression {
+			log.Info("compression changed since last run; skipping size-collapse check for this run",
+				"previous", prevComp, "current", src.Compression)
+			prevSize = 0
+		}
+	}
+	cmpStats, cmpPrev := comparableStats(src, stats, prevStats, log)
+	report := p.analyzerForSource(src).Compare(cmpPrev, cmpStats, prevSize, encryptedSize)
+	emitAnalyzerMetrics(src.TargetName, report, stats)
+	// Carry forward the schema-change timestamp: only bump it on real drift,
+	// otherwise the caller can use the recorded value to age the schema.
+	// First run with no prev: pin to current run timestamp.
+	var schemaChangedAt time.Time
+	switch {
+	case report != nil && report.SchemaChanged:
+		schemaChangedAt = runStart.UTC()
+	case !prevSchemaChangedAt.IsZero():
+		schemaChangedAt = prevSchemaChangedAt
+	default:
+		schemaChangedAt = runStart.UTC()
+	}
+	metrics.SetSchemaLastChange(src.TargetName, schemaChangedAt)
+	return report, schemaChangedAt
+}
+
+// comparableStats lines prev and current stats up for the analyzer when
+// table-name anonymisation is involved. AnonymizeTables persists hashed names
+// into meta.json, so comparing fresh real names against a hashed prev would
+// treat every prev table as "disappeared". Both toggle transitions are
+// handled: freshly enabled → hash prev too; freshly disabled → prev is hashed
+// one-way and can't be reconciled, so its tables are cleared for this single
+// run (schema-hash, charset and size comparisons remain intact).
+func comparableStats(src *secrets.Source, stats, prevStats *dumper.Stats, log logr.Logger) (cmpStats, cmpPrev *dumper.Stats) {
+	cmpStats, cmpPrev = stats, prevStats
+	switch {
+	case src.AnonymizeTables:
+		if stats != nil {
+			cmpStats = anonymizeStats(stats)
+		}
+		if prevStats != nil && !looksAnonymized(prevStats) {
+			cmpPrev = anonymizeStats(prevStats)
+		}
+	case prevStats != nil && looksAnonymized(prevStats):
+		cleared := *prevStats
+		cleared.Tables = nil
+		cmpPrev = &cleared
+		log.Info("anonymize-tables disabled; prev meta still hashed — skipping per-table comparison for this run only")
+	}
+	return cmpStats, cmpPrev
+}
+
+// metaViewOf applies table-name anonymisation to what lands in meta.json.
+// `report` is already in hashed-name form because the analyzer was fed the
+// hashed stats, so it is kept as-is (anonymising it again would double-hash).
+func metaViewOf(src *secrets.Source, stats *dumper.Stats, report *analyzer.Report, verification *meta.DumpVerification) (*dumper.Stats, *analyzer.Report, *meta.DumpVerification) {
+	if !src.AnonymizeTables {
+		return stats, report, verification
+	}
+	metaStats := stats
+	if stats != nil {
+		metaStats = anonymizeStats(stats)
+	}
+	var metaVerification *meta.DumpVerification
+	if verification != nil {
+		metaVerification = anonymizeVerification(verification)
+	}
+	return metaStats, report, metaVerification
+}
+
+// postUploadRetention prunes again now that the fresh artifact is stored, in
+// case it pushed the count above the threshold. Best-effort and not persisted
+// to the (already-uploaded) meta.json; outcomes are logged and failures emit
+// RetentionFailed Events. The pre-upload sweep is the load-bearing path.
+func (p *Pipeline) postUploadRetention(ctx context.Context, dests []*secrets.Destination, src *secrets.Source, policy RetentionPolicy, log logr.Logger) {
+	for _, r := range p.applyRetention(ctx, dests, src.TargetName, "post-upload", policy, time.Now(), log) {
+		if r.Status == meta.StatusFailed {
+			log.Info("post-upload retention failed", "destination", r.Name, "target", src.TargetName, "err", r.Error)
+			continue
+		}
+		if r.DeletedDumps+r.DeletedMetas+r.DeletedOther > 0 {
+			log.Info("post-upload retention pruned", "destination", r.Name, "target", src.TargetName,
+				"dumps", r.DeletedDumps, "metas", r.DeletedMetas, "other", r.DeletedOther)
+		}
+	}
 }

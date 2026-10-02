@@ -363,12 +363,12 @@ func TestStop_DeletesPod(t *testing.T) {
 
 func TestSanitiseDNS1123(t *testing.T) {
 	cases := map[string]string{
-		"prod-users":      "prod-users",
-		"PROD_USERS":      "prod-users",
-		"prod.users.db":   "prod-users-db",
-		"--leading--":     "leading",
-		"":                "x",
-		"123abc":          "123abc",
+		"prod-users":    "prod-users",
+		"PROD_USERS":    "prod-users",
+		"prod.users.db": "prod-users-db",
+		"--leading--":   "leading",
+		"":              "x",
+		"123abc":        "123abc",
 	}
 	for in, want := range cases {
 		if got := sanitiseDNS1123(in); got != want {

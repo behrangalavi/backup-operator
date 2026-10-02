@@ -52,12 +52,12 @@ type Server struct {
 // page is the rendered representation of a markdown source plus metadata
 // the SPA shell needs to render the sidebar.
 type page struct {
-	Slug    string    // URL slug, e.g. "claude-md"
-	Title   string    // first H1 in the document
-	HTML    string    // rendered body
+	Slug     string    // URL slug, e.g. "claude-md"
+	Title    string    // first H1 in the document
+	HTML     string    // rendered body
 	Headings []heading // for the in-page TOC
-	Updated time.Time // file mtime
-	Source  string    // relative source path (for the footer link)
+	Updated  time.Time // file mtime
+	Source   string    // relative source path (for the footer link)
 }
 
 func New(cfg Config) (*Server, error) {

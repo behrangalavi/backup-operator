@@ -53,7 +53,7 @@ func TestSelectForDeletion_DeletesOldKeepsRecent(t *testing.T) {
 	// 5 dumps; ages 1d, 5d, 10d, 60d, 90d. Days=30, MinKeep=2.
 	// Floor protects the 2 newest. Of the remaining 3, the 60d and 90d are
 	// past cutoff (delete = 4 paths); the 10d is within window (keep).
-	var objs []storage.Object
+	objs := make([]storage.Object, 0, 16)
 	for _, age := range []int{1, 5, 10, 60, 90} {
 		objs = append(objs, dump("x", fakeNow.AddDate(0, 0, -age))...)
 	}
@@ -80,7 +80,7 @@ func TestSelectForDeletion_DeletesOldKeepsRecent(t *testing.T) {
 
 func TestSelectForDeletion_NothingOldEnough(t *testing.T) {
 	// All within retention window — nothing to delete.
-	var objs []storage.Object
+	objs := make([]storage.Object, 0, 16)
 	for _, age := range []int{1, 5, 10, 20} {
 		objs = append(objs, dump("x", fakeNow.AddDate(0, 0, -age))...)
 	}
@@ -146,7 +146,7 @@ func TestSelectForDeletion_EmptyInput(t *testing.T) {
 func TestSelectForDeletion_MinKeepGreaterThanTotal(t *testing.T) {
 	// 2 dumps, both ancient, but MinKeep=5 — the floor protects every
 	// existing timestamp regardless of age.
-	var objs []storage.Object
+	objs := make([]storage.Object, 0, 16)
 	for _, age := range []int{100, 200} {
 		objs = append(objs, dump("x", fakeNow.AddDate(0, 0, -age))...)
 	}
@@ -239,10 +239,9 @@ func TestSelectForDeletion_FailureMetasDoNotConsumeFloor(t *testing.T) {
 // outranks a digit) and — before the fix — consumed a MinKeep floor slot,
 // pushing a real dump below the floor and letting the age sweep delete it.
 func TestSelectForDeletion_UnparseableDumpDoesNotConsumeFloor(t *testing.T) {
-	objs := []storage.Object{
-		// Junk dump with a non-ISO "timestamp"; sorts first under reverse sort.
-		{Path: "x/dump-manual.sql.gz.age", Size: 1},
-	}
+	// Junk dump with a non-ISO "timestamp"; sorts first under reverse sort.
+	objs := make([]storage.Object, 0, 8)
+	objs = append(objs, storage.Object{Path: "x/dump-manual.sql.gz.age", Size: 1})
 	// Exactly MinKeep real dumps, all older than the window.
 	for _, age := range []int{20, 30, 40} {
 		objs = append(objs, dump("x", fakeNow.AddDate(0, 0, -age))...)

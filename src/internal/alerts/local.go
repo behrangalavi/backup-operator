@@ -65,6 +65,33 @@ func (p *LocalProvider) List(ctx context.Context) ([]Alert, error) {
 		return nil, fmt.Errorf("gather: %w", err)
 	}
 
+	states := collectTargetStates(families)
+
+	now := p.Now()
+	var out []Alert
+	for target, s := range states {
+		out = append(out, targetRules(target, s, now)...)
+		out = append(out, destinationRules(target, s, now)...)
+		out = append(out, verificationRules(target, s, now)...)
+	}
+
+	// Stable order: severity (critical → warning → info), then alertname,
+	// then target. UIs that paginate or hash this list need determinism.
+	sort.Slice(out, func(i, j int) bool {
+		if r := severityRank(out[i].Severity) - severityRank(out[j].Severity); r != 0 {
+			return r < 0
+		}
+		if out[i].Alertname != out[j].Alertname {
+			return out[i].Alertname < out[j].Alertname
+		}
+		return out[i].Target < out[j].Target
+	})
+	return out, nil
+}
+
+// collectTargetStates folds the gathered metric families into one state
+// record per target so the rule evaluation below is pure.
+func collectTargetStates(families []*dto.MetricFamily) map[string]*targetState {
 	states := map[string]*targetState{}
 	getState := func(target string) *targetState {
 		s, ok := states[target]
@@ -127,211 +154,215 @@ func (p *LocalProvider) List(ctx context.Context) ([]Alert, error) {
 		}
 	}
 
-	now := p.Now()
+	return states
+}
+
+// targetRules evaluates the rules keyed on the target alone (overdue, size
+// collapse, schema/charset drift, anomalies, last run failed).
+func targetRules(target string, s *targetState, now time.Time) []Alert {
 	var out []Alert
-	for target, s := range states {
-		// 1. BackupOverdue — newest success across destinations is older
-		//    than 36h. We use the newest because fan-out means at least one
-		//    destination should have the recent run.
-		var newestSuccess float64
-		for _, ts := range s.lastSuccessTs {
-			if ts > newestSuccess {
-				newestSuccess = ts
-			}
+	// 1. BackupOverdue — newest success across destinations is older
+	//    than 36h. We use the newest because fan-out means at least one
+	//    destination should have the recent run.
+	var newestSuccess float64
+	for _, ts := range s.lastSuccessTs {
+		if ts > newestSuccess {
+			newestSuccess = ts
 		}
-		if newestSuccess > 0 && now.Unix()-int64(newestSuccess) > int64(86400*1.5) {
+	}
+	if newestSuccess > 0 && now.Unix()-int64(newestSuccess) > int64(86400*1.5) {
+		out = append(out, Alert{
+			Alertname:   "BackupOverdue",
+			Target:      target,
+			Severity:    "warning",
+			State:       "firing",
+			ActiveSince: time.Unix(int64(newestSuccess), 0).Add(36 * time.Hour),
+			Summary:     fmt.Sprintf("Backup target %s hasn't succeeded in over 36h", target),
+			Source:      "local",
+		})
+	}
+
+	// 3. BackupDumpSizeCollapsed. Mirror the Prometheus rule's bare
+	// `< 0.5` — the dumpSizeChangeKnown flag already guards "gauge unset",
+	// so the old extra `> 0` was redundant and wrongly suppressed a total
+	// collapse to zero bytes (ratio 0), which Prometheus would fire on.
+	if s.dumpSizeChangeKnown && s.dumpSizeChangeRatio < 0.5 {
+		out = append(out, Alert{
+			Alertname:   "BackupDumpSizeCollapsed",
+			Target:      target,
+			Severity:    "critical",
+			State:       "firing",
+			ActiveSince: now,
+			Summary: fmt.Sprintf(
+				"Backup %s shrunk to %.0f%% of previous size — possible data loss",
+				target, s.dumpSizeChangeRatio*100,
+			),
+			Source: "local",
+		})
+	}
+
+	// 4. BackupSchemaChanged — informational, not a failure
+	if s.schemaChangedKnown && s.schemaChanged == 1 {
+		out = append(out, Alert{
+			Alertname:   "BackupSchemaChanged",
+			Target:      target,
+			Severity:    "info",
+			State:       "firing",
+			ActiveSince: now,
+			Summary:     fmt.Sprintf("Schema changed for backup target %s", target),
+			Source:      "local",
+		})
+	}
+
+	// 4b. BackupCharsetChanged — warning. utf8 → utf8mb4 drift silently
+	// truncates 4-byte chars on restore; treat with more weight than
+	// schema drift.
+	if s.charsetChangedKnown && s.charsetChanged == 1 {
+		out = append(out, Alert{
+			Alertname:   "BackupCharsetChanged",
+			Target:      target,
+			Severity:    "warning",
+			State:       "firing",
+			ActiveSince: now,
+			Summary:     fmt.Sprintf("Database charset/collation changed for backup target %s", target),
+			Source:      "local",
+		})
+	}
+
+	// 5. BackupAnomaliesAppearing
+	if s.anomaliesKnown && s.lastRunAnomalies > 0 {
+		out = append(out, Alert{
+			Alertname:   "BackupAnomaliesAppearing",
+			Target:      target,
+			Severity:    "warning",
+			State:       "firing",
+			ActiveSince: now,
+			Summary: fmt.Sprintf(
+				"Analyzer reported %.0f anomalies in the last run of %s",
+				s.lastRunAnomalies, target,
+			),
+			Source: "local",
+		})
+	}
+
+	// 6. BackupLastRunFailed
+	if s.lastRunStatusKnown && s.lastRunStatus == 0 {
+		out = append(out, Alert{
+			Alertname:   "BackupLastRunFailed",
+			Target:      target,
+			Severity:    "warning",
+			State:       "firing",
+			ActiveSince: now,
+			Summary:     fmt.Sprintf("Most recent backup run for %s did not produce a usable artifact", target),
+			Source:      "local",
+		})
+	}
+
+	return out
+}
+
+// destinationRules evaluates the per-destination rules (destination failing,
+// storage corrupted, retention failing).
+func destinationRules(target string, s *targetState, now time.Time) []Alert {
+	var out []Alert
+	// 2. BackupDestinationFailing — per destination
+	for dest, failed := range s.destinationFailed {
+		if failed == 1 {
 			out = append(out, Alert{
-				Alertname:   "BackupOverdue",
+				Alertname:   "BackupDestinationFailing",
 				Target:      target,
+				Destination: dest,
 				Severity:    "warning",
 				State:       "firing",
-				ActiveSince: time.Unix(int64(newestSuccess), 0).Add(36 * time.Hour),
-				Summary:     fmt.Sprintf("Backup target %s hasn't succeeded in over 36h", target),
+				ActiveSince: now,
+				Summary:     fmt.Sprintf("Backup target %s failing to %s", target, dest),
 				Source:      "local",
 			})
 		}
+	}
 
-		// 2. BackupDestinationFailing — per destination
-		for dest, failed := range s.destinationFailed {
-			if failed == 1 {
-				out = append(out, Alert{
-					Alertname:   "BackupDestinationFailing",
-					Target:      target,
-					Destination: dest,
-					Severity:    "warning",
-					State:       "firing",
-					ActiveSince: now,
-					Summary:     fmt.Sprintf("Backup target %s failing to %s", target, dest),
-					Source:      "local",
-				})
-			}
-		}
-
-		// 3. BackupDumpSizeCollapsed. Mirror the Prometheus rule's bare
-		// `< 0.5` — the dumpSizeChangeKnown flag already guards "gauge unset",
-		// so the old extra `> 0` was redundant and wrongly suppressed a total
-		// collapse to zero bytes (ratio 0), which Prometheus would fire on.
-		if s.dumpSizeChangeKnown && s.dumpSizeChangeRatio < 0.5 {
+	// 5b. BackupStorageCorrupted — per destination. Critical because the
+	// stored dump's bytes no longer match the SHA256 in meta.json: the
+	// artifact is unrecoverable, period.
+	for dest, passed := range s.storageScrubPassed {
+		if passed == 0 {
 			out = append(out, Alert{
-				Alertname:   "BackupDumpSizeCollapsed",
+				Alertname:   "BackupStorageCorrupted",
+				Target:      target,
+				Destination: dest,
+				Severity:    "critical",
+				State:       "firing",
+				ActiveSince: now,
+				Summary:     fmt.Sprintf("Storage scrub failed for %s on %s — dump SHA256 does not match meta.json", target, dest),
+				Source:      "local",
+			})
+		}
+	}
+
+	// 5c. BackupRetentionFailing — per destination. The PrometheusRule
+	// has a 24h "for:" debounce because retention failures aren't
+	// instantly fatal; the local heuristic doesn't honor durations
+	// (documented constraint), so it fires immediately. Operators
+	// see "in-UI" but not "via Alertmanager" until 24h elapsed.
+	for dest, passed := range s.retentionPassed {
+		if passed == 0 {
+			out = append(out, Alert{
+				Alertname:   "BackupRetentionFailing",
+				Target:      target,
+				Destination: dest,
+				Severity:    "warning",
+				State:       "firing",
+				ActiveSince: now,
+				Summary:     fmt.Sprintf("Retention failing for %s on %s — storage will eventually fill", target, dest),
+				Source:      "local",
+			})
+		}
+	}
+
+	return out
+}
+
+// verificationRules evaluates the per-mode restore-verification rules.
+func verificationRules(target string, s *targetState, now time.Time) []Alert {
+	var out []Alert
+	// 7. BackupRestoreVerificationFailed — per mode. The metric is absent
+	// until a verifier has run at least once, so a present value of 0
+	// unambiguously means "the most recent verifier run did not produce a
+	// `match` verdict" (mismatch or skipped). Critical: the encrypted
+	// artifact could not be proven decryptable+parseable. mode is folded
+	// into the summary (matching the PrometheusRule annotation) since the
+	// Alert schema carries no mode field.
+	for mode, passed := range s.restoreVerifPassed {
+		if passed == 0 {
+			out = append(out, Alert{
+				Alertname:   "BackupRestoreVerificationFailed",
 				Target:      target,
 				Severity:    "critical",
 				State:       "firing",
 				ActiveSince: now,
-				Summary: fmt.Sprintf(
-					"Backup %s shrunk to %.0f%% of previous size — possible data loss",
-					target, s.dumpSizeChangeRatio*100,
-				),
-				Source: "local",
-			})
-		}
-
-		// 4. BackupSchemaChanged — informational, not a failure
-		if s.schemaChangedKnown && s.schemaChanged == 1 {
-			out = append(out, Alert{
-				Alertname:   "BackupSchemaChanged",
-				Target:      target,
-				Severity:    "info",
-				State:       "firing",
-				ActiveSince: now,
-				Summary:     fmt.Sprintf("Schema changed for backup target %s", target),
+				Summary:     fmt.Sprintf("Restore-verification failed for %s (mode=%s) — encrypted dump did not decrypt+parse cleanly", target, mode),
 				Source:      "local",
 			})
-		}
-
-		// 4b. BackupCharsetChanged — warning. utf8 → utf8mb4 drift silently
-		// truncates 4-byte chars on restore; treat with more weight than
-		// schema drift.
-		if s.charsetChangedKnown && s.charsetChanged == 1 {
-			out = append(out, Alert{
-				Alertname:   "BackupCharsetChanged",
-				Target:      target,
-				Severity:    "warning",
-				State:       "firing",
-				ActiveSince: now,
-				Summary:     fmt.Sprintf("Database charset/collation changed for backup target %s", target),
-				Source:      "local",
-			})
-		}
-
-		// 5. BackupAnomaliesAppearing
-		if s.anomaliesKnown && s.lastRunAnomalies > 0 {
-			out = append(out, Alert{
-				Alertname:   "BackupAnomaliesAppearing",
-				Target:      target,
-				Severity:    "warning",
-				State:       "firing",
-				ActiveSince: now,
-				Summary: fmt.Sprintf(
-					"Analyzer reported %.0f anomalies in the last run of %s",
-					s.lastRunAnomalies, target,
-				),
-				Source: "local",
-			})
-		}
-
-		// 5b. BackupStorageCorrupted — per destination. Critical because the
-		// stored dump's bytes no longer match the SHA256 in meta.json: the
-		// artifact is unrecoverable, period.
-		for dest, passed := range s.storageScrubPassed {
-			if passed == 0 {
-				out = append(out, Alert{
-					Alertname:   "BackupStorageCorrupted",
-					Target:      target,
-					Destination: dest,
-					Severity:    "critical",
-					State:       "firing",
-					ActiveSince: now,
-					Summary:     fmt.Sprintf("Storage scrub failed for %s on %s — dump SHA256 does not match meta.json", target, dest),
-					Source:      "local",
-				})
-			}
-		}
-
-		// 5c. BackupRetentionFailing — per destination. The PrometheusRule
-		// has a 24h "for:" debounce because retention failures aren't
-		// instantly fatal; the local heuristic doesn't honor durations
-		// (documented constraint), so it fires immediately. Operators
-		// see "in-UI" but not "via Alertmanager" until 24h elapsed.
-		for dest, passed := range s.retentionPassed {
-			if passed == 0 {
-				out = append(out, Alert{
-					Alertname:   "BackupRetentionFailing",
-					Target:      target,
-					Destination: dest,
-					Severity:    "warning",
-					State:       "firing",
-					ActiveSince: now,
-					Summary:     fmt.Sprintf("Retention failing for %s on %s — storage will eventually fill", target, dest),
-					Source:      "local",
-				})
-			}
-		}
-
-		// 6. BackupLastRunFailed
-		if s.lastRunStatusKnown && s.lastRunStatus == 0 {
-			out = append(out, Alert{
-				Alertname:   "BackupLastRunFailed",
-				Target:      target,
-				Severity:    "warning",
-				State:       "firing",
-				ActiveSince: now,
-				Summary:     fmt.Sprintf("Most recent backup run for %s did not produce a usable artifact", target),
-				Source:      "local",
-			})
-		}
-
-		// 7. BackupRestoreVerificationFailed — per mode. The metric is absent
-		// until a verifier has run at least once, so a present value of 0
-		// unambiguously means "the most recent verifier run did not produce a
-		// `match` verdict" (mismatch or skipped). Critical: the encrypted
-		// artifact could not be proven decryptable+parseable. mode is folded
-		// into the summary (matching the PrometheusRule annotation) since the
-		// Alert schema carries no mode field.
-		for mode, passed := range s.restoreVerifPassed {
-			if passed == 0 {
-				out = append(out, Alert{
-					Alertname:   "BackupRestoreVerificationFailed",
-					Target:      target,
-					Severity:    "critical",
-					State:       "firing",
-					ActiveSince: now,
-					Summary:     fmt.Sprintf("Restore-verification failed for %s (mode=%s) — encrypted dump did not decrypt+parse cleanly", target, mode),
-					Source:      "local",
-				})
-			}
-		}
-
-		// 8. BackupRestoreVerificationStale — per mode. Verification is
-		// configured but the most recent completion is older than 14 days, so
-		// the "a backup nobody has proven restorable" window has opened.
-		for mode, ts := range s.restoreVerifLastTs {
-			if ts > 0 && now.Unix()-int64(ts) > int64(86400*14) {
-				out = append(out, Alert{
-					Alertname:   "BackupRestoreVerificationStale",
-					Target:      target,
-					Severity:    "warning",
-					State:       "firing",
-					ActiveSince: time.Unix(int64(ts), 0).Add(14 * 24 * time.Hour),
-					Summary:     fmt.Sprintf("Restore-verification for %s (mode=%s) hasn't run in over 14 days", target, mode),
-					Source:      "local",
-				})
-			}
 		}
 	}
 
-	// Stable order: severity (critical → warning → info), then alertname,
-	// then target. UIs that paginate or hash this list need determinism.
-	sort.Slice(out, func(i, j int) bool {
-		if r := severityRank(out[i].Severity) - severityRank(out[j].Severity); r != 0 {
-			return r < 0
+	// 8. BackupRestoreVerificationStale — per mode. Verification is
+	// configured but the most recent completion is older than 14 days, so
+	// the "a backup nobody has proven restorable" window has opened.
+	for mode, ts := range s.restoreVerifLastTs {
+		if ts > 0 && now.Unix()-int64(ts) > int64(86400*14) {
+			out = append(out, Alert{
+				Alertname:   "BackupRestoreVerificationStale",
+				Target:      target,
+				Severity:    "warning",
+				State:       "firing",
+				ActiveSince: time.Unix(int64(ts), 0).Add(14 * 24 * time.Hour),
+				Summary:     fmt.Sprintf("Restore-verification for %s (mode=%s) hasn't run in over 14 days", target, mode),
+				Source:      "local",
+			})
 		}
-		if out[i].Alertname != out[j].Alertname {
-			return out[i].Alertname < out[j].Alertname
-		}
-		return out[i].Target < out[j].Target
-	})
-	return out, nil
+	}
+	return out
 }
 
 func severityRank(s string) int {

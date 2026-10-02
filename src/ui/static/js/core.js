@@ -6,6 +6,27 @@ const $ = (sel, ctx) => (ctx || document).querySelector(sel);
 const $$ = (sel, ctx) => [...(ctx || document).querySelectorAll(sel)];
 const content = $('#content');
 
+// --- Theme ---
+// Three states: 'system' (follow prefers-color-scheme — the CSS does this on
+// its own, no data-theme attribute), 'light' and 'dark' (explicit override via
+// data-theme on <html>, which the stylesheet's token blocks key on). The choice
+// is a per-browser convenience, so localStorage is the right home; every access
+// is wrapped because storage may be unavailable (private window, blocked site
+// data) and the page must still render with the system theme.
+const THEMES = ['system', 'light', 'dark'];
+function storedTheme() {
+  try { const v = localStorage.getItem('theme'); return THEMES.includes(v) ? v : 'system'; } catch (_) { return 'system'; }
+}
+function applyTheme(mode) {
+  if (!THEMES.includes(mode)) mode = 'system';
+  const root = document.documentElement;
+  if (mode === 'system') root.removeAttribute('data-theme'); else root.setAttribute('data-theme', mode);
+  try { if (mode === 'system') localStorage.removeItem('theme'); else localStorage.setItem('theme', mode); } catch (_) { /* storage unavailable */ }
+  const picker = $('#themePicker');
+  if (picker && picker.value !== mode) picker.value = mode;
+}
+applyTheme(storedTheme());
+
 // animateCounter tweens an element's text from its currently displayed
 // number to `target` over ~600 ms using easeOutQuad. Reads the prior
 // value from data-value on the element so consecutive renders animate
@@ -147,9 +168,11 @@ function applyStaticTranslations() {
   $$('[data-i18n-aria-label]').forEach(el => {
     el.setAttribute('aria-label', trText(el.dataset.i18nAriaLabel));
   });
-  // Refresh the language picker label.
+  // Refresh the language picker label and the theme picker's selection.
   const picker = $('#langPicker');
   if (picker) picker.value = currentLang;
+  const themePicker = $('#themePicker');
+  if (themePicker) themePicker.value = storedTheme();
 }
 
 // --- API helpers ---
@@ -396,6 +419,7 @@ document.addEventListener('keydown', e => {
   el.click();
 });
 registerAction('close-modal', () => closeModal());
+registerAction('set-theme', el => applyTheme(el.value));
 registerAction('set-sort', (el, e, list) => setSort(list, el.value));
 registerAction('flip-sort', (el, e, list) => flipSortDir(list));
 registerAction('sort', (el, e, list, col) => toggleSort(list, col));

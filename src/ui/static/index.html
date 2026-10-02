@@ -42,7 +42,14 @@
     </ul>
     <div class="nav-footer">
       <div class="lang-picker-row">
-        <select id="langPicker" class="lang-picker" aria-label="Language"></select>
+        <select id="langPicker" class="lang-picker" aria-label="Language" data-i18n-aria-label="common.language"></select>
+      </div>
+      <div class="lang-picker-row">
+        <select id="themePicker" class="lang-picker" data-change="set-theme" aria-label="Theme" data-i18n-aria-label="theme.label">
+          <option value="system" data-i18n="theme.system">System</option>
+          <option value="light" data-i18n="theme.light">Light</option>
+          <option value="dark" data-i18n="theme.dark">Dark</option>
+        </select>
       </div>
       <div class="connection-status" id="connectionStatus" role="status" aria-live="polite">
         <span class="status-dot" data-state="connecting" aria-hidden="true"></span>
@@ -72,7 +79,7 @@
 
 <script src="/static/js/core.js"></script>
 <script src="/static/js/charts.js"></script>
-<script src="/static/js/pages.js"></script>
-<script src="/static/js/app.js"></script>
+<script type="module" src="/static/js/pages.js"></script>
+<script type="module" src="/static/js/app.js"></script>
 </body>
 </html>

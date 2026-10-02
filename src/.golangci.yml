@@ -3,13 +3,34 @@ version: "2"
 linters:
   default: none
   enable:
+    - bodyclose
     - errcheck
+    - errorlint
+    - gocognit
     - gosec
     - govet
     - ineffassign
+    - misspell
+    - noctx
+    - prealloc
     - staticcheck
+    - unconvert
     - unused
   settings:
+    # gocognit over funlen: a long but flat table-driven function is fine, a
+    # short one with deeply nested branching is what hides bugs. 40 is well
+    # above the tool's default (30) so only the genuinely tangled functions
+    # surface — the ones a reviewer cannot hold in their head.
+    gocognit:
+      min-complexity: 40
+    errorlint:
+      # errorf: false keeps the existing fmt.Errorf("%v") sites that
+      # deliberately break the chain (sanitised DB-driver errors) legal;
+      # comparison/asserts still flag `err == X` and `err.(T)`.
+      errorf: false
+    # No locale: the codebase (and CLAUDE.md) consistently use British
+    # spelling, so misspell only reports unambiguous typos.
+    misspell: {}
     gosec:
       excludes:
         # G101: hardcoded credentials — false positives on test fixtures and

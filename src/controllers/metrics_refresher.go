@@ -392,51 +392,8 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, bs *v1alpha1.Backu
 	}
 	r.reconcileDestinations(src.TargetName, curDests)
 
-	// We track two independent "best" metas across destinations:
-	//   - newest:    dictates last_run_status / last_run_anomalies / size_change_ratio
-	//                even if it represents a failed run
-	//   - success:   dictates dump_size, table_count, last_success_timestamp —
-	//                fields that only make sense when a real artifact exists
-	//
-	// Pure in-memory aggregation over this tick's destination listings — the
-	// storage reads already happened once per destination in listDestinations.
-	var (
-		newest, success     *meta.MetaFile
-		newestTS, successTS time.Time
-		runs                = make(map[string]destRun, len(allowed))
-	)
-	for _, d := range allowed {
-		m, ts, outcome, perr := listings[d.Name].lookup(src.TargetName)
-		probes.record(d.Name, outcome, perr)
-		switch outcome {
-		case metaError:
-			// Storage unreachable / unreadable (offline host, rotated
-			// credentials, corrupt payload). Raise the gauge so
-			// BackupDestinationFailing can fire — this is the failure mode
-			// the alert is documented to catch. Pool.Get succeeding only
-			// builds the client; the connect/auth happens in the listing.
-			metrics.SetDestinationFailed(src.TargetName, d.Name, true)
-			continue
-		case metaEmpty:
-			// Reachable but nothing uploaded yet (legitimate first run) —
-			// explicitly not failed, and no run data to fold in.
-			metrics.SetDestinationFailed(src.TargetName, d.Name, false)
-			continue
-		}
-		metrics.SetDestinationFailed(src.TargetName, d.Name, false)
-		if !m.IsFailure() {
-			metrics.SetLastSuccess(src.TargetName, d.Name, ts)
-		}
-		runs[d.Name] = destRun{ts: ts, m: m}
-		if newest == nil || ts.After(newestTS) {
-			newest = m
-			newestTS = ts
-		}
-		if !m.IsFailure() && (success == nil || ts.After(successTS)) {
-			success = m
-			successTS = ts
-		}
-	}
+	agg := r.aggregateListings(src, allowed, listings, probes)
+	newest, success, newestTS, successTS, runs := agg.newest, agg.success, agg.newestTS, agg.successTS, agg.runs
 	if ctx.Err() != nil {
 		return // shutdown mid-tick: don't write metrics/status from a partial view
 	}
@@ -539,6 +496,52 @@ func (r *MetricsRefresher) refreshSource(ctx context.Context, bs *v1alpha1.Backu
 			metrics.SetRestoreVerificationLastTimestamp(src.TargetName, rv.Mode, rv.CompletedAt)
 		}
 	}
+}
+
+// listingAggregate is the per-source pivot over this tick's destination
+// listings: newest run (any outcome) and newest successful run.
+type listingAggregate struct {
+	newest, success     *meta.MetaFile
+	newestTS, successTS time.Time
+	runs                map[string]destRun
+}
+
+// aggregateListings folds the per-destination lookups for one source into
+// the two pivots the gauges need, recording destination_failed /
+// last_success and the probe outcome on the way. Pure in-memory: the storage
+// reads already happened once per destination in listDestinations.
+func (r *MetricsRefresher) aggregateListings(src *secrets.Source, allowed []*secrets.Destination, listings map[string]*destListing, probes *destProbes) listingAggregate {
+	agg := listingAggregate{runs: make(map[string]destRun, len(allowed))}
+	for _, d := range allowed {
+		m, ts, outcome, perr := listings[d.Name].lookup(src.TargetName)
+		probes.record(d.Name, outcome, perr)
+		switch outcome {
+		case metaError:
+			// Storage unreachable / unreadable (offline host, rotated
+			// credentials, corrupt payload). Raise the gauge so
+			// BackupDestinationFailing can fire — this is the failure mode
+			// the alert is documented to catch.
+			metrics.SetDestinationFailed(src.TargetName, d.Name, true)
+			continue
+		case metaEmpty:
+			// Reachable but nothing uploaded yet (legitimate first run) —
+			// explicitly not failed, and no run data to fold in.
+			metrics.SetDestinationFailed(src.TargetName, d.Name, false)
+			continue
+		}
+		metrics.SetDestinationFailed(src.TargetName, d.Name, false)
+		if !m.IsFailure() {
+			metrics.SetLastSuccess(src.TargetName, d.Name, ts)
+		}
+		agg.runs[d.Name] = destRun{ts: ts, m: m}
+		if agg.newest == nil || ts.After(agg.newestTS) {
+			agg.newest, agg.newestTS = m, ts
+		}
+		if !m.IsFailure() && (agg.success == nil || ts.After(agg.successTS)) {
+			agg.success, agg.successTS = m, ts
+		}
+	}
+	return agg
 }
 
 // metaOutcome distinguishes the three states a meta lookup can end in, which

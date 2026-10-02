@@ -57,100 +57,19 @@ func BuildVerification(
 	hasDumpCounts := len(normalizedDumpCounts) > 0
 
 	for _, name := range allTables {
-		tv := TableVerification{Name: name}
-
-		pre, hasPre := preIndex[name]
-		if hasPre {
-			tv.PreDumpRows = pre
-		}
-
-		post, hasPost := postIndex[name]
-		if hasPost {
-			tv.PostDumpRows = post
-		}
-
-		dumpRows, hasDump := normalizedDumpCounts[name]
-		if hasDump {
-			tv.DumpRows = dumpRows
-		}
-
-		// Determine verdict
-		switch {
-		case hasDump && hasPre:
-			// Compare dump rows to pre-dump rows
-			if dumpRows == pre {
-				tv.Verdict = VerificationMatch
-				matchCount++
-			} else if dumpRows >= pre {
-				// More rows in dump than pre-dump: concurrent inserts during dump — OK
-				tv.Verdict = VerificationMatch
-				tv.Detail = fmt.Sprintf("+%d rows during dump (concurrent inserts)", dumpRows-pre)
-				matchCount++
-			} else {
-				// Fewer rows in dump: might indicate concurrent deletes or truncation
-				diff := pre - dumpRows
-				ratio := float64(dumpRows) / float64(pre)
-				if ratio >= 0.99 {
-					// Within 1% — close enough for estimated counts
-					tv.Verdict = VerificationMatch
-					tv.Detail = fmt.Sprintf("-%d rows (within estimation tolerance)", diff)
-					matchCount++
-				} else {
-					tv.Verdict = VerificationMismatch
-					tv.Detail = fmt.Sprintf("dump has %d rows vs pre-dump %d (%.1f%%)", dumpRows, pre, ratio*100)
-					mismatchCount++
-				}
-			}
-		case !hasDump && hasPre && hasPost:
-			// No dump counting (e.g. mongo) — compare pre/post
-			if post >= pre {
-				tv.Verdict = VerificationMatch
-				matchCount++
-			} else {
-				diff := pre - post
-				ratio := float64(post) / float64(pre)
-				if ratio >= 0.95 {
-					tv.Verdict = VerificationMatch
-					tv.Detail = fmt.Sprintf("-%d rows between pre/post (within tolerance)", diff)
-					matchCount++
-				} else {
-					tv.Verdict = VerificationMismatch
-					tv.Detail = fmt.Sprintf("post-dump %d vs pre-dump %d (%.1f%%)", post, pre, ratio*100)
-					mismatchCount++
-				}
-			}
-		case hasPre && !hasPost && !hasDump:
-			tv.Verdict = VerificationSkipped
-			tv.Detail = "no post-dump stats or dump row count"
-			warnCount++
+		tv, class := verifyTable(name, preIndex, postIndex, normalizedDumpCounts)
+		switch class {
+		case verificationMatchClass:
+			matchCount++
+		case verificationMismatchClass:
+			mismatchCount++
 		default:
-			tv.Verdict = VerificationSkipped
 			warnCount++
 		}
-
 		v.Tables = append(v.Tables, tv)
 	}
 
-	// Overall verdict
-	totalTables := matchCount + mismatchCount + warnCount
-	switch {
-	case mismatchCount > 0:
-		v.Verdict = VerificationMismatch
-		v.Summary = fmt.Sprintf("%d/%d tables verified, %d mismatches detected", matchCount, totalTables, mismatchCount)
-	case warnCount > 0 && matchCount > 0:
-		v.Verdict = VerificationPartial
-		v.Summary = fmt.Sprintf("%d/%d tables verified, %d skipped", matchCount, totalTables, warnCount)
-	case matchCount > 0:
-		v.Verdict = VerificationMatch
-		if hasDumpCounts {
-			v.Summary = fmt.Sprintf("all %d tables verified — dump row counts match pre-dump stats", matchCount)
-		} else {
-			v.Summary = fmt.Sprintf("all %d tables verified — pre/post row counts consistent", matchCount)
-		}
-	default:
-		v.Verdict = VerificationSkipped
-		v.Summary = "insufficient data for verification"
-	}
+	v.Verdict, v.Summary = overallVerdict(matchCount, mismatchCount, warnCount, hasDumpCounts)
 
 	// "Looks empty" detection has two paths:
 	//   - SQL (postgres/mysql/mariadb): the row counter saw the dump stream.
@@ -341,4 +260,92 @@ func normalizeDumpCounts(dumpCounts map[string]int64, preStats, postStats *dumpe
 		}
 	}
 	return out
+}
+
+// verdictClass buckets a per-table verdict for the overall counters.
+type verdictClass int
+
+const (
+	verificationWarnClass verdictClass = iota
+	verificationMatchClass
+	verificationMismatchClass
+)
+
+// verifyTable derives one table's verdict from whichever counts exist:
+// dump-stream rows vs pre-dump stats (SQL engines), or pre/post stats when
+// no stream count exists (mongo/redis). Tolerances: 1 % for stream counts
+// (pre-stats are estimates), 5 % for pre/post drift during the dump.
+func verifyTable(name string, preIndex, postIndex map[string]int64, dumpCounts map[string]int64) (TableVerification, verdictClass) {
+	tv := TableVerification{Name: name}
+	pre, hasPre := preIndex[name]
+	if hasPre {
+		tv.PreDumpRows = pre
+	}
+	post, hasPost := postIndex[name]
+	if hasPost {
+		tv.PostDumpRows = post
+	}
+	dumpRows, hasDump := dumpCounts[name]
+	if hasDump {
+		tv.DumpRows = dumpRows
+	}
+
+	switch {
+	case hasDump && hasPre:
+		return compareRows(tv, dumpRows, pre, 0.99, "dump has %d rows vs pre-dump %d (%.1f%%)", "-%d rows (within estimation tolerance)", "+%d rows during dump (concurrent inserts)")
+	case !hasDump && hasPre && hasPost:
+		return compareRows(tv, post, pre, 0.95, "post-dump %d vs pre-dump %d (%.1f%%)", "-%d rows between pre/post (within tolerance)", "")
+	case hasPre && !hasPost && !hasDump:
+		tv.Verdict = VerificationSkipped
+		tv.Detail = "no post-dump stats or dump row count"
+		return tv, verificationWarnClass
+	default:
+		tv.Verdict = VerificationSkipped
+		return tv, verificationWarnClass
+	}
+}
+
+// compareRows compares an observed row count against the pre-dump count.
+// More rows than pre is always a match (concurrent inserts); fewer rows
+// within the tolerance ratio is a match with a note; below it a mismatch.
+func compareRows(tv TableVerification, got, pre int64, tolerance float64, mismatchFmt, withinFmt, moreFmt string) (TableVerification, verdictClass) {
+	switch {
+	case got == pre:
+		tv.Verdict = VerificationMatch
+	case got > pre:
+		tv.Verdict = VerificationMatch
+		if moreFmt != "" {
+			tv.Detail = fmt.Sprintf(moreFmt, got-pre)
+		}
+	default:
+		diff := pre - got
+		ratio := float64(got) / float64(pre)
+		if ratio >= tolerance {
+			tv.Verdict = VerificationMatch
+			tv.Detail = fmt.Sprintf(withinFmt, diff)
+		} else {
+			tv.Verdict = VerificationMismatch
+			tv.Detail = fmt.Sprintf(mismatchFmt, got, pre, ratio*100)
+			return tv, verificationMismatchClass
+		}
+	}
+	return tv, verificationMatchClass
+}
+
+// overallVerdict folds the per-table counters into the run verdict.
+func overallVerdict(matchCount, mismatchCount, warnCount int, hasDumpCounts bool) (string, string) {
+	totalTables := matchCount + mismatchCount + warnCount
+	switch {
+	case mismatchCount > 0:
+		return VerificationMismatch, fmt.Sprintf("%d/%d tables verified, %d mismatches detected", matchCount, totalTables, mismatchCount)
+	case warnCount > 0 && matchCount > 0:
+		return VerificationPartial, fmt.Sprintf("%d/%d tables verified, %d skipped", matchCount, totalTables, warnCount)
+	case matchCount > 0:
+		if hasDumpCounts {
+			return VerificationMatch, fmt.Sprintf("all %d tables verified — dump row counts match pre-dump stats", matchCount)
+		}
+		return VerificationMatch, fmt.Sprintf("all %d tables verified — pre/post row counts consistent", matchCount)
+	default:
+		return VerificationSkipped, "insufficient data for verification"
+	}
 }

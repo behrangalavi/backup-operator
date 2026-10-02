@@ -1,6 +1,10 @@
-// app.js — Entry point: SSE, router, init
-// Modules loaded before this file: js/core.js, js/charts.js, js/pages.js
-'use strict';
+// app.js — Entry point (ES module): SSE wiring + init. The hash router and
+// page registry live in pages/router.js; cross-page state in pages/state.js.
+// core.js and charts.js are classic scripts loaded before this module and
+// provide the shared helpers via the global scope.
+import { state } from './pages/state.js';
+import { currentPage, renderPage } from './pages/router.js';
+import { refreshFleetSummary, refreshAlertsPill } from './pages.js';
 
 // --- SSE ---
 // Maps each server-sent event type to the pages whose visible state
@@ -59,7 +63,7 @@ function scheduleSSERender() {
 // invalidate, the fast Promise.all picks up fresh state automatically.
 function handleSSEEvent(eventType) {
   if (eventType === 'meta_changed') {
-    _fleetSummary.lastFetch = 0;
+    state.fleetSummary.lastFetch = 0;
     refreshFleetSummary();
   }
   // A new backup landing (meta_changed) or a manual trigger
@@ -67,7 +71,7 @@ function handleSSEEvent(eventType) {
   // Invalidate the run-history cache so the next render re-probes instead
   // of serving the pre-run list. The render itself is scheduled below.
   if (eventType === 'meta_changed' || eventType === 'backup_triggered') {
-    if (typeof _targetRuns !== 'undefined') _targetRuns.lastFetch = 0;
+    state.targetRuns.lastFetch = 0;
   }
   const pages = sseEventPages[eventType] || [];
   if (pages.indexOf(currentPage()) !== -1) {
@@ -129,74 +133,7 @@ function connectSSE() {
   };
 }
 
-// --- Router ---
-function currentPage() {
-  const hash = location.hash.slice(2) || 'dashboard';
-  return hash.split('/')[0] || 'dashboard';
-}
-function currentParam() {
-  const parts = (location.hash.slice(2) || '').split('/');
-  if (parts.length <= 1) return null;
-  const raw = parts.slice(1).join('/');
-  // Links are built with targetHref() (encodeURIComponent); decode here so a
-  // target named "my db%" or "a.b" round-trips. Malformed escapes fall back
-  // to the raw value rather than throwing inside the router.
-  try { return decodeURIComponent(raw); } catch (_) { return raw; }
-}
-
-// _renderGen is a monotonic counter bumped ONLY on user-initiated
-// navigation (renderPage with loading=true). Each async render function
-// captures the current gen at entry; before writing content.innerHTML
-// it checks isStaleRender(gen). When the user clicks View 1 → starts
-// loading → clicks View 2, View 1's stale fetch resolves later and
-// would overwrite View 2's content, producing the "page flickers back
-// and forth" symptom. Now View 1's late write is dropped because its
-// gen no longer matches. Background SSE re-renders (loading=false) do
-// NOT bump the gen — so rapid SSE events can never starve a user-
-// initiated render.
-let _renderGen = 0;
-function newRenderGen() { return ++_renderGen; }
-function isStaleRender(gen) { return gen !== _renderGen; }
-
 window.addEventListener('hashchange', () => renderPage(currentPage()));
-
-function renderPage(page, loading = true) {
-  // Bump gen ONLY on user-initiated navigation (loading=true) — this
-  // ensures a user click always completes its render. Background SSE
-  // re-renders (loading=false) reuse the current gen so they cannot
-  // invalidate a user-initiated render that is still awaiting data.
-  // Without this guard, rapid SSE events (e.g. job_state_change during
-  // an active backup) each bumped the gen and dropped the previous
-  // render — including the user's — leaving the page stuck on the
-  // loading spinner until events calmed down.
-  if (loading) newRenderGen();
-  $$('.nav-link').forEach(a => {
-    a.classList.toggle('active', a.dataset.page === page);
-  });
-  // Stop the per-second progress-bar tick whenever we leave a page that
-  // uses it (Jobs + Target detail). Both renderers re-arm as needed.
-  if (page !== 'jobs' && page !== 'target' && jobProgressTimer) {
-    clearInterval(jobProgressTimer);
-    jobProgressTimer = null;
-  }
-  switch(page) {
-    case 'dashboard': renderDashboard(loading); break;
-    case 'sources': renderSources(loading); break;
-    case 'destinations': renderDestinations(loading); break;
-    case 'jobs': renderJobs(loading); break;
-    case 'target': renderTargetDetail(currentParam(), loading); break;
-    case 'alerts': renderAlerts(loading); break;
-    case 'audit': renderAudit(loading); break;
-    case 'age-keys': renderAgeKeys(loading); break;
-    case 'settings': renderSettings(loading); break;
-    default: renderDashboard(loading);
-  }
-}
-
-
-// Cross-file bindings used by core.js (setLang, sort handlers)
-window._renderPage = renderPage;
-window._currentPage = currentPage;
 
 // --- Init ---
 (async function init() {

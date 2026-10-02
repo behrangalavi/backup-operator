@@ -11,7 +11,7 @@ function chartOrLoading(data, inFlight, renderFn) {
   return renderFn();
 }
 function refreshingDot(inFlight, hasData) {
-  return (inFlight && hasData) ? '<span class="chart-refreshing" title="refreshing in background"></span>' : '';
+  return (inFlight && hasData) ? '<span class="chart-refreshing" title="' + escAttr(trText('tooltip.chart.refreshing')) + '"></span>' : '';
 }
 
 // renderTargetSparkline is in pages.js (needs _fleetSummary).
@@ -334,8 +334,8 @@ function isoDate(d) {
 // what's really on disk — counting every retained run, not just the
 // latest. Hovering shows file count and byte total per slice.
 const STORAGE_DONUT_COLORS = [
-  '#5b6eef', '#10b981', '#f59e0b', '#ef4444',
-  '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16',
+  'var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)',
+  'var(--chart-5)', 'var(--chart-6)', 'var(--chart-7)', 'var(--chart-8)',
 ];
 function renderStorageDonut(stats) {
   const entries = (stats || []).filter(s => s && s.totalSizeBytes > 0)
@@ -369,7 +369,7 @@ function renderStorageDonut(stats) {
   });
   return `<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
     <svg viewBox="0 0 180 180" class="chart-svg" style="max-width:180px;flex:0 0 180px" role="img" aria-label="Storage by destination">
-      ${segs.map(s => `<path d="${s.path}" fill="${s.color}" stroke="var(--bg)" stroke-width="1"><title>${escAttr(s.name)} — ${humanBytes(s.bytes)} (${s.pct}%), ${s.files} files</title></path>`).join('')}
+      ${segs.map(s => `<path d="${s.path}" style="fill:${s.color}" stroke="var(--bg)" stroke-width="1"><title>${escAttr(s.name)} — ${humanBytes(s.bytes)} (${s.pct}%), ${s.files} files</title></path>`).join('')}
       <text x="${cx}" y="${cy - 4}" text-anchor="middle" class="chart-axis-text" style="font-size:11px;fill:var(--text-muted)">${tr('chart.storageDonut.total')}</text>
       <text x="${cx}" y="${cy + 12}" text-anchor="middle" style="font-size:13px;font-weight:600;fill:var(--text)">${humanBytes(total)}</text>
     </svg>
@@ -421,9 +421,9 @@ function renderDurationDistribution(stats) {
       <a href="${escAttr(targetHref(r.target))}" style="cursor:pointer">
         <text x="${(padL - 8).toFixed(1)}" y="${(cy + 4).toFixed(1)}" text-anchor="end" class="chart-axis-text" style="font-size:11px;fill:var(--accent)">${escHTML(r.target)}</text>
       </a>
-      <line x1="${x1.toFixed(1)}" y1="${cy.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${cy.toFixed(1)}" stroke="var(--accent, #5b6eef)" stroke-width="3" opacity="0.4" stroke-linecap="round"><title>${escAttr(r.target + ' — min ' + fmtDurationShort(r.min) + ', max ' + fmtDurationShort(r.max) + ', n=' + r.count)}</title></line>
-      <line x1="${xMed.toFixed(1)}" y1="${(cy - 7).toFixed(1)}" x2="${xMed.toFixed(1)}" y2="${(cy + 7).toFixed(1)}" stroke="var(--accent, #5b6eef)" stroke-width="2.5"><title>median ${escAttr(fmtDurationShort(r.median))}</title></line>
-      <circle cx="${xP95.toFixed(1)}" cy="${cy.toFixed(1)}" r="3.5" fill="var(--warning, #f59e0b)" stroke="var(--bg)" stroke-width="1"><title>p95 ${escAttr(fmtDurationShort(r.p95))}</title></circle>
+      <line x1="${x1.toFixed(1)}" y1="${cy.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${cy.toFixed(1)}" stroke="var(--accent)" stroke-width="3" opacity="0.4" stroke-linecap="round"><title>${escAttr(r.target + ' — min ' + fmtDurationShort(r.min) + ', max ' + fmtDurationShort(r.max) + ', n=' + r.count)}</title></line>
+      <line x1="${xMed.toFixed(1)}" y1="${(cy - 7).toFixed(1)}" x2="${xMed.toFixed(1)}" y2="${(cy + 7).toFixed(1)}" stroke="var(--accent)" stroke-width="2.5"><title>median ${escAttr(fmtDurationShort(r.median))}</title></line>
+      <circle cx="${xP95.toFixed(1)}" cy="${cy.toFixed(1)}" r="3.5" fill="var(--warning)" stroke="var(--bg)" stroke-width="1"><title>p95 ${escAttr(fmtDurationShort(r.p95))}</title></circle>
       <text x="${(W - padR + 6).toFixed(1)}" y="${(cy + 4).toFixed(1)}" class="chart-axis-text" style="font-size:11px">n=${r.count}</text>
     </g>`;
   }).join('');
@@ -481,7 +481,7 @@ function renderVerificationTrend(daily) {
     const total = d.passed + d.failed;
     if (total === 0) return '';
     const pct = (d.passed / total) * 100;
-    const color = pct === 100 ? 'var(--success, #10b981)' : (pct >= 80 ? 'var(--warning, #f59e0b)' : 'var(--danger, #ef4444)');
+    const color = pct === 100 ? 'var(--success)' : (pct >= 80 ? 'var(--warning)' : 'var(--danger)');
     return `<circle cx="${xs[i].toFixed(1)}" cy="${yPct(pct).toFixed(1)}" r="3.5" fill="${color}" stroke="var(--bg)" stroke-width="1"><title>${escAttr(d.day + ': ' + pct.toFixed(1) + '% (' + d.passed + '/' + total + ')')}</title></circle>`;
   }).join('');
 
@@ -496,7 +496,7 @@ function renderVerificationTrend(daily) {
   return `<svg viewBox="0 0 ${W} ${H}" class="chart-svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Restore-verification pass rate trend">
     ${yTicks.map(t => `<line x1="${ML}" y1="${t.y.toFixed(1)}" x2="${(W - MR).toFixed(1)}" y2="${t.y.toFixed(1)}" class="chart-grid"/><text x="${(ML - 6).toFixed(1)}" y="${(t.y + 4).toFixed(1)}" text-anchor="end" class="chart-axis-text" style="font-size:10px">${escHTML(t.label)}</text>`).join('')}
     ${bars}
-    <path d="${path}" fill="none" stroke="var(--accent, #5b6eef)" stroke-width="2"/>
+    <path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2"/>
     ${dots}
     ${xTicks.map(t => `<text x="${t.x.toFixed(1)}" y="${(H - MB + 14).toFixed(1)}" text-anchor="middle" class="chart-axis-text" style="font-size:10px">${escHTML(t.label)}</text>`).join('')}
     <text x="${(W - MR + 6).toFixed(1)}" y="${(MT + PH - volH(volMax) - 4).toFixed(1)}" class="chart-axis-text" style="font-size:9px;opacity:0.6">${escHTML(tr('chart.verifyTrend.volume', {n: volMax}))}</text>
@@ -529,10 +529,10 @@ function hashHue(s) {
   return ((h % 360) + 360) % 360;
 }
 function colorForTarget(name) {
-  // 65% saturation + 58% lightness sits comfortably on the dark
-  // background without bleaching out, and the HSL spacing means
-  // adjacent stacked layers always look distinct from each other.
-  return `hsl(${hashHue(name)}, 65%, 58%)`;
+  // 65% saturation with a theme-dependent lightness (--chart-fg-lightness:
+  // 58% on dark, 42% on light) sits comfortably on either background, and
+  // the HSL spacing keeps adjacent stacked layers distinct.
+  return `hsl(${hashHue(name)}, 65%, var(--chart-fg-lightness, 58%))`;
 }
 
 function renderStorageGrowth(points) {
@@ -625,9 +625,9 @@ function renderStorageGrowth(points) {
 // the colour. Hover for kind/subject/detail; click on the timestamp
 // jumps to the target detail page where the full Report is rendered.
 const ANOMALY_SEVERITY_COLOR = {
-  critical: 'var(--danger, #ef4444)',
-  warning:  'var(--warning, #f59e0b)',
-  info:     'var(--accent, #5b6eef)',
+  critical: 'var(--danger)',
+  warning:  'var(--warning)',
+  info:     'var(--accent)',
 };
 function renderAnomalyStream(items) {
   const list = items || [];
@@ -691,7 +691,7 @@ function renderAnomalyStream(items) {
   return `<div>
     <svg viewBox="0 0 ${W} ${H}" class="chart-svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Analyzer anomaly timeline">
       ${xTicks.map(t => `<text x="${t.x.toFixed(1)}" y="${(MT - 4).toFixed(1)}" text-anchor="middle" class="chart-axis-text" style="font-size:10px">${escHTML(t.label)}</text>`).join('')}
-      <line x1="${todayX.toFixed(1)}" y1="${MT}" x2="${todayX.toFixed(1)}" y2="${(H - MB).toFixed(1)}" stroke="var(--accent, #5b6eef)" stroke-width="1" stroke-dasharray="2,3" opacity="0.5"/>
+      <line x1="${todayX.toFixed(1)}" y1="${MT}" x2="${todayX.toFixed(1)}" y2="${(H - MB).toFixed(1)}" stroke="var(--accent)" stroke-width="1" stroke-dasharray="2,3" opacity="0.5"/>
       ${rowsSvg}
     </svg>
     ${truncatedCount > 0 ? `<div style="padding:4px 8px;color:var(--text-muted);font-size:11px">${tr('chart.anomalyStream.moreTargets', {count: truncatedCount})}</div>` : ''}
@@ -731,10 +731,10 @@ function renderFleetHeatmap(rows) {
   const H = padTop + rows.length * (cellSize + cellGap) - cellGap + padBottom;
 
   const statusFill = {
-    ok:     'var(--success, #10b981)',
-    failed: 'var(--danger, #ef4444)',
-    mixed:  'var(--warning, #f59e0b)',
-    none:   'var(--bg-input, #2a2a2a)',
+    ok:     'var(--success)',
+    failed: 'var(--danger)',
+    mixed:  'var(--warning)',
+    none:   'var(--bg-input)',
   };
 
   // Truncate over-long target names so they fit padL without

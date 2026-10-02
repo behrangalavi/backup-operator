@@ -419,14 +419,33 @@ func sourceInfoFrom(bs *v1alpha1.BackupSource, hasPassword bool) sourceInfo {
 	return info
 }
 
-// applySourceRequest copies the request into the spec. On create every
-// non-empty field is set; on update, empty optional fields clear the
-// corresponding spec field (the form always submits the whole body, so an
-// empty input means the user cleared it), while identity fields (host,
-// type, database, username, schedule) are only replaced when non-empty.
-// Returns a user-facing validation message, or "".
 func applySourceRequest(spec *v1alpha1.BackupSourceSpec, req sourceRequest, update bool) string {
-	db := &spec.Database
+	for _, step := range []func() string{
+		func() string { return applyDatabaseRequest(&spec.Database, req, update) },
+		func() string { return applyScheduleRequest(spec, req, update) },
+		func() string { return applyRetentionRequest(spec, req, update) },
+		func() string { return applyAnalyzerRequest(spec, req, update) },
+		func() string { return applyVerificationRequest(spec, req) },
+	} {
+		if msg := step(); msg != "" {
+			return msg
+		}
+	}
+	if len(req.Extra) > 0 {
+		if spec.Database.Extra == nil {
+			spec.Database.Extra = map[string]string{}
+		}
+		for k, v := range req.Extra {
+			spec.Database.Extra[k] = v
+		}
+	}
+	return ""
+}
+
+// applyDatabaseRequest sets the connection identity fields; empty values are
+// preserved on update (host/type/database/username), except the port which
+// the form always submits.
+func applyDatabaseRequest(db *v1alpha1.DatabaseSpec, req sourceRequest, update bool) string {
 	if req.DBType != "" {
 		db.Type = req.DBType
 	}
@@ -439,38 +458,49 @@ func applySourceRequest(spec *v1alpha1.BackupSourceSpec, req sourceRequest, upda
 	if req.Username != "" {
 		db.Username = req.Username
 	}
-	if req.Port != "" {
+	switch {
+	case req.Port != "":
 		if msg := validatePort(req.Port); msg != "" {
 			return msg
 		}
 		p, _ := strconv.ParseInt(strings.TrimSpace(req.Port), 10, 32)
 		db.Port = ptrInt32(int32(p))
-	} else if update {
+	case update:
 		db.Port = nil
 	}
+	return ""
+}
+
+// applyScheduleRequest sets schedule, jitter and the destination allow-list.
+func applyScheduleRequest(spec *v1alpha1.BackupSourceSpec, req sourceRequest, update bool) string {
 	if req.Schedule != "" {
 		if msg := validateCronSchedule(req.Schedule); msg != "" {
 			return msg
 		}
 		spec.Schedule = req.Schedule
 	}
-	if req.JitterMinutes != "" {
+	switch {
+	case req.JitterMinutes != "":
 		n, err := strconv.ParseInt(strings.TrimSpace(req.JitterMinutes), 10, 32)
 		if err != nil || n < 0 || n > 60 {
 			return "jitterMinutes must be an integer between 0 and 60"
 		}
 		spec.JitterMinutes = ptrInt32(int32(n))
-	} else if update {
+	case update:
 		spec.JitterMinutes = nil
 	}
-
 	spec.Destinations = nil
 	for _, d := range strings.Split(req.Destinations, ",") {
 		if d = strings.TrimSpace(d); d != "" {
 			spec.Destinations = append(spec.Destinations, d)
 		}
 	}
+	return ""
+}
 
+// applyRetentionRequest sets retention days / minKeep and the compression
+// algorithm; an empty retention clears the block on update.
+func applyRetentionRequest(spec *v1alpha1.BackupSourceSpec, req sourceRequest, update bool) string {
 	ret := &v1alpha1.RetentionSpec{}
 	if req.RetentionDays != "" {
 		n, err := strconv.ParseInt(strings.TrimSpace(req.RetentionDays), 10, 32)
@@ -486,23 +516,28 @@ func applySourceRequest(spec *v1alpha1.BackupSourceSpec, req sourceRequest, upda
 		}
 		ret.MinKeep = ptrInt32(int32(n))
 	}
-	if ret.Days != nil || ret.MinKeep != nil {
+	switch {
+	case ret.Days != nil || ret.MinKeep != nil:
 		spec.Retention = ret
-	} else if update {
+	case update:
 		spec.Retention = nil
 	}
-
-	switch strings.ToLower(strings.TrimSpace(req.Compression)) {
+	switch c := strings.ToLower(strings.TrimSpace(req.Compression)); c {
 	case "":
 		if update {
 			spec.Compression = ""
 		}
 	case v1alpha1.CompressionGzip, v1alpha1.CompressionZstd:
-		spec.Compression = strings.ToLower(strings.TrimSpace(req.Compression))
+		spec.Compression = c
 	default:
 		return "compression must be gzip or zstd"
 	}
+	return ""
+}
 
+// applyAnalyzerRequest sets the analyzer toggles and converts the form's
+// 0..1 ratios to whole percents; an all-default block is dropped.
+func applyAnalyzerRequest(spec *v1alpha1.BackupSourceSpec, req sourceRequest, update bool) string {
 	an := &v1alpha1.AnalyzerSpec{}
 	if spec.Analyzer != nil && !update {
 		an = spec.Analyzer
@@ -529,13 +564,18 @@ func applySourceRequest(spec *v1alpha1.BackupSourceSpec, req sourceRequest, upda
 	} else {
 		spec.Analyzer = nil
 	}
+	return ""
+}
 
+// applyVerificationRequest sets the restore-verification block; an all-off
+// block is dropped so the spec stays minimal.
+func applyVerificationRequest(spec *v1alpha1.BackupSourceSpec, req sourceRequest) string {
 	rv := &v1alpha1.RestoreVerificationSpec{}
-	switch strings.ToLower(strings.TrimSpace(req.RestoreVerificationMode)) {
+	switch m := strings.ToLower(strings.TrimSpace(req.RestoreVerificationMode)); m {
 	case "", v1alpha1.VerificationOff:
 		rv.Mode = v1alpha1.VerificationOff
 	case v1alpha1.VerificationStreamValidate, v1alpha1.VerificationSchemaOnly, v1alpha1.VerificationSample, v1alpha1.VerificationFull:
-		rv.Mode = strings.ToLower(strings.TrimSpace(req.RestoreVerificationMode))
+		rv.Mode = m
 	default:
 		return "restoreVerificationMode must be off, stream-validate, schema-only, sample, or full"
 	}
@@ -558,15 +598,6 @@ func applySourceRequest(spec *v1alpha1.BackupSourceSpec, req sourceRequest, upda
 		spec.RestoreVerification = rv
 	} else {
 		spec.RestoreVerification = nil
-	}
-
-	if len(req.Extra) > 0 {
-		if db.Extra == nil {
-			db.Extra = map[string]string{}
-		}
-		for k, v := range req.Extra {
-			db.Extra[k] = v
-		}
 	}
 	return ""
 }

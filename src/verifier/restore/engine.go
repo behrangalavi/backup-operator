@@ -4,9 +4,9 @@
 // runs smoke queries against the restored database.
 //
 // The restore engine knows three things about its DB type:
-//   1. How to spawn a fresh empty DB (image, env, port, ready-probe)
-//   2. How to restore the dump stream into that DB
-//   3. How to ask the DB "did the data land?" via smoke queries
+//  1. How to spawn a fresh empty DB (image, env, port, ready-probe)
+//  2. How to restore the dump stream into that DB
+//  3. How to ask the DB "did the data land?" via smoke queries
 //
 // These split nicely along an interface so the verifier-driver can be
 // engine-agnostic, and the per-engine details are testable in isolation.

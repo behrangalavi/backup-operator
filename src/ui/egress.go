@@ -1,10 +1,12 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
 	"strings"
+	"time"
 
 	"backup-operator/internal/secrets"
 )
@@ -97,12 +99,14 @@ func checkDestinationEgress(d *secrets.Destination) error {
 		}
 		return nil
 	}
-	ips, err := net.LookupIP(host)
+	lookupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupIPAddr(lookupCtx, host)
 	if err != nil {
 		return nil
 	}
-	for _, ip := range ips {
-		if isBlockedEgressIP(ip) {
+	for _, addr := range addrs {
+		if isBlockedEgressIP(addr.IP) {
 			return fmt.Errorf("destination host %q resolves to a blocked address range", host)
 		}
 	}

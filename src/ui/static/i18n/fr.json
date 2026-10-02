@@ -266,7 +266,8 @@
     "progressNormal": "{elapsed} / ~{est} — {remaining} restant (n={n})",
     "progressNoEstimate": "en cours depuis {elapsed}",
     "missingNameTitle": "Nom de cible manquant dans l’URL",
-    "missingNameBody": "Le hash était {hash} — attendu #/target/<nom>."
+    "missingNameBody": "Le hash était {hash} — attendu #/target/<nom>.",
+    "statsError": "Erreur de statistiques"
   },
   "form": {
     "source": {
@@ -772,5 +773,79 @@
     "timeout": "Délai dépassé — la destination est lente ou injoignable",
     "network": "Erreur réseau — vérifiez votre connexion",
     "generic": "Requête échouée"
+  },
+  "tooltip": {
+    "sources": {
+      "add": "Créer une nouvelle source de sauvegarde — ouvre un formulaire qui crée une BackupSource et un Secret d’identifiants",
+      "addFirst": "Créer votre première source de sauvegarde",
+      "paused": "Les exécutions planifiées sont en pause ; les déclenchements manuels fonctionnent toujours",
+      "run": "Lancer une sauvegarde manuelle maintenant — crée un Job ponctuel depuis le modèle du CronJob ; une pause ne s’applique pas aux lancements manuels",
+      "resume": "Reprendre les exécutions planifiées — le réconciliateur retire Spec.Suspend du CronJob en quelques secondes",
+      "pause": "Mettre en pause les exécutions planifiées — définit spec.suspended=true sur la BackupSource. Dumps et configuration sont conservés ; les lancements manuels fonctionnent toujours",
+      "edit": "Modifier la connexion et la planification de cette source",
+      "delete": "Supprimer cette BackupSource — le CronJob est retiré via OwnerReference ; les dumps existants restent dans le stockage",
+      "keep": "Conserver cette source — fermer sans supprimer",
+      "confirmDelete": "Supprimer définitivement la BackupSource. Le CronJob et le Secret d’identifiants géré par l’interface sont supprimés en cascade ; les dumps existants restent dans le stockage"
+    },
+    "destinations": {
+      "add": "Créer une nouvelle destination de stockage (SFTP, FTPS, S3, Azure ou GCS) pour les envois",
+      "addFirst": "Créer votre première destination de stockage",
+      "test": "Tester cette destination — envoie un petit objet de test, le relit puis le supprime, ce qui vérifie aussi les droits en écriture",
+      "edit": "Modifier la connexion et les identifiants de cette destination",
+      "delete": "Supprimer cette BackupDestination. Les dumps déjà stockés restent intacts",
+      "keep": "Conserver cette destination — fermer sans supprimer",
+      "confirmDelete": "Supprimer définitivement la BackupDestination. Les sources l’ignoreront à la prochaine exécution ; les dumps existants restent dans le stockage"
+    },
+    "form": {
+      "discard": "Abandonner les modifications et fermer cette boîte de dialogue",
+      "saveSource": "Enregistrer la BackupSource — l’opérateur applique les changements en quelques secondes",
+      "createSource": "Créer la BackupSource — l’opérateur génère un CronJob en quelques secondes",
+      "saveDestination": "Enregistrer la BackupDestination — l’opérateur prend en compte les changements à la prochaine exécution",
+      "createDestination": "Créer la BackupDestination — les sources peuvent la cibler via spec.destinations, ou l’utilisent à la prochaine exécution si elles n’ont pas de liste d’autorisation",
+      "missingDestination": "Cette destination figure dans la liste d’autorisation enregistrée, mais aucune BackupDestination de ce nom n’existe actuellement"
+    },
+    "alerts": {
+      "sourcePrometheus": "Depuis Prometheus — respecte la durée for: de la règle",
+      "sourceLocal": "Heuristique locale — se déclenche immédiatement, sans temporisation for:"
+    },
+    "audit": {
+      "refresh": "Recharger la liste des événements depuis Kubernetes"
+    },
+    "target": {
+      "backToDashboard": "Revenir au tableau de bord"
+    },
+    "runs": {
+      "viewMeta": "Afficher le fichier meta.json non chiffré (statistiques de tables, empreinte du schéma, SHA256) dans le navigateur",
+      "downloadMeta": "Télécharger le fichier meta.json non chiffré",
+      "downloadDump": "Télécharger le dump chiffré avec age. À déchiffrer localement avec backup-restore et votre clé privée hors ligne",
+      "pickDestination": "Cette exécution a été envoyée vers plusieurs destinations — choisissez-en une pour télécharger ou afficher",
+      "downloadDumpFrom": "Télécharger le dump chiffré depuis {dest}",
+      "viewMetaFrom": "Afficher le meta.json depuis {dest} dans le navigateur",
+      "downloadMetaFrom": "Télécharger le meta.json depuis {dest}",
+      "copyJson": "Copier l’intégralité du JSON formaté dans le presse-papiers",
+      "saveMeta": "Enregistrer ce meta.json dans un fichier",
+      "charsetChanged": "Jeu de caractères/collation modifié depuis l’exécution précédente",
+      "charsetDrift": "character_set ou collation diffère de l’exécution précédente — les caractères multi-octets peuvent être tronqués à la restauration",
+      "schemaChangedAt": "Empreinte du schéma modifiée pour la dernière fois le {at}. Un ancien schéma peut ne plus correspondre à l’application actuelle",
+      "statsError": "L’appel CollectStats avant le dump a échoué ; le vérificateur n’avait donc aucune référence de tables. Corrigez l’accès (droits BD, réseau) — le réglage de l’analyseur n’a aucun lien"
+    },
+    "settings": {
+      "reload": "Recharger les valeurs par défaut de l’opérateur",
+      "export": "Télécharger un extrait values.yaml reflétant les valeurs effectives — à intégrer dans votre chart Helm pour un flux GitOps"
+    },
+    "ageKeys": {
+      "remove": "Retirer cette clé publique. Les prochaines sauvegardes ne seront plus chiffrées pour elle. Le dernier destinataire ne peut pas être retiré",
+      "recipientInput": "Un destinataire age X25519 — commence par 'age1' suivi de caractères base32. À générer hors ligne avec age-keygen ; ne collez que la ligne publique",
+      "add": "Ajouter ce destinataire. Les prochaines sauvegardes seront chiffrées pour lui en plus des destinataires existants. Les chaînes malformées sont rejetées avant enregistrement"
+    },
+    "chart": {
+      "refreshing": "Actualisation en arrière-plan"
+    }
+  },
+  "theme": {
+    "label": "Thème",
+    "system": "Système",
+    "light": "Clair",
+    "dark": "Sombre"
   }
 }

@@ -266,7 +266,8 @@
     "progressNormal": "{elapsed} / ~{est} — {remaining} remaining (n={n})",
     "progressNoEstimate": "running for {elapsed}",
     "missingNameTitle": "Missing target name in URL",
-    "missingNameBody": "Hash was {hash} — expected #/target/<name>."
+    "missingNameBody": "Hash was {hash} — expected #/target/<name>.",
+    "statsError": "Stats error"
   },
   "form": {
     "source": {
@@ -772,5 +773,79 @@
     "timeout": "Request timed out — the destination may be slow or unreachable",
     "network": "Network error — check your connection",
     "generic": "Request failed"
+  },
+  "tooltip": {
+    "sources": {
+      "add": "Create a new backup source — opens a form that creates a BackupSource plus a credentials Secret",
+      "addFirst": "Create your first backup source",
+      "paused": "Scheduled runs are paused; manual triggers still work",
+      "run": "Trigger a manual backup run now — creates a one-off Job from the CronJob template; a paused schedule is ignored for manual runs",
+      "resume": "Resume scheduled runs — the reconciler clears Spec.Suspend on the managed CronJob within seconds",
+      "pause": "Pause scheduled runs — sets spec.suspended=true on the BackupSource. Existing dumps and config are kept; manual runs still work",
+      "edit": "Edit this source's connection details and schedule",
+      "delete": "Delete this BackupSource — the CronJob is removed via OwnerReference; existing dumps in storage are kept",
+      "keep": "Keep this source — close without deleting",
+      "confirmDelete": "Permanently delete the BackupSource. The CronJob and the UI-managed credentials Secret are cascaded via OwnerReference; existing dumps in storage remain"
+    },
+    "destinations": {
+      "add": "Create a new storage destination (SFTP, FTPS, S3, Azure or GCS) for backup uploads",
+      "addFirst": "Create your first storage destination",
+      "test": "Probe this destination — uploads a tiny test object, reads it back and deletes it, so write permission is verified too",
+      "edit": "Edit this destination's connection details and credentials",
+      "delete": "Delete this BackupDestination. Existing dumps stored at this destination remain intact",
+      "keep": "Keep this destination — close without deleting",
+      "confirmDelete": "Permanently delete the BackupDestination. Sources will skip it on the next run; existing dumps in storage remain"
+    },
+    "form": {
+      "discard": "Discard changes and close this dialog",
+      "saveSource": "Save the BackupSource — the operator reconciles changes within seconds",
+      "createSource": "Create the BackupSource — the operator generates a CronJob within seconds",
+      "saveDestination": "Save the BackupDestination — the operator picks up changes on the next run",
+      "createDestination": "Create the BackupDestination — sources can target it via spec.destinations, or pick it up on the next run if they have no allow-list",
+      "missingDestination": "This destination is in the saved allow-list but no BackupDestination with that name currently exists"
+    },
+    "alerts": {
+      "sourcePrometheus": "From Prometheus — honours the rule's for: duration",
+      "sourceLocal": "Local heuristic — fires immediately, no for: debounce"
+    },
+    "audit": {
+      "refresh": "Re-fetch the events list from Kubernetes"
+    },
+    "target": {
+      "backToDashboard": "Return to the Dashboard"
+    },
+    "runs": {
+      "viewMeta": "View the unencrypted meta.json sidecar (table stats, schema fingerprint, SHA256) in the browser",
+      "downloadMeta": "Download the unencrypted meta.json sidecar",
+      "downloadDump": "Download the age-encrypted dump. Decrypt locally with backup-restore and your offline private key",
+      "pickDestination": "This run was uploaded to multiple destinations — pick one to download or view from",
+      "downloadDumpFrom": "Download the age-encrypted dump from {dest}",
+      "viewMetaFrom": "View the meta.json sidecar from {dest} in the browser",
+      "downloadMetaFrom": "Download the meta.json sidecar from {dest}",
+      "copyJson": "Copy the full pretty-printed JSON to the clipboard",
+      "saveMeta": "Save this meta.json as a file",
+      "charsetChanged": "Charset/collation changed since the previous run",
+      "charsetDrift": "character_set or collation differs from the previous run — multibyte characters may be truncated on restore",
+      "schemaChangedAt": "Schema fingerprint last changed at {at}. Old schemas may not match the current application",
+      "statsError": "The pre-dump CollectStats call failed, so the verifier had no table baseline to compare against. Fix the underlying access (DB permissions, network) — the analyzer toggle is unrelated"
+    },
+    "settings": {
+      "reload": "Reload the operator defaults",
+      "export": "Download a values.yaml snippet matching the effective defaults — drop it into your Helm chart for GitOps-style management"
+    },
+    "ageKeys": {
+      "remove": "Remove this public key. Future backups will no longer encrypt to it. The last recipient cannot be removed",
+      "recipientInput": "An age X25519 recipient — starts with 'age1' followed by base32 characters. Generate it with age-keygen offline; paste only the public line here",
+      "add": "Add this recipient. Future backup runs encrypt to it in addition to the existing recipients. Malformed strings are rejected before saving"
+    },
+    "chart": {
+      "refreshing": "Refreshing in the background"
+    }
+  },
+  "theme": {
+    "label": "Theme",
+    "system": "System",
+    "light": "Light",
+    "dark": "Dark"
   }
 }

@@ -13,11 +13,11 @@ type Report struct {
 	Current  *dumper.Stats `json:"current"`
 	Previous *dumper.Stats `json:"previous"` // nil on first run
 
-	SizeChangeRatio float64       `json:"sizeChangeRatio"` // current/previous total dump bytes; 1.0 = unchanged
-	SchemaChanged   bool          `json:"schemaChanged"`
-	CharsetChanged  bool          `json:"charsetChanged"` // db-level character_set or collation differs from previous run
-	Anomalies       []Anomaly     `json:"anomalies"`
-	TableDiffs      []TableDiff   `json:"tableDiffs"`
+	SizeChangeRatio float64     `json:"sizeChangeRatio"` // current/previous total dump bytes; 1.0 = unchanged
+	SchemaChanged   bool        `json:"schemaChanged"`
+	CharsetChanged  bool        `json:"charsetChanged"` // db-level character_set or collation differs from previous run
+	Anomalies       []Anomaly   `json:"anomalies"`
+	TableDiffs      []TableDiff `json:"tableDiffs"`
 }
 
 type Anomaly struct {
@@ -166,5 +166,5 @@ func fmtRatio(label string, prev, curr int64, ratio float64) string {
 	return label + ": " + i64(prev) + " -> " + i64(curr) + " (ratio " + f2(ratio) + ")"
 }
 
-func i64(v int64) string { return strconv.FormatInt(v, 10) }
+func i64(v int64) string  { return strconv.FormatInt(v, 10) }
 func f2(v float64) string { return strconv.FormatFloat(v, 'f', 3, 64) }

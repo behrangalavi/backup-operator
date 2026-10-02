@@ -133,18 +133,7 @@ func main() {
 		die("kubernetes client: %v", err)
 	}
 
-	stores := make([]destStorage, 0, len(destinations))
-	for _, name := range destinations {
-		dest, err := loadDestination(ctx, cl, *namespace, name)
-		if err != nil {
-			die("%v", err)
-		}
-		st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, log)
-		if err != nil {
-			die("init storage %s: %v", name, err)
-		}
-		stores = append(stores, destStorage{name: dest.Name, st: st})
-	}
+	stores := openStores(ctx, cl, *namespace, destinations, log)
 
 	// Purge operates on ALL objects, not just dumps — a right-to-erasure must
 	// still remove the unencrypted meta.json sidecars (schema fingerprints,
@@ -158,24 +147,7 @@ func main() {
 		return
 	}
 
-	listings := make(map[string][]storage.Object, len(stores))
-	listed := 0
-	for _, ds := range stores {
-		objs, err := ds.st.List(ctx, *target+"/")
-		if err != nil {
-			log.Error(err, "list failed; destination skipped", "destination", ds.name)
-			continue
-		}
-		listings[ds.name] = objs
-		listed++
-	}
-	if listed == 0 {
-		die("could not list %s/ on any destination", *target)
-	}
-	dumps := mergeDumps(destNames(stores), listings)
-	if len(dumps) == 0 {
-		die("no dumps found for target %q on %s", *target, strings.Join(destNames(stores), ", "))
-	}
+	dumps := listAcrossDestinations(ctx, stores, *target, log)
 
 	if *listOnly {
 		_, _ = fmt.Fprintf(os.Stdout, "%-20s\t%-10s\t%-24s\t%s\n", "TIMESTAMP", "SIZE", "DESTINATIONS", "PATH")
@@ -185,25 +157,97 @@ func main() {
 		return
 	}
 
+	pick := selectRun(dumps, *timestamp, len(stores) > 1)
+	restoreRun(ctx, stores, pick, restoreOptions{
+		ageKeyFile: *ageKeyFile, output: *output, decompress: *decompress, compression: *compression,
+	}, log)
+}
+
+// restoreOptions carries the flags the download/decrypt/write phase reads.
+type restoreOptions struct {
+	ageKeyFile  string
+	output      string
+	decompress  bool
+	compression string
+}
+
+// openStores resolves every --destination into a ready storage client.
+// Dying on the first failure is deliberate: a restore (or a purge) that
+// silently skips a destination it was asked to use is worse than no restore.
+func openStores(ctx context.Context, cl client.Client, namespace string, names []string, log logr.Logger) []destStorage {
+	stores := make([]destStorage, 0, len(names))
+	for _, name := range names {
+		dest, err := loadDestination(ctx, cl, namespace, name)
+		if err != nil {
+			die("%v", err)
+		}
+		st, err := storageFactory.NewStorage(dest.StorageType, dest.Name, dest.Data, log)
+		if err != nil {
+			die("init storage %s: %v", name, err)
+		}
+		stores = append(stores, destStorage{name: dest.Name, st: st})
+	}
+
+	return stores
+}
+
+// listAcrossDestinations lists the target prefix on every destination,
+// skipping (with a log line) the ones that cannot be listed, and merges the
+// runs by timestamp. Dies when no destination could be listed or none holds a
+// dump.
+func listAcrossDestinations(ctx context.Context, stores []destStorage, target string, log logr.Logger) []dumpEntry {
+	listings := make(map[string][]storage.Object, len(stores))
+	listed := 0
+	for _, ds := range stores {
+		objs, err := ds.st.List(ctx, target+"/")
+		if err != nil {
+			log.Error(err, "list failed; destination skipped", "destination", ds.name)
+			continue
+		}
+		listings[ds.name] = objs
+		listed++
+	}
+	if listed == 0 {
+		die("could not list %s/ on any destination", target)
+	}
+	dumps := mergeDumps(destNames(stores), listings)
+	if len(dumps) == 0 {
+		die("no dumps found for target %q on %s", target, strings.Join(destNames(stores), ", "))
+	}
+
+	return dumps
+}
+
+// selectRun picks the requested timestamp or the newest run. With several
+// destinations the chosen run and each destination's newest run are printed:
+// destinations can legitimately diverge (one offline during a run) and the
+// operator must see which run they are about to restore.
+func selectRun(dumps []dumpEntry, timestamp string, multi bool) dumpEntry {
 	pick := dumps[0]
-	if *timestamp != "" {
+	if timestamp != "" {
 		pick = dumpEntry{}
 		for _, d := range dumps {
-			if d.timestamp == *timestamp {
+			if d.timestamp == timestamp {
 				pick = d
 				break
 			}
 		}
 		if pick.path == "" {
-			die("no dump with timestamp %q (use --list to see what's available)", *timestamp)
+			die("no dump with timestamp %q (use --list to see what's available)", timestamp)
 		}
 	}
-	if *timestamp == "" && len(stores) > 1 {
+	if timestamp == "" && multi {
 		// Destinations can legitimately diverge (one offline during a run); the
 		// operator must see which run they are about to restore.
 		fmt.Fprintf(os.Stderr, "latest run %s found on %s (newest run per destination: %s)\n",
-			pick.timestamp, strings.Join(pick.dests, ","), newestPerDest(dumps, destNames(stores)))
+			pick.timestamp, strings.Join(pick.dests, ","), newestPerDest(dumps, destNamesOf(dumps)))
 	}
+	return pick
+}
+
+// restoreRun downloads, decrypts, optionally decompresses and writes the
+// chosen run, verifying the ciphertext against meta.json's sha256.
+func restoreRun(ctx context.Context, stores []destStorage, pick dumpEntry, opts restoreOptions, log logr.Logger) {
 	src, err := openDump(ctx, stores, pick)
 	if err != nil {
 		die("%v", err)
@@ -211,9 +255,9 @@ func main() {
 	fmt.Fprintf(os.Stderr, ">>> restoring timestamp %s from destination %s (%s, %d bytes)\n", pick.timestamp, src.name, pick.path, pick.size)
 	defer func() { _ = src.rc.Close() }()
 
-	keyBytes, err := os.ReadFile(*ageKeyFile)
+	keyBytes, err := os.ReadFile(opts.ageKeyFile)
 	if err != nil {
-		die("read age key %s: %v", *ageKeyFile, err)
+		die("read age key %s: %v", opts.ageKeyFile, err)
 	}
 	dec, err := crypto.NewDecryptorFromKeys(string(keyBytes))
 	if err != nil {
@@ -231,14 +275,14 @@ func main() {
 		die("age decrypt: %v%s", err, decryptHint(err))
 	}
 
-	out, closer, err := openOutput(*output)
+	out, closer, err := openOutput(opts.output)
 	if err != nil {
 		die("open output: %v", err)
 	}
 
 	srcReader := plain
-	if *decompress {
-		algo := *compression
+	if opts.decompress {
+		algo := opts.compression
 		if algo == "" {
 			algo = detectCompression(pick.path, sidecar, log)
 		}
@@ -253,15 +297,15 @@ func main() {
 
 	if _, err := io.Copy(out, srcReader); err != nil {
 		_ = closer()
-		removePartial(*output)
+		removePartial(opts.output)
 		die("copy: %v%s", err, decryptHint(err))
 	}
 	// Check the output Close error explicitly rather than deferring-and-ignoring:
 	// a flush/close failure (NFS, quota) on the restored file must not exit 0
 	// leaving a truncated dump — this is a recovery tool.
 	if err := closer(); err != nil {
-		removePartial(*output)
-		die("close output %s: %v", *output, err)
+		removePartial(opts.output)
+		die("close output %s: %v", opts.output, err)
 	}
 	// The whole ciphertext has streamed through the hasher by now (age reads
 	// to EOF for its final MAC). A mismatch means the stored object is not
@@ -269,13 +313,29 @@ func main() {
 	// upload — and what we just produced must not pass for a restore.
 	if sidecar != nil && sidecar.SHA256 != "" {
 		if err := verifySHA256(sidecar.SHA256, hasher); err != nil {
-			removePartial(*output)
+			removePartial(opts.output)
 			die("%v (output removed; try --destination <other> or a different --timestamp)", err)
 		}
 		log.Info("ciphertext sha256 verified against meta.json", "sha256", sidecar.SHA256)
 	} else {
 		log.Info("no sha256 in meta.json for this run; download integrity not verified")
 	}
+}
+
+// destNamesOf returns every destination name that appears in the merged run
+// list (the ones that were listable), in first-seen order.
+func destNamesOf(dumps []dumpEntry) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, d := range dumps {
+		for _, n := range d.dests {
+			if !seen[n] {
+				seen[n] = true
+				out = append(out, n)
+			}
+		}
+	}
+	return out
 }
 
 // openedDump is a dump stream together with the destination it came from.

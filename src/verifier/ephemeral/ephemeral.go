@@ -29,15 +29,15 @@ import (
 // project's PodSecurityAdmission level is "restricted" — root pods get
 // rejected at admission.
 type Spec struct {
-	NamePrefix     string
-	Image          string
-	Port           int32
-	EnvVars        []corev1.EnvVar
-	Args           []string
-	Command        []string
+	NamePrefix      string
+	Image           string
+	Port            int32
+	EnvVars         []corev1.EnvVar
+	Args            []string
+	Command         []string
 	VolumeSizeBytes int64
 	VolumeMountPath string
-	ReadyTimeout   time.Duration
+	ReadyTimeout    time.Duration
 
 	// RunAsUID is the UID the container runs as. It MUST match the non-root
 	// DB user baked into Image — postgres:*-alpine is UID 70, the Debian
@@ -191,8 +191,8 @@ func (s *k8sSpawner) buildPodSpec(name string, spec Spec) *corev1.Pod {
 			Name:      name,
 			Namespace: s.namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by":             "backup-operator",
-				"backup.mogenius.io/role":                  "verifier-target",
+				"app.kubernetes.io/managed-by":              "backup-operator",
+				"backup.mogenius.io/role":                   "verifier-target",
 				"backup.mogenius.io/verifier-target-prefix": dns1123Label(spec.NamePrefix),
 			},
 			OwnerReferences: owners,

@@ -1,7 +1,6 @@
 package restore
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -81,11 +80,11 @@ func probeRedis(ctx context.Context, endpoint, password string) error {
 // Restore for redis is a special case: the dump is an RDB file, not a
 // stream of commands. redis-cli has no native "load this RDB into a
 // running server" command. The supported paths are:
-//   1. Load at server startup (--dbfilename) — would require a restart
-//      cycle and is awkward in our verifier flow.
-//   2. Use redis-cli --pipe with the DEBUG RELOAD strategy — fragile.
-//   3. Re-stream the RDB through `redis-cli --rdb /dev/stdin` and use
-//      DEBUG RELOAD — works but Phase 2 deferred for code complexity.
+//  1. Load at server startup (--dbfilename) — would require a restart
+//     cycle and is awkward in our verifier flow.
+//  2. Use redis-cli --pipe with the DEBUG RELOAD strategy — fragile.
+//  3. Re-stream the RDB through `redis-cli --rdb /dev/stdin` and use
+//     DEBUG RELOAD — works but Phase 2 deferred for code complexity.
 //
 // For now Phase 2 redis verification is decryptability + header
 // validity (already done by stream-validate). The full restore path is
@@ -148,17 +147,3 @@ func (e *redisEngine) SmokeQueries(ctx context.Context, endpoint string, preTabl
 			"redis Phase-2 verification is auth+roundtrip+reachability only (DBSIZE=%d); full RDB restore is deferred to a later iteration", dbsize)},
 	}, nil
 }
-
-// scanLines is a tiny helper to split a small reader into lines without
-// a full bufio.Scanner ceremony. Used for redis-cli output parsing where
-// the output is single-line.
-func scanLines(r io.Reader) []string {
-	s := bufio.NewScanner(r)
-	var out []string
-	for s.Scan() {
-		out = append(out, s.Text())
-	}
-	return out
-}
-
-var _ = scanLines // reserve for future smoke-query parsers

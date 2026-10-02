@@ -234,10 +234,11 @@ func TestBuildPlan_EndToEnd(t *testing.T) {
 }
 
 func TestBuildPlan_SplitsLegacyMergedSecret(t *testing.T) {
-	all := []corev1.Secret{{
+	all := make([]corev1.Secret, 0, 2)
+	all = append(all, corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "merged", Namespace: "backup"},
 		Data:       map[string][]byte{"AGE_PUBLIC_KEYS": []byte(keyA + "\n# c\n" + keyB + "\nnot-a-key")},
-	}}
+	})
 	plan := BuildPlan(all, Options{MergedSecretName: "merged"})
 	if len(plan.Recipients) != 2 {
 		t.Fatalf("expected 2 recipients from the merged Secret, got %d (%v)", len(plan.Recipients), plan.Warnings)

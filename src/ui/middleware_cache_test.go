@@ -2,6 +2,7 @@ package ui
 
 import (
 	"compress/gzip"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,7 +25,7 @@ func TestCachedJSON_EmitsETagAndCacheControl(t *testing.T) {
 	srv := httptest.NewServer(cachedJSON(fixedHandler(body)))
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL)
+	resp, err := httpGetCtx(srv.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +46,7 @@ func TestCachedJSON_IfNoneMatchReturns304(t *testing.T) {
 	srv := httptest.NewServer(cachedJSON(fixedHandler(body)))
 	defer srv.Close()
 
-	first, err := http.Get(srv.URL)
+	first, err := httpGetCtx(srv.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +56,7 @@ func TestCachedJSON_IfNoneMatchReturns304(t *testing.T) {
 		t.Fatal("first request must set ETag")
 	}
 
-	req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
 	req.Header.Set("If-None-Match", etag)
 	second, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -76,7 +77,7 @@ func TestCachedJSON_GzipWhenAccepted(t *testing.T) {
 	srv := httptest.NewServer(cachedJSON(fixedHandler(body)))
 	defer srv.Close()
 
-	req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
 	req.Header.Set("Accept-Encoding", "gzip")
 	resp, err := http.DefaultTransport.RoundTrip(req)
 	if err != nil {
@@ -102,7 +103,7 @@ func TestCachedJSON_SkipsGzipForSmallBody(t *testing.T) {
 	srv := httptest.NewServer(cachedJSON(fixedHandler(body)))
 	defer srv.Close()
 
-	req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
 	req.Header.Set("Accept-Encoding", "gzip")
 	resp, err := http.DefaultTransport.RoundTrip(req)
 	if err != nil {
@@ -121,7 +122,7 @@ func TestCachedJSON_DoesNotCacheErrorResponses(t *testing.T) {
 	})))
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL)
+	resp, err := httpGetCtx(srv.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +146,7 @@ func TestCachedJSON_PassesThroughNonGET(t *testing.T) {
 	})))
 	defer srv.Close()
 
-	req, _ := http.NewRequest(http.MethodPost, srv.URL, strings.NewReader(""))
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL, strings.NewReader(""))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)

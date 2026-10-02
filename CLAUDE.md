@@ -280,10 +280,16 @@ src/
 │   └── restore/         # ModeSchemaOnly / Sample / Full: spawn DB → restore → smoke queries (Phase 2)
 ├── ui/                  # Built-in web dashboard and management API
 │   ├── cache.go         # TTL key→value cache with both getOrLoad (blocking) and getOrRefreshAsync (stale-while-revalidate) — used to keep slow storage probes off the dashboard hot path
-│   ├── data.go          # Read-side aggregation: listTargets, target detail, estimateDuration, fleetHeatmap (combined heatmap+storage+anomalies+durations+verification). Holds the shared StoragePool reference.
+│   ├── data.go          # Read-side aggregation: dataSource, k8sData (RV-memoised source/destination lists), listTargets, target detail, estimateDuration. Holds the shared StoragePool reference.
+│   ├── models.go        # View-model types (targetSummary, dashboardSummary, heatmap/anomaly/duration points)
+│   ├── heatmap.go       # fleetHeatmap: one bounded pass over the day window → heatmap + storage + anomalies (200-entry buffer) + durations + verification
 │   ├── errors_api.go    # Typed API error catalogue (codeValidation, codeNotFound, …) + writeError helper
 │   ├── handlers.go      # Legacy HTML template handlers + /download/<target>/<ts>/{dump|meta} (uses StoragePool)
-│   ├── handlers_api.go  # REST API: trigger, jobs, destination-stats/health/consistency, dashboard heatmap, UI Events; /api/jobs embeds duration estimate
+│   ├── api_types.go     # Shared apiResponse type
+│   ├── handlers_trigger.go   # Manual trigger (Job from the CronJob template) + /api/jobs with duration estimate
+│   ├── handlers_dest_diag.go # destination-stats / destination-health (+ scrub status from the metric registry) / consistency-check
+│   ├── handlers_dashboard.go # /api/dashboard/heatmap
+│   ├── events.go        # emitUIEvent / emitObjectEvent — Kubernetes Events for UI mutations, with request id + auth-proxy identity
 │   ├── handlers_sources.go      # BackupSource CRUD (+ password-only credentials Secret owned by the CR)
 │   ├── handlers_destinations.go # BackupDestination CRUD (+ credentials Secret); test-connection does a real upload+readback+delete probe
 │   ├── handlers_age_keys.go  # Age recipient CRUD (`/api/age-keys`), backed by BackupRecipient objects
@@ -293,12 +299,13 @@ src/
 │   ├── server.go        # HTTP server, routing, SPA handler, SSE broker, StoragePool interface + storageFor helper
 │   ├── static/          # SPA frontend (vanilla JS, no build step)
 │   │   ├── index.html   # SPA shell with sidebar (Dashboard / Sources / Destinations / Jobs / Alerts / Audit / Age Keys / Settings), modal, toast containers
-│   │   ├── style.css    # Dark theme, responsive layout, chart-svg + chart-svg-tall variants, gantt + heatmap + loading-spinner styles
-│   │   ├── js/          # ES-module split of the former monolithic app.js; js/tests/*.test.mjs run with `node --test` (escaping, helpers, data-action registry)
-│   │   │   ├── core.js  # DOM helpers ($, $$), i18n, API, toast, modal, escape/format, sort state
-│   │   │   ├── charts.js # SVG chart renderers (heatmap, donut, gantt, growth, anomaly, duration, verification, sparkline, tables)
-│   │   │   ├── pages.js # Page renderers (dashboard, sources, destinations, alerts, jobs, audit, target detail, settings, age keys)
-│   │   │   └── app.js   # Entry point: SSE wiring, hash-router, renderPage switch, init
+│   │   ├── style.css    # Token-only theming (dark default, light via prefers-color-scheme or data-theme), responsive layout, chart/gantt/heatmap styles
+│   │   ├── js/          # core.js/charts.js are classic scripts; pages.js/app.js are ES modules. js/tests/*.test.mjs run with `node --test` (escaping, helpers, data-action registry, module layout, i18n/theme invariants)
+│   │   │   ├── core.js  # DOM helpers ($, $$), i18n (tr escapes, trText), API + fetchWithTimeout, toast, modal (focus trap), escape/format, data-action registry, theme
+│   │   │   ├── charts.js # SVG chart renderers reading colours from CSS tokens
+│   │   │   ├── pages.js # Thin entry: imports every page module, re-exports renderers/router/state
+│   │   │   ├── pages/   # state.js (single shared mutable state + render-gen guard), router.js (page registry, hash routing), one module per page: dashboard, sources, destinations, alerts, jobs, audit, target, settings, agekeys
+│   │   │   └── app.js   # Entry point: SSE wiring, hash-router hookup, init
 │   │   └── i18n/        # EN/DE/FR translation dictionaries (loaded by lang picker)
 │   └── templates/       # Legacy Go HTML templates (kept for backward compat)
 └── docs/                # Read-only docs portal: serves CLAUDE.md + README.md + generated tech stack
@@ -671,8 +678,9 @@ Use the `logr.Logger` interface throughout (injected, never global).
 
 ### 8.7 Tests
 
-- The analyzer (`analyzer/`), the parser (`internal/secrets/`), the retention selector (`internal/backup/retention.go`), and the SFTP host-key callback (`storage/sftp/`) all have unit tests. Pure-function logic is the right place for tests; integration with real DBs and real storage is left to the cluster.
-- `go test ./...` from `src/` is the gate. CI runs `just check` (vet + lint + test).
+- The analyzer (`analyzer/`), the flatteners (`internal/secrets/`), the retention selector (`internal/backup/retention.go`), the SFTP host-key callback (`storage/sftp/`), the migration (`internal/migrate/`), the controllers (fake client with status subresource) and the storage backends (`storage/storagetest` conformance suite + in-memory fake) all have unit tests. Pure-function logic is the right place for tests; integration with real DBs and real storage is left to the cluster. Fuzz targets exist for `RowCounter` and `ApplyJitter`.
+- `go test -race ./...` from `src/` is the gate. CI runs `just check` (generate-check + lint + Go tests + `node --test` for the SPA + helm-unittest/kubeconform for the chart).
+- golangci-lint runs `errcheck`, `gosec`, `govet`, `ineffassign`, `staticcheck`, `unused`, `bodyclose`, `errorlint` (errorf=false so the deliberate chain-breaking `%v` on sanitized driver errors stays legal), `gocognit` (≤40 — chosen over funlen: a long flat table function is fine, deep nesting is what hides bugs), `misspell` (no locale, the codebase is British), `noctx` (tests use `httptest.NewRequestWithContext` / the `httpGetCtx` helpers), `prealloc`, `unconvert`. No `nolint` directives are in the tree; keep it that way.
 
 ### 8.8 Comments
 
@@ -1447,6 +1455,12 @@ The notable ones, with the reasoning that future readers should preserve.
 
 - **Chart: templated with tests, `[Ingress, Egress]` NetworkPolicy, release reuses the PR gate.** helm-unittest suites (RBAC gating, CRD keep annotation, NetworkPolicy variants, worker env JSON, bootstrap recipients) caught a real bug the moment they ran: `{{ .Values.x | default true }}` turns an explicit `false` into `true`, so `crds.install=false`, `crds.keep=false` and `networkPolicy.worker.enabled=false` were impossible to express — now `hasKey` checks. The NetworkPolicy gained ingress rules (metrics from the monitoring namespace, UI/docs only from `ui.allowedFrom`, default denied) and a worker-pod policy, because the operator policy alone left the UI open to every pod and the credential-holding workers unrestricted. `release.yaml` calls `ci.yaml` via `workflow_call` instead of re-implementing a weaker subset, and adds Trivy (HIGH/CRITICAL) plus cosign keyless signatures for image and chart; base images are digest-pinned; `renovate.json` finally points at `charts/**`, the Dockerfile and the CI tool pins instead of a `kubernetes/` directory that never existed.
 
+- **SPA page modules reach the classic helpers through the global scope; shared state lives in one module.** `pages.js` was a 2800-line file; it is now a thin entry that imports nine page modules plus `pages/state.js` (the single mutable render-generation / cache object) and `pages/router.js` (page registry, which also breaks the import cycles a direct cross-import of renderers would create). `core.js` and `charts.js` stay classic scripts on purpose: converting them would have meant touching every helper call in every module for no runtime benefit, there is no bundler, and module scripts are already allowed by `script-src 'self'`. Every tooltip is an i18n key under `tooltip.*` rendered through `escAttr(trText(...))` — attribute context, so the HTML-escaping `tr()` would double-escape. Theming is token-only: the light palette exists twice (under `prefers-color-scheme: light` and under `data-theme="light"`) and a node test asserts both blocks are identical and that no hex colour exists outside the token definitions, so a one-sided edit cannot drift.
+
+- **UI handler files are split by concern; lint got stricter instead of adding `nolint`.** `handlers_api.go` (1700 lines) became `handlers_trigger.go`, `handlers_dest_diag.go`, `handlers_dashboard.go`, `events.go`, `api_types.go`; `data.go` became `data.go` / `models.go` / `heatmap.go` — pure moves. The expanded golangci configuration (`gocognit ≤40`, `noctx`, `errorlint`, `bodyclose`, `prealloc`, `unconvert`, `misspell`) surfaced 13 functions above the complexity bar — `Pipeline.Run` at 92 was the worst — and each was split into named phases rather than excluded; the only knob turned was `errorlint`'s `errorf=false`, because the sanitisation ADRs deliberately break error chains with `%v` where a driver error would echo a connection string.
+
+- **GitHub Actions are SHA-pinned.** Pinning by SHA with a `# vX.Y.Z` trailer is the one supply-chain control that costs nothing at runtime, and resolving the pins surfaced two references that would have failed on the next run: `aquasecurity/trivy-action@0.33.1` (the tag is `v0.33.1`) and `cycjimmy/semantic-release-action@v5` (no moving `v5` tag exists). Renovate's github-actions manager keeps SHA-pinned lines current.
+
 ## 19. Helm Distribution
 
 ### 19.1 Installation
@@ -1481,6 +1495,8 @@ The chart installs the three CRDs as templates (`crds.install`, default on) with
 ### 19.2 CI/CD
 
 Two GitHub Actions workflows:
+
+All GitHub Actions are pinned to commit SHAs with a `# vX.Y.Z` comment that Renovate updates. `backup-worker` carries the same `-X main.Version` build-time version as the operator (logged at startup).
 
 | Workflow | Trigger | What it does |
 |---|---|---|

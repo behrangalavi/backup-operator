@@ -18,7 +18,7 @@ import (
 // `kubectl apply -f -` or a GitOps commit. Credentials Secrets are included
 // with their plaintext stringData — the caller decides where that goes.
 func WriteYAML(w io.Writer, plan *Plan) error {
-	var objs []any
+	objs := make([]any, 0, len(plan.Destinations)+len(plan.Sources)+len(plan.Recipients)+len(plan.Secrets))
 	for _, o := range plan.Destinations {
 		objs = append(objs, o)
 	}

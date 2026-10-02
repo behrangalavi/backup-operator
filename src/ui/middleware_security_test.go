@@ -13,7 +13,7 @@ import (
 func TestSecurityHeaders_PresentOnEveryResponse(t *testing.T) {
 	h := securityHeadersMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) }))
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/targets", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/targets", nil))
 	want := map[string]string{
 		"X-Content-Type-Options": "nosniff",
 		"X-Frame-Options":        "DENY",
@@ -47,7 +47,7 @@ func TestRequestContext_IDPassthroughAndGeneration(t *testing.T) {
 	})
 	h := requestContextMiddleware(logr.Discard(), inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/jobs", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/jobs", nil)
 	req.Header.Set("X-Request-Id", "abc-123.x")
 	req.Header.Set("X-Forwarded-Email", " alice@example.com\x00\n")
 	rec := httptest.NewRecorder()
@@ -59,7 +59,7 @@ func TestRequestContext_IDPassthroughAndGeneration(t *testing.T) {
 		t.Errorf("caller identity must be trimmed and stripped of control chars, got %q", seenCaller)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/api/jobs", nil)
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/jobs", nil)
 	req.Header.Set("X-Request-Id", "evil\nvalue; drop")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -72,18 +72,18 @@ func TestRequestContext_IDPassthroughAndGeneration(t *testing.T) {
 }
 
 func TestCallerIdentity_PrecedenceAndCap(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	req.Header.Set("X-Auth-Request-Email", "second@example.com")
 	req.Header.Set("X-Forwarded-User", "first")
 	if got := callerIdentity(req); got != "first" {
 		t.Errorf("X-Forwarded-User must win, got %q", got)
 	}
-	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	req.Header.Set("X-Forwarded-User", strings.Repeat("a", 500))
 	if got := callerIdentity(req); len(got) != maxIdentityLen {
 		t.Errorf("identity must be capped at %d, got %d", maxIdentityLen, len(got))
 	}
-	if got := callerIdentity(httptest.NewRequest(http.MethodGet, "/", nil)); got != "" {
+	if got := callerIdentity(httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)); got != "" {
 		t.Errorf("no headers → empty identity, got %q", got)
 	}
 }
@@ -103,12 +103,12 @@ func TestNoDirListing(t *testing.T) {
 	served := false
 	h := noDirListing(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { served = true; w.WriteHeader(200) }))
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/js/", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/js/", nil))
 	if rec.Code != http.StatusNotFound || served {
 		t.Errorf("directory URL must 404 without reaching the file server, got %d served=%v", rec.Code, served)
 	}
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/js/core.js", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/js/core.js", nil))
 	if rec.Code != 200 || !served {
 		t.Errorf("file URL must be served, got %d", rec.Code)
 	}

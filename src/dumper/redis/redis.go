@@ -199,4 +199,3 @@ func parseDatabaseFilter(s string) map[string]bool {
 	}
 	return m
 }
-

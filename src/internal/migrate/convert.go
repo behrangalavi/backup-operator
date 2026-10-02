@@ -264,6 +264,39 @@ func ConvertSource(s *corev1.Secret, destRenames map[string]string) (*v1alpha1.B
 	}
 	spec.Database.Port = port
 
+	warns = append(warns, convertScheduling(&spec, ann, destRenames)...)
+	warns = append(warns, convertRetentionAndCompression(&spec, ann)...)
+	warns = append(warns, convertAnalyzer(&spec, ann)...)
+	warns = append(warns, convertRestoreVerification(&spec, ann)...)
+	warns = append(warns, convertExtras(&spec, ann)...)
+
+	creds := &corev1.Secret{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
+		ObjectMeta: metav1.ObjectMeta{Name: credsName, Namespace: s.Namespace},
+		Type:       corev1.SecretTypeOpaque,
+		StringData: map[string]string{},
+	}
+	if pw, ok := s.Data["password"]; ok && len(pw) > 0 {
+		creds.StringData["password"] = string(pw)
+	} else {
+		warns = append(warns, "no password in legacy Secret; credentials Secret is created empty")
+	}
+
+	bs := &v1alpha1.BackupSource{
+		TypeMeta:   metav1.TypeMeta{APIVersion: v1alpha1.GroupVersion.String(), Kind: v1alpha1.KindBackupSource},
+		ObjectMeta: metav1.ObjectMeta{Name: s.Name, Namespace: s.Namespace},
+		Spec:       spec,
+	}
+	if _, err := secrets.FromBackupSource(bs, nil, "0 2 * * *"); err != nil {
+		return nil, nil, warns, err
+	}
+	return bs, creds, warns, nil
+}
+
+// convertScheduling carries jitter, suspended and the (renamed) destination
+// allow-list over.
+func convertScheduling(spec *v1alpha1.BackupSourceSpec, ann map[string]string, destRenames map[string]string) []string {
+	var warns []string
 	if v := ann[AnnotationJitterMinutes]; v != "" {
 		if n, err := strconv.ParseInt(v, 10, 32); err == nil && n >= 0 && n <= 60 {
 			spec.JitterMinutes = ptr32(int32(n))
@@ -283,6 +316,12 @@ func ConvertSource(s *corev1.Secret, destRenames map[string]string) (*v1alpha1.B
 		spec.Destinations = append(spec.Destinations, d)
 	}
 
+	return warns
+}
+
+// convertRetentionAndCompression maps retention-days / min-keep / compression.
+func convertRetentionAndCompression(spec *v1alpha1.BackupSourceSpec, ann map[string]string) []string {
+	var warns []string
 	if ann[AnnotationRetentionDays] != "" || ann[AnnotationMinKeep] != "" {
 		spec.Retention = &v1alpha1.RetentionSpec{}
 		if v := ann[AnnotationRetentionDays]; v != "" {
@@ -308,6 +347,12 @@ func ConvertSource(s *corev1.Secret, destRenames map[string]string) (*v1alpha1.B
 		}
 	}
 
+	return warns
+}
+
+// convertAnalyzer maps the analyzer toggles and the 0..1 ratio thresholds to whole percents.
+func convertAnalyzer(spec *v1alpha1.BackupSourceSpec, ann map[string]string) []string {
+	var warns []string
 	analyzer := &v1alpha1.AnalyzerSpec{}
 	analyzerSet := false
 	if b, ok := parseBool(ann[AnnotationAnalyzerEnabled]); ok {
@@ -338,6 +383,12 @@ func ConvertSource(s *corev1.Secret, destRenames map[string]string) (*v1alpha1.B
 		spec.Analyzer = analyzer
 	}
 
+	return warns
+}
+
+// convertRestoreVerification maps the four verification annotations; an unknown mode becomes off with a warning.
+func convertRestoreVerification(spec *v1alpha1.BackupSourceSpec, ann map[string]string) []string {
+	var warns []string
 	if mode := strings.ToLower(strings.TrimSpace(ann[AnnotationRestoreVerificationMode])); mode != "" || ann[AnnotationRestoreVerificationInterval] != "" ||
 		ann[AnnotationVerificationImage] != "" || ann[AnnotationVerificationVolumeSize] != "" {
 		rv := &v1alpha1.RestoreVerificationSpec{Image: strings.TrimSpace(ann[AnnotationVerificationImage])}
@@ -365,6 +416,12 @@ func ConvertSource(s *corev1.Secret, destRenames map[string]string) (*v1alpha1.B
 		spec.RestoreVerification = rv
 	}
 
+	return warns
+}
+
+// convertExtras routes extra-* annotations: TLS mode to spec.database.tls, file-path TLS options are dropped with a warning, everything else to spec.database.extra; unknown project annotations are warned.
+func convertExtras(spec *v1alpha1.BackupSourceSpec, ann map[string]string) []string {
+	var warns []string
 	// extra-* annotations: TLS mode becomes a first-class field, file-path
 	// TLS options cannot be carried (the file was never mounted anyway),
 	// everything else stays in spec.database.extra.
@@ -399,27 +456,7 @@ func ConvertSource(s *corev1.Secret, destRenames map[string]string) (*v1alpha1.B
 		}
 	}
 
-	creds := &corev1.Secret{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
-		ObjectMeta: metav1.ObjectMeta{Name: credsName, Namespace: s.Namespace},
-		Type:       corev1.SecretTypeOpaque,
-		StringData: map[string]string{},
-	}
-	if pw, ok := s.Data["password"]; ok && len(pw) > 0 {
-		creds.StringData["password"] = string(pw)
-	} else {
-		warns = append(warns, "no password in legacy Secret; credentials Secret is created empty")
-	}
-
-	bs := &v1alpha1.BackupSource{
-		TypeMeta:   metav1.TypeMeta{APIVersion: v1alpha1.GroupVersion.String(), Kind: v1alpha1.KindBackupSource},
-		ObjectMeta: metav1.ObjectMeta{Name: s.Name, Namespace: s.Namespace},
-		Spec:       spec,
-	}
-	if _, err := secrets.FromBackupSource(bs, nil, "0 2 * * *"); err != nil {
-		return nil, nil, warns, err
-	}
-	return bs, creds, warns, nil
+	return warns
 }
 
 // ConvertRecipient turns a legacy per-recipient Secret into a

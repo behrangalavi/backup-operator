@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -135,7 +136,7 @@ func TestCSRFMiddleware(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			req := httptest.NewRequest(c.method, "http://example.test/api/sources", nil)
+			req := httptest.NewRequestWithContext(context.Background(), c.method, "http://example.test/api/sources", nil)
 			req.Host = "example.test"
 			for k, v := range c.headers {
 				req.Header.Set(k, v)

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -117,6 +118,20 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		case <-ticker.C:
 			_, _ = fmt.Fprintf(w, ": keepalive\n\n")
 			flusher.Flush()
+		}
+	}
+}
+
+// periodicRefresh polls Kubernetes for state changes and broadcasts SSE events.
+func (s *Server) periodicRefresh(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.broadcast(sseEvent{Type: "refresh", Data: time.Now().Format(time.RFC3339)})
 		}
 	}
 }

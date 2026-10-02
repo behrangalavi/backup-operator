@@ -104,6 +104,16 @@ func FromBackupSource(bs *v1alpha1.BackupSource, creds *corev1.Secret, defaultSc
 			Extra:    extraFor(db),
 		},
 	}
+	applyOptionalSpec(src, spec)
+	return src, nil
+}
+
+// applyOptionalSpec copies the optional spec blocks (jitter, retention,
+// compression, analyzer, restore verification, TLS CA) onto a Source whose
+// required fields are already set. Unset pointers keep the "-1 / default"
+// sentinels the pipeline resolves at apply time.
+func applyOptionalSpec(src *Source, spec v1alpha1.BackupSourceSpec) {
+	db := spec.Database
 	if len(src.DestinationAllow) == 0 {
 		src.DestinationAllow = nil
 	}
@@ -152,7 +162,6 @@ func FromBackupSource(bs *v1alpha1.BackupSource, creds *corev1.Secret, defaultSc
 		ca := *db.TLS.CASecretRef
 		src.TLSCA = &ca
 	}
-	return src, nil
 }
 
 // extraFor builds the dumper's Extra map from spec.database.extra plus the

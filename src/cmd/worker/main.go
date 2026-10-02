@@ -72,6 +72,10 @@ func (e *sourceEventEmitter) Emit(eventType, reason, message string) {
 	e.recorder.Event(e.ref, eventType, reason, message)
 }
 
+// Version is overridden via -ldflags "-X main.Version=..." at build time so
+// worker logs can be correlated with the image that produced them.
+var Version = "dev"
+
 func main() { os.Exit(run()) }
 
 func run() int {
@@ -113,6 +117,7 @@ func run() int {
 	if ns == "" {
 		die("namespace not provided and POD_NAMESPACE env unset")
 	}
+	log.Info("backup worker starting", "version", Version, "source", *sourceName, "namespace", ns)
 
 	cfg, err := loadKubeConfig()
 	assert.NoError(err, "failed to load kubeconfig")

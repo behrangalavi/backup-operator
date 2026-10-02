@@ -12,13 +12,13 @@ import (
 // Direct dependencies get hand-curated descriptions so the page is
 // informative; indirect transitive deps are summarised as a single count.
 type techStackPage struct {
-	Module           string         `json:"module"`
-	GoVersion        string         `json:"goVersion"`
-	DirectDeps       []techDep      `json:"directDeps"`
-	IndirectCount    int            `json:"indirectCount"`
-	Frontend         []techDep      `json:"frontend"`
-	OperationalDeps  []techDep      `json:"operationalDeps"`
-	BuildTooling     []techDep      `json:"buildTooling"`
+	Module          string    `json:"module"`
+	GoVersion       string    `json:"goVersion"`
+	DirectDeps      []techDep `json:"directDeps"`
+	IndirectCount   int       `json:"indirectCount"`
+	Frontend        []techDep `json:"frontend"`
+	OperationalDeps []techDep `json:"operationalDeps"`
+	BuildTooling    []techDep `json:"buildTooling"`
 }
 
 type techDep struct {

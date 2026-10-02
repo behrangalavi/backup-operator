@@ -104,4 +104,3 @@ func NewEncryptorWithExtraRecipient(base Encryptor, extraPublic string) (Encrypt
 	merged = append(merged, r)
 	return &ageEncryptor{recipients: merged}, nil
 }
-

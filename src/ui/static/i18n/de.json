@@ -266,7 +266,8 @@
     "progressNormal": "{elapsed} / ~{est} — {remaining} verbleibend (n={n})",
     "progressNoEstimate": "läuft seit {elapsed}",
     "missingNameTitle": "Kein Zielname in der URL",
-    "missingNameBody": "Hash war {hash} — erwartet #/target/<name>."
+    "missingNameBody": "Hash war {hash} — erwartet #/target/<name>.",
+    "statsError": "Statistik-Fehler"
   },
   "form": {
     "source": {
@@ -772,5 +773,79 @@
     "timeout": "Zeitüberschreitung — die Destination ist langsam oder nicht erreichbar",
     "network": "Netzwerkfehler — Verbindung prüfen",
     "generic": "Anfrage fehlgeschlagen"
+  },
+  "tooltip": {
+    "sources": {
+      "add": "Neue Backup-Quelle anlegen — öffnet ein Formular, das eine BackupSource plus Zugangsdaten-Secret erzeugt",
+      "addFirst": "Erste Backup-Quelle anlegen",
+      "paused": "Geplante Läufe sind pausiert; manuelle Starts funktionieren weiterhin",
+      "run": "Manuellen Backup-Lauf jetzt starten — erzeugt einen einmaligen Job aus der CronJob-Vorlage; eine Pause gilt nicht für manuelle Läufe",
+      "resume": "Geplante Läufe fortsetzen — der Reconciler hebt Spec.Suspend am CronJob innerhalb von Sekunden auf",
+      "pause": "Geplante Läufe pausieren — setzt spec.suspended=true auf der BackupSource. Vorhandene Dumps und Konfiguration bleiben; manuelle Läufe funktionieren weiterhin",
+      "edit": "Verbindungsdaten und Zeitplan dieser Quelle bearbeiten",
+      "delete": "Diese BackupSource löschen — der CronJob wird per OwnerReference entfernt; vorhandene Dumps im Speicher bleiben erhalten",
+      "keep": "Diese Quelle behalten — ohne Löschen schließen",
+      "confirmDelete": "BackupSource endgültig löschen. CronJob und das von der UI verwaltete Zugangsdaten-Secret werden per OwnerReference mitgelöscht; vorhandene Dumps im Speicher bleiben"
+    },
+    "destinations": {
+      "add": "Neues Speicherziel (SFTP, FTPS, S3, Azure oder GCS) für Backup-Uploads anlegen",
+      "addFirst": "Erstes Speicherziel anlegen",
+      "test": "Dieses Ziel prüfen — lädt ein winziges Testobjekt hoch, liest es zurück und löscht es, damit auch Schreibrechte geprüft sind",
+      "edit": "Verbindungsdaten und Zugangsdaten dieses Ziels bearbeiten",
+      "delete": "Diese BackupDestination löschen. Dort gespeicherte Dumps bleiben unverändert",
+      "keep": "Dieses Ziel behalten — ohne Löschen schließen",
+      "confirmDelete": "BackupDestination endgültig löschen. Quellen überspringen sie beim nächsten Lauf; vorhandene Dumps im Speicher bleiben"
+    },
+    "form": {
+      "discard": "Änderungen verwerfen und Dialog schließen",
+      "saveSource": "BackupSource speichern — der Operator übernimmt Änderungen innerhalb von Sekunden",
+      "createSource": "BackupSource anlegen — der Operator erzeugt innerhalb von Sekunden einen CronJob",
+      "saveDestination": "BackupDestination speichern — der Operator übernimmt Änderungen beim nächsten Lauf",
+      "createDestination": "BackupDestination anlegen — Quellen können sie über spec.destinations ansprechen oder nutzen sie beim nächsten Lauf, wenn sie keine Allow-Liste haben",
+      "missingDestination": "Dieses Ziel steht in der gespeicherten Allow-Liste, aber es existiert aktuell keine BackupDestination mit diesem Namen"
+    },
+    "alerts": {
+      "sourcePrometheus": "Von Prometheus — berücksichtigt die for:-Dauer der Regel",
+      "sourceLocal": "Lokale Heuristik — feuert sofort, ohne for:-Entprellung"
+    },
+    "audit": {
+      "refresh": "Ereignisliste neu aus Kubernetes laden"
+    },
+    "target": {
+      "backToDashboard": "Zurück zum Dashboard"
+    },
+    "runs": {
+      "viewMeta": "Unverschlüsselte meta.json (Tabellenstatistik, Schema-Fingerprint, SHA256) im Browser ansehen",
+      "downloadMeta": "Unverschlüsselte meta.json herunterladen",
+      "downloadDump": "Age-verschlüsselten Dump herunterladen. Lokal mit backup-restore und dem Offline-Private-Key entschlüsseln",
+      "pickDestination": "Dieser Lauf wurde auf mehrere Ziele hochgeladen — eines zum Herunterladen oder Ansehen wählen",
+      "downloadDumpFrom": "Age-verschlüsselten Dump von {dest} herunterladen",
+      "viewMetaFrom": "meta.json von {dest} im Browser ansehen",
+      "downloadMetaFrom": "meta.json von {dest} herunterladen",
+      "copyJson": "Vollständiges formatiertes JSON in die Zwischenablage kopieren",
+      "saveMeta": "Diese meta.json als Datei speichern",
+      "charsetChanged": "Zeichensatz/Kollation seit dem vorherigen Lauf geändert",
+      "charsetDrift": "character_set oder Kollation weicht vom vorherigen Lauf ab — Multibyte-Zeichen können beim Restore abgeschnitten werden",
+      "schemaChangedAt": "Schema-Fingerprint zuletzt geändert am {at}. Alte Schemata passen womöglich nicht zur aktuellen Anwendung",
+      "statsError": "Der CollectStats-Aufruf vor dem Dump schlug fehl, daher hatte der Verifier keine Tabellen-Baseline. Zugriff reparieren (DB-Rechte, Netzwerk) — der Analyzer-Schalter ist davon unabhängig"
+    },
+    "settings": {
+      "reload": "Operator-Defaults neu laden",
+      "export": "values.yaml-Ausschnitt mit den effektiven Defaults herunterladen — ins Helm-Chart übernehmen für GitOps"
+    },
+    "ageKeys": {
+      "remove": "Diesen öffentlichen Schlüssel entfernen. Künftige Backups werden nicht mehr dafür verschlüsselt. Der letzte Empfänger kann nicht entfernt werden",
+      "recipientInput": "Ein age-X25519-Empfänger — beginnt mit 'age1', gefolgt von Base32-Zeichen. Offline mit age-keygen erzeugen; nur die öffentliche Zeile einfügen",
+      "add": "Diesen Empfänger hinzufügen. Künftige Backups werden zusätzlich zu den bestehenden Empfängern dafür verschlüsselt. Fehlerhafte Zeichenketten werden vor dem Speichern abgewiesen"
+    },
+    "chart": {
+      "refreshing": "Wird im Hintergrund aktualisiert"
+    }
+  },
+  "theme": {
+    "label": "Design",
+    "system": "System",
+    "light": "Hell",
+    "dark": "Dunkel"
   }
 }

@@ -45,7 +45,7 @@ func TestCapabilities_EmptyWorkerSA(t *testing.T) {
 	// scope the SAR meaningfully; it must report unknown rather than guess.
 	srv := makeCapabilitiesServer(fake.NewClientBuilder().Build(), "", "backup")
 
-	req := httptest.NewRequest(http.MethodGet, "/api/cluster/capabilities", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/cluster/capabilities", nil)
 	rr := httptest.NewRecorder()
 	srv.handleAPIClusterCapabilities(rr, req)
 
@@ -86,7 +86,7 @@ func TestCapabilities_SARAllowed(t *testing.T) {
 	})
 	srv := makeCapabilitiesServer(c, "backup-operator-worker", "backup")
 
-	req := httptest.NewRequest(http.MethodGet, "/api/cluster/capabilities", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/cluster/capabilities", nil)
 	rr := httptest.NewRecorder()
 	srv.handleAPIClusterCapabilities(rr, req)
 
@@ -114,7 +114,7 @@ func TestCapabilities_SARDenied(t *testing.T) {
 	})
 	srv := makeCapabilitiesServer(c, "backup-operator-worker", "backup")
 
-	req := httptest.NewRequest(http.MethodGet, "/api/cluster/capabilities", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/cluster/capabilities", nil)
 	rr := httptest.NewRecorder()
 	srv.handleAPIClusterCapabilities(rr, req)
 
@@ -140,7 +140,7 @@ func TestCapabilities_SARCreateError(t *testing.T) {
 	})
 	srv := makeCapabilitiesServer(c, "backup-operator-worker", "backup")
 
-	req := httptest.NewRequest(http.MethodGet, "/api/cluster/capabilities", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/cluster/capabilities", nil)
 	rr := httptest.NewRecorder()
 	srv.handleAPIClusterCapabilities(rr, req)
 
@@ -158,7 +158,7 @@ func TestCapabilities_SARCreateError(t *testing.T) {
 
 func TestCapabilities_NonGETRejected(t *testing.T) {
 	srv := makeCapabilitiesServer(fake.NewClientBuilder().Build(), "x", "backup")
-	req := httptest.NewRequest(http.MethodPost, "/api/cluster/capabilities", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/cluster/capabilities", nil)
 	rr := httptest.NewRecorder()
 	srv.handleAPIClusterCapabilities(rr, req)
 	if rr.Code != http.StatusMethodNotAllowed {

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +22,7 @@ func TestLimitBodyMiddleware_RejectsOversize(t *testing.T) {
 	defer srv.Close()
 
 	body := bytes.Repeat([]byte("A"), max*4)
-	resp, err := http.Post(srv.URL, "application/json", bytes.NewReader(body))
+	resp, err := httpPostCtx(srv.URL, "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -41,7 +42,7 @@ func TestLimitBodyMiddleware_AllowsSmallBody(t *testing.T) {
 		}
 		called = true
 	})
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte("hello")))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", bytes.NewReader([]byte("hello")))
 	rec := httptest.NewRecorder()
 	limitBodyMiddleware(max, h).ServeHTTP(rec, req)
 	if !called {

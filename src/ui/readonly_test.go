@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,7 +10,7 @@ import (
 func TestReadOnlyMiddleware_Disabled_PassesThrough(t *testing.T) {
 	called := false
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
-	req := httptest.NewRequest(http.MethodPost, "/api/trigger/x", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/trigger/x", nil)
 	rec := httptest.NewRecorder()
 	readOnlyMiddleware(false, h).ServeHTTP(rec, req)
 	if !called {
@@ -23,7 +24,7 @@ func TestReadOnlyMiddleware_BlocksMutations(t *testing.T) {
 	})
 	mw := readOnlyMiddleware(true, h)
 	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch} {
-		req := httptest.NewRequest(m, "/api/destinations/x", nil)
+		req := httptest.NewRequestWithContext(context.Background(), m, "/api/destinations/x", nil)
 		rec := httptest.NewRecorder()
 		mw.ServeHTTP(rec, req)
 		if rec.Code != http.StatusForbidden {
@@ -37,7 +38,7 @@ func TestReadOnlyMiddleware_AllowsSafeMethods(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	for _, m := range []string{http.MethodGet, http.MethodHead, http.MethodOptions} {
-		req := httptest.NewRequest(m, "/api/targets", nil)
+		req := httptest.NewRequestWithContext(context.Background(), m, "/api/targets", nil)
 		rec := httptest.NewRecorder()
 		mw.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {

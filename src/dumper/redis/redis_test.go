@@ -67,4 +67,3 @@ func TestParseDatabaseFilter_Mixed(t *testing.T) {
 		t.Errorf("expected {db0,db3,db7}, got %v", got)
 	}
 }
-

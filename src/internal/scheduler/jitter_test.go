@@ -125,10 +125,10 @@ func TestApplyJitter_InvalidScheduleUntouched(t *testing.T) {
 	// them with a clear validator error instead of silently producing
 	// a different valid one.
 	cases := []string{
-		"0 2 * *",          // 4 fields
-		"",                 // empty
-		"not-a-schedule",   // single token
-		"0 2 * * * extra",  // 6 fields
+		"0 2 * *",         // 4 fields
+		"",                // empty
+		"not-a-schedule",  // single token
+		"0 2 * * * extra", // 6 fields
 	}
 	for _, in := range cases {
 		if got := ApplyJitter(in, 60, "any-source"); got != in {

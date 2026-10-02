@@ -114,10 +114,10 @@ func TestLocalProvider_DumpSizeCollapsedAndDestFailing(t *testing.T) {
 
 func TestLocalProvider_AlertsSortedBySeverity(t *testing.T) {
 	reg, ms := fixedRegistry(t)
-	ms.sizeRatio.WithLabelValues("a").Set(0.1)         // critical
-	ms.lastStatus.WithLabelValues("b").Set(0)          // warning
-	ms.schemaChanged.WithLabelValues("c").Set(1)       // info
-	ms.anomalies.WithLabelValues("d").Set(3)           // warning
+	ms.sizeRatio.WithLabelValues("a").Set(0.1)   // critical
+	ms.lastStatus.WithLabelValues("b").Set(0)    // warning
+	ms.schemaChanged.WithLabelValues("c").Set(1) // info
+	ms.anomalies.WithLabelValues("d").Set(3)     // warning
 
 	p := NewLocalProvider(reg)
 	got, _ := p.List(context.Background())

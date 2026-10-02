@@ -16,8 +16,10 @@ build:
 
 # Build the worker binary (one-shot backup runner, launched by CronJob pods)
 build-worker:
+    #!/usr/bin/env sh
+    VERSION=$(git describe --tags $(git rev-list --tags --max-count=1) 2>/dev/null || echo "dev")
     cd src && go build -tags timetzdata -trimpath -gcflags="all=-l" \
-        -ldflags="-s -w" \
+        -ldflags="-s -w -X main.Version=${VERSION}" \
         -o ../dist/native/backup-worker ./cmd/worker
 
 # Build the restore CLI (runs locally, not inside the cluster)
@@ -30,7 +32,7 @@ build-restore:
 build-all: build-linux-amd64 build-linux-arm64
 
 # Cross-compile all three binaries for one Linux arch into dist/<arch>/.
-# The worker has no Version var yet, so only the operator carries -X.
+# Operator and worker carry -X main.Version; the restore CLI has no Version var.
 build-linux arch:
     #!/usr/bin/env sh
     set -e
@@ -39,7 +41,7 @@ build-linux arch:
     GOOS=linux GOARCH={{arch}} go build -tags timetzdata -trimpath -gcflags="all=-l" \
         -ldflags="-s -w -X main.Version=${VERSION}" -o ../dist/{{arch}}/backup-operator ./cmd/main.go
     GOOS=linux GOARCH={{arch}} go build -tags timetzdata -trimpath -gcflags="all=-l" \
-        -ldflags="-s -w" -o ../dist/{{arch}}/backup-worker ./cmd/worker
+        -ldflags="-s -w -X main.Version=${VERSION}" -o ../dist/{{arch}}/backup-worker ./cmd/worker
     GOOS=linux GOARCH={{arch}} go build -tags timetzdata -trimpath -gcflags="all=-l" \
         -ldflags="-s -w" -o ../dist/{{arch}}/backup-restore ./cmd/restore
 

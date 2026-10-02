@@ -21,7 +21,7 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOARM=${TARGETVARIANT#v} \
 
 RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOARM=${TARGETVARIANT#v} \
     go build -tags timetzdata -trimpath -gcflags="all=-l" \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -X main.Version=${VERSION}" \
     -o backup-worker ./cmd/worker
 
 # Final image needs pg_dump, mysqldump, mariadb-dump, mongodump, redis-cli

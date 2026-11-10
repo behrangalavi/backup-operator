@@ -1,0 +1,54 @@
+# Throwaway S3-compatible store. Bitnami's legacy image is used because
+# MinIO's own Docker Hub tags are gone and quay.io/minio needs a login;
+# MINIO_DEFAULT_BUCKETS creates the bucket at startup (the S3 backend does
+# not auto-create buckets). Dummy credentials.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      securityContext:
+        fsGroup: 1001
+      containers:
+        - name: minio
+          image: bitnamilegacy/minio:2025.7.23-debian-12-r5
+          env:
+            - name: MINIO_ROOT_USER
+              value: e2e-access-key
+            - name: MINIO_ROOT_PASSWORD
+              value: e2e-dummy-secret
+            - name: MINIO_DEFAULT_BUCKETS
+              value: backups
+          ports:
+            - containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: 9000
+            periodSeconds: 2
+          volumeMounts:
+            - name: data
+              mountPath: /bitnami/minio/data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+spec:
+  selector:
+    app: minio
+  ports:
+    - port: 9000
+      targetPort: 9000

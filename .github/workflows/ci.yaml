@@ -227,3 +227,60 @@ jobs:
           docker run --rm --entrypoint sh backup-operator:ci -c 'pg_dump --version && mysqldump --version && mongodump --version && redis-cli --version'
           docker run --rm --entrypoint /app/backup-worker backup-operator:ci --help 2>&1 | grep -q -- '-source' || true
           docker run --rm --entrypoint /app/backup-operator backup-operator:ci --help 2>&1 | head -1 || true
+
+  # End-to-end backup → restore on a throwaway kind cluster (test/e2e/run.sh):
+  # real operator + chart + worker Job + MinIO, then the real restore CLI
+  # decrypts the artifact and the row counts are compared with the seed. The
+  # one test that proves a backup is actually restorable.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # renovate: depName=kubernetes-sigs/kind
+      KIND_VERSION: v0.31.0
+      KIND_SHA256: eb244cbafcc157dff60cf68693c14c9a75c4e6e6fedaf9cd71c58117cb93e3fa
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: src/go.mod
+          cache-dependency-path: src/go.sum
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      - name: Install kind
+        run: |
+          curl -sSfLo kind "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  kind" | sha256sum -c -
+          sudo install -m 0755 kind /usr/local/bin/kind && rm kind
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Same GHA layer cache as docker-build, so the image is mostly cached.
+      - name: Build image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: false
+          load: true
+          tags: backup-operator:e2e
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run E2E
+        env:
+          E2E_SKIP_BUILD: "1"
+          E2E_IMAGE: backup-operator:e2e
+          E2E_WORKDIR: ${{ runner.temp }}/e2e
+        run: ./test/e2e/run.sh
+
+      - name: Upload E2E diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-logs
+          path: ${{ runner.temp }}/e2e/logs
+          retention-days: 7

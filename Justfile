@@ -99,6 +99,13 @@ test-ui:
     set -e
     if [ -d src/ui/static/js/tests ]; then node --test 'src/ui/static/js/tests/*.test.mjs'; else echo "no frontend tests yet (src/ui/static/js/tests)"; fi
 
+# End-to-end backup → restore on a throwaway kind cluster (isolated
+# KUBECONFIG, never touches ~/.kube/config). Builds the image, installs the
+# chart, backs up a seeded Postgres to MinIO, restores with the real CLI and
+# compares row counts. E2E_KEEP=1 keeps the cluster; see test/e2e/README.md.
+test-e2e:
+    ./test/e2e/run.sh
+
 # Helm chart unit tests (helm-unittest plugin) + schema validation of the
 # rendered manifests (kubeconform, installed into a cache dir on demand).
 test-chart:

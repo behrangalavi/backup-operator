@@ -1,0 +1,75 @@
+# Source + destinations under test. Everything non-secret is on the CRs,
+# only passwords/keys are in Secrets — the production contract.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: e2e-postgres-credentials
+type: Opaque
+stringData:
+  password: e2e-dummy-password
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-credentials
+type: Opaque
+stringData:
+  access-key-id: e2e-access-key
+  secret-access-key: e2e-dummy-secret
+---
+apiVersion: backup.mogenius.io/v1alpha1
+kind: BackupSource
+metadata:
+  name: e2e-postgres
+spec:
+  database:
+    type: postgres
+    host: postgres
+    port: 5432
+    name: e2edb
+    username: e2e
+    credentialsSecretRef:
+      name: e2e-postgres-credentials
+  # Never fires on its own during the test; runs are triggered manually.
+  schedule: "0 3 1 1 *"
+  jitterMinutes: 0
+  # Only the in-cluster endpoint receives uploads. minio-host (below) is
+  # a second view on the SAME bucket for the out-of-cluster restore CLI.
+  destinations: ["minio"]
+  retention:
+    days: 0
+    minKeep: 1
+---
+# What the worker uploads to: in-cluster Service DNS.
+apiVersion: backup.mogenius.io/v1alpha1
+kind: BackupDestination
+metadata:
+  name: minio
+spec:
+  type: s3
+  pathPrefix: e2e
+  s3:
+    bucket: backups
+    endpoint: http://minio:9000
+    region: us-east-1
+    pathStyle: true
+  credentialsSecretRef:
+    name: minio-credentials
+---
+# What the restore CLI reads from: the same bucket + prefix, reached via a
+# `kubectl port-forward` on the test host. Not in the source's allow-list,
+# so the worker never uploads to it and the refresher never probes it.
+apiVersion: backup.mogenius.io/v1alpha1
+kind: BackupDestination
+metadata:
+  name: minio-host
+spec:
+  type: s3
+  pathPrefix: e2e
+  s3:
+    bucket: backups
+    endpoint: http://127.0.0.1:${E2E_S3_PORT}
+    region: us-east-1
+    pathStyle: true
+  credentialsSecretRef:
+    name: minio-credentials

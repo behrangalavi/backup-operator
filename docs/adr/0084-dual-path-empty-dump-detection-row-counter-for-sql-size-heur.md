@@ -1,0 +1,5 @@
+# 0084. Dual-path empty-dump detection: row counter for SQL, size heuristic for mongo/redis
+
+**Status:** Accepted. Written under the labelled-Secret model; Secret/annotation names map to CRD fields as listed in [the mapping](README.md#pre-crd-names).
+
+Mongo's BSON archive and Redis's RDB binary are not parsed in-stream, so the row counter cannot speak. Rather than write per-engine archive parsers (heavy, fragile), the second path compares `encryptedSize` against pre-dump `Stats`: mongo flags when `preTotalSize > 1 MiB` and the encrypted dump is < 1% of source (typical compression+encryption produces ~10-30%); redis flags when `preTotalKeys > 0` and the encrypted RDB is < 200 bytes (header-only). Thresholds are tuned conservatively — false-positives on real dumps are worse than missing the rare edge case, because operators learn to distrust noisy alerts. Both paths route through the same `verification.LooksEmpty` flag and the same `empty-dump-check` annotation, so the user contract is uniform across engines.

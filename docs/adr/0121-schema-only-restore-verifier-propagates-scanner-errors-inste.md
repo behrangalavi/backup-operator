@@ -1,0 +1,5 @@
+# 0121. schema-only restore-verifier propagates scanner errors instead of masking them as EOF
+
+**Status:** Accepted.
+
+`filterPostgresSchemaOnly` / `filterMySQLSchemaOnly` pipe the decrypted dump through a `bufio.Scanner`, dropping data lines so the verifier replays DDL-only. The goroutine used `defer pw.Close()` — a clean EOF — and never checked `s.Err()`. So a scan failure (`bufio.ErrTooLong` on a line > 32 MB, e.g. a wide row or a *truncated/corrupt decrypted stream that never yields a newline*) silently stopped the scan; psql/mysql read the partial DDL, exited 0, smoke queries passed, and the verifier reported `match` on a truncated dump — defeating the entire point of restore verification. Fix: check `s.Err()` after the loop and `pw.CloseWithError(s.Err())` (which is `Close()`/EOF when err is nil), and `CloseWithError(err)` on write failures too, so the consuming client aborts. Same bug class the RowCounter ADR already fixed for the empty-dump path. Regression-tested with a reader that fails mid-stream.

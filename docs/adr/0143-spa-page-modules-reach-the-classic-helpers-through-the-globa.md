@@ -1,0 +1,5 @@
+# 0143. SPA page modules reach the classic helpers through the global scope; shared state lives in one module
+
+**Status:** Accepted.
+
+`pages.js` was a 2800-line file; it is now a thin entry that imports nine page modules plus `pages/state.js` (the single mutable render-generation / cache object) and `pages/router.js` (page registry, which also breaks the import cycles a direct cross-import of renderers would create). `core.js` and `charts.js` stay classic scripts on purpose: converting them would have meant touching every helper call in every module for no runtime benefit, there is no bundler, and module scripts are already allowed by `script-src 'self'`. Every tooltip is an i18n key under `tooltip.*` rendered through `escAttr(trText(...))` — attribute context, so the HTML-escaping `tr()` would double-escape. Theming is token-only: the light palette exists twice (under `prefers-color-scheme: light` and under `data-theme="light"`) and a node test asserts both blocks are identical and that no hex colour exists outside the token definitions, so a one-sided edit cannot drift.

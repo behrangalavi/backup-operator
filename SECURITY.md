@@ -7,7 +7,7 @@ All mutation endpoints (create/update/delete sources, destinations, trigger
 backups, manage age keys) are accessible to anyone who can reach the UI port.
 
 **Always** place an authenticating reverse proxy in front of the UI in
-production. See `CLAUDE.md` § 3.1 for OAuth2 Proxy and Ingress basic-auth
+production. See [`docs/getting-started.md`](docs/getting-started.md#31-securing-the-ui-with-an-authentication-proxy) (§3.1) for OAuth2 Proxy and Ingress basic-auth
 examples.
 
 ## Credential Visibility in Browser DevTools

@@ -1,0 +1,5 @@
+# 0085. mysqldump flag hardening: `--events --default-character-set=utf8mb4` always, `--column-statistics=0` only when the binary is Oracle's mysqldump
+
+**Status:** Accepted.
+
+`--events` was missing — restoring a dump made without it loses any MySQL Event Scheduler entries the application depends on, with no warning. `--default-character-set=utf8mb4` forces a 4-byte session charset; the legacy "utf8" default in MySQL <8 is 3-byte and silently truncates emoji and some CJK characters at restore time. `--column-statistics=0` disables Oracle MySQL 8's client probe of `information_schema.column_statistics` that fails outright against MariaDB / MySQL <8 — but `mariadb-dump` does not know the flag and aborts with `unknown variable 'column-statistics=0'`. We probe `<binary> --version` once per binary path per worker process and treat the literal substring "MariaDB" in the banner as "do not pass the flag". The earlier `--help` text-content probe was fragile because future MariaDB releases could mention "column-statistics" in their help output as a compatibility note, falsely flipping the probe; `--version` is short, stable, and self-identifying.

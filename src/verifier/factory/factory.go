@@ -1,7 +1,7 @@
 // Package factory wires the restore-verifier mode string to a concrete
 // Verifier implementation. New modes register here; calling code branches
 // on the mode string only inside this file (matches the dumper / storage
-// factory pattern documented in CLAUDE.md §8.2).
+// factory pattern documented in docs/conventions.md §8.2).
 package factory
 
 import (

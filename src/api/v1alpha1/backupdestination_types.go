@@ -20,7 +20,7 @@ const ConditionReachable = "Reachable"
 
 // BackupDestinationSpec declares one upload target. Exactly one backend
 // block must be set and must match Type; the credentials Secret carries
-// the keys that backend needs (see CLAUDE.md §6.5).
+// the keys that backend needs (see docs/crds.md §6.5).
 //
 // +kubebuilder:validation:XValidation:rule="self.type != 'sftp' || has(self.sftp)",message="spec.sftp is required when type is sftp"
 // +kubebuilder:validation:XValidation:rule="self.type != 'ftps' || has(self.ftps)",message="spec.ftps is required when type is ftps"

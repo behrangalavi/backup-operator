@@ -16,7 +16,7 @@ const (
 	DatabaseRedis    = "redis"
 )
 
-// Restore-verification modes. See CLAUDE.md §6.2.
+// Restore-verification modes. See docs/crds.md §6.1 (restoreVerification.mode).
 const (
 	VerificationOff            = "off"
 	VerificationStreamValidate = "stream-validate"

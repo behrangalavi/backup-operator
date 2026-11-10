@@ -59,7 +59,7 @@ spec:
             description: |-
               BackupDestinationSpec declares one upload target. Exactly one backend
               block must be set and must match Type; the credentials Secret carries
-              the keys that backend needs (see CLAUDE.md §6.5).
+              the keys that backend needs (see docs/crds.md §6.5).
             properties:
               azure:
                 description: AzureSpec covers Azure Blob Storage with shared-key auth.

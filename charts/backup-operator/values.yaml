@@ -237,15 +237,15 @@ ui:
   # maxSSEClients: 256
 
 # Read-only documentation portal served by the operator pod itself, on a
-# separate port from the management UI. Renders CLAUDE.md (operator
-# reference) and README.md (user guide), plus a generated Tech Stack page
+# separate port from the management UI. Renders README.md (user guide),
+# CLAUDE.md and the docs/ reference + ADRs, plus a generated Tech Stack page
 # from go.mod. Disable by default — flip `enabled: true` to expose. The
 # docs server reads no Kubernetes state and holds no credentials, so it's
 # safe to expose to a wider audience than the management UI.
 docs:
   enabled: false
   port: 8083
-  # Path inside the container that holds CLAUDE.md, README.md, and go.mod.
+  # Path inside the container that holds README.md, CLAUDE.md, docs/ and go.mod.
   # The Dockerfile populates /app/docs at build time.
   dir: /app/docs
 

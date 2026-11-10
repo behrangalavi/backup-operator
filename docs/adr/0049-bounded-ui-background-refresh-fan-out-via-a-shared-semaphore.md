@@ -1,0 +1,5 @@
+# 0049. Bounded UI background-refresh fan-out via a shared semaphore
+
+**Status:** Accepted.
+
+The UI's stale-while-revalidate caches (`latestCache`, `runsCache`) dedup background refreshes *per key* via the `loading` map, but had no bound *across* keys. On a fleet with many distinct destinations, one SSE tick could fan out one refresh goroutine per key at once — each a fresh SSH/TLS handshake — which is exactly the connection storm that got the operator IP-blocked by QNAP's bruteforce protection (the test-destination ADR). Fix: a single `sem chan struct{}` (cap `maxBackgroundRefreshes`=6) shared by both caches, acquired inside the background goroutine in `getOrRefreshAsync` and released on completion, so the cap is on *total* in-flight probes, not per-cache or per-key. `nil` sem = unbounded (preserves behaviour for any cache constructed without one). Per-key dedup still runs first, so the semaphore only ever sees distinct-key probes. Trade-off: when more than 6 destinations need refreshing at once, the surplus probes queue rather than run concurrently — a deliberately slower-but-safe fan-out, and the SSE-driven repaint still lands fresh data as each completes.

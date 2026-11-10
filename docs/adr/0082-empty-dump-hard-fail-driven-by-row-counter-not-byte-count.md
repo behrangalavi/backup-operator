@@ -1,0 +1,5 @@
+# 0082. Empty-dump hard-fail driven by row counter, not byte count
+
+**Status:** Accepted. Written under the labelled-Secret model; Secret/annotation names map to CRD fields as listed in [the mapping](README.md#pre-crd-names).
+
+`encryptedSize == 0` already failed the run, but mysqldump emits hundreds of bytes of headers/comments even when SELECT silently returns nothing — the artifact is "successful" by every byte-level measure yet contains zero data. The fix uses the existing `dumper.RowCounter` (sees the dump stream pre-gzip) and the existing pre-dump `Stats`: when pre-rows > 0 and dump-rows == 0, fail the run via `LooksEmpty`. Distinguishing "counter inactive" (mongo, no nil counts) from "counter active and empty" (SQL with no INSERTs) required a new `RowCounter.Active()` accessor — without it, an empty `map[string]int64{}` is indistinguishable from `nil` and the detector misfires on mongo. Annotation `backup.mogenius.io/empty-dump-check=false` is a deliberate escape hatch for legitimately empty schema-only sources; flagging that as a hard fail would be a worse failure mode than the silent emptiness we're catching.

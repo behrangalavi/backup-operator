@@ -1,4 +1,4 @@
-# Build context hygiene: the Dockerfile only COPYs src/, CLAUDE.md, README.md.
+# Build context hygiene: the Dockerfile only COPYs src/, docs/, CLAUDE.md, README.md.
 # Everything else is noise at best and credentials at worst (.env holds the
 # local operator config, test/local holds real database passwords).
 .git
@@ -11,7 +11,6 @@
 dist
 test
 charts
-docs
 *.log
 *.tgz
 src/restore

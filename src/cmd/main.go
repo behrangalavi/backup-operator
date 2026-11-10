@@ -147,7 +147,7 @@ func main() {
 		// Docs server. Independent listener so it can be exposed/scoped
 		// separately from the management UI (read-only, public-facing
 		// reference vs. mutating admin surface). DOCS_DIR points at the
-		// directory that holds CLAUDE.md, README.md, and go.mod; the
+		// directory that holds README.md, CLAUDE.md, docs/ and go.mod; the
 		// Dockerfile populates /app/docs, locally a developer points it
 		// at the repo root.
 		{Key: "DOCS_ENABLED", Optional: true, Default: "false"},
@@ -238,8 +238,8 @@ func main() {
 
 	// One pool, shared by the refresher and the scrubber. Long-lived
 	// storage clients per destination, so SFTP handshakes and S3 client
-	// builds happen once per backend instead of once per call. See ADR
-	// in CLAUDE.md §18.
+	// builds happen once per backend instead of once per call. See
+	// docs/adr/0045-metricsrefresher-long-lived-storage-pool-two-tier-concurrenc.md.
 	storagePool := controllers.NewStoragePool(ctrl.Log.WithName("storage-pool"))
 
 	// broadcastFn is the SSE-publish bridge from controllers to the UI's

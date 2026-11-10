@@ -4,7 +4,7 @@ A Kubernetes-native backup operator in Go for **PostgreSQL**, **MySQL**, **Maria
 
 > **The contract:** label a `Secret`, get a backup. No CRDs to install, no extra resources to learn. The operator watches Secrets in its namespace, materialises a `CronJob` per labelled source, and Kubernetes does the running.
 
-> **Built mostly with AI.** This project is an experiment: how far can you take a complete, production-shaped system — Kubernetes operator, three binaries, encryption, multi-destination fan-out, dashboard UI, restore verification, Helm chart, alerts, docs — with different AI coding assistants doing most of the typing? The architecture decisions, code review, and direction are human; the implementation, refactors, and large parts of the documentation (this file included) were written collaboratively with several AI agents and then audited. Treat the design choices in CLAUDE.md §18 as the human-curated record of what was actually decided.
+> **Built mostly with AI.** This project is an experiment: how far can you take a complete, production-shaped system — Kubernetes operator, three binaries, encryption, multi-destination fan-out, dashboard UI, restore verification, Helm chart, alerts, docs — with different AI coding assistants doing most of the typing? The architecture decisions, code review, and direction are human; the implementation, refactors, and large parts of the documentation (this file included) were written collaboratively with several AI agents and then audited. Treat the decision records in [`docs/adr/`](docs/adr/README.md) as the human-curated record of what was actually decided.
 
 ---
 
@@ -563,7 +563,7 @@ kubectl -n backup port-forward svc/backup-operator 8081:8081
 
 - **Typed CRUD, owned credentials.** The API addresses `BackupSource` / `BackupDestination` / `BackupRecipient` objects, never arbitrary Secrets. The only Secrets it writes are credentials Secrets that carry an `OwnerReference` to the object being edited; a Secret you manage yourself (for example the one your database chart created) is reported as a conflict instead of being overwritten.
 - **Hardened headers.** Strict `Content-Security-Policy` (`script-src 'self'`, no inline handlers in the SPA, `frame-ancestors 'none'`), `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`. Every request carries an `X-Request-Id`; Events emitted by the UI record the identity your auth proxy forwards (`X-Forwarded-User` / `X-Auth-Request-Email`) as an audit hint.
-- **No built-in auth.** Cluster-internal use is the assumed default. To expose externally, put `oauth2-proxy`, an Ingress with basic-auth annotation, or your platform's SSO in front of the Service (see CLAUDE.md §3.1 for examples).
+- **No built-in auth.** Cluster-internal use is the assumed default. To expose externally, put `oauth2-proxy`, an Ingress with basic-auth annotation, or your platform's SSO in front of the Service (see [`docs/getting-started.md`](docs/getting-started.md#31-securing-the-ui-with-an-authentication-proxy) for examples).
 - **Sensitive data masked.** Passwords, SSH keys, and access keys are returned as `***` in API responses. They are only written, never read back.
 - **Pass-through downloads.** The operator streams encrypted bytes from the destination to the client without decrypting. The age private key never enters the cluster.
 
@@ -727,7 +727,7 @@ A failed or skipped verification does **not** fail the backup run itself — ver
 
 ## Documentation Portal
 
-The operator can serve `CLAUDE.md`, `README.md`, and a generated tech-stack page (built from `go.mod`) on a separate port. Off by default. The portal is **read-only** — it has no Kubernetes client, no Secret access, no ability to mutate state. That's what justifies exposing it more loosely than the management UI.
+The operator can serve `README.md`, `CLAUDE.md`, the `docs/` reference and ADRs, and a generated tech-stack page (built from `go.mod`) on a separate port. Off by default. The portal is **read-only** — it has no Kubernetes client, no Secret access, no ability to mutate state. That's what justifies exposing it more loosely than the management UI.
 
 ### Enable it
 
@@ -747,8 +747,10 @@ kubectl -n backup port-forward svc/backup-operator 8083:8083
 
 ### What you get
 
-- **`/`** — README (this file), rendered with goldmark.
-- **`/claude`** — CLAUDE.md (operator reference + architectural decisions).
+- **`#readme`** — README (this file), rendered with goldmark.
+- **`#claude-md`** — CLAUDE.md (contributor guide).
+- **`#<topic>`** — one page per `docs/*.md` file (`#crds`, `#configuration`, …); cross-file links are rewritten to portal routes.
+- **`#adr`** — the decision index; each ADR is its own page and is covered by search.
 - **`/tech-stack`** — direct dependencies from `go.mod`, with version + purpose.
 - **In-page search** — Ctrl+K opens a dropdown with snippet highlighting across all pages. Client-side only; no server-side index, so the portal works on read-only mounts.
 
@@ -995,9 +997,9 @@ Releases are driven by [Conventional Commits](https://www.conventionalcommits.or
 
 | Prefix | Effect | Example |
 |---|---|---|
-| `fix:` | Patch release (1.0.x) | `fix: correct retention day calculation` |
-| `feat:` | Minor release (1.x.0) | `feat: add S3 destination support` |
-| `feat!:` or `BREAKING CHANGE:` | Major release (x.0.0) | `feat!: rename source annotations` |
+| `fix:` | Patch release (0.x.y) | `fix: correct retention day calculation` |
+| `feat:` | Minor release (0.x.0) | `feat: add S3 destination support` |
+| `feat!:` + `BREAKING CHANGE:` footer | Minor release while pre-1.0 (`.releaserc.json` maps breaking → minor); remove that rule to cut 1.0.0 | `feat!: rename a BackupSource field` |
 | `docs:`, `ci:`, `chore:` | No release | `docs: update README` |
 
 Merging a PR with `fix:` or `feat:` commits triggers an automatic release. No manual `git tag` needed.
@@ -1137,16 +1139,18 @@ False positive. The first run has no `previous` to compare against; `dump_size_c
 
 ### `INSECURE` warnings in worker logs (SFTP destinations)
 
-The BackupDestination is missing `spec.sftp.knownHosts`. Add the output of `ssh-keyscan -p <port> <host>` there. Without it the worker accepts any host key — a downgrade in security but not a backup failure.
+The BackupDestination sets `spec.sftp.insecureSkipHostVerify: true`, so any host key is accepted. Put the output of `ssh-keyscan -p <port> <host>` into `spec.sftp.knownHosts` and drop the flag. Without either, the connection is rejected and the run fails.
 
-### `analyzer-enabled: false` not detected
+### `kubectl apply` rejects a BackupSource
 
-Annotation typo (e.g. `analyzer-enable`). The parser is forgiving and falls back to the default rather than rejecting the Secret, so look closely at the annotation name. Use `kubectl get secret -o yaml` to inspect.
+The CRD schema validates every field at admission (enums, ranges, CEL rules), so a typo such as `analyzer.enable` or `restoreVerification.mode: ful` is refused with the offending path in the error. Run `kubectl explain backupsource.spec --recursive` for the accepted fields.
 
 ---
 
 ## More Documentation
 
-- **`CLAUDE.md`** — full architectural reference: module layout, factories, retention semantics, failure modes, the rationale behind every non-obvious design decision.
+- **[`docs/`](docs/)** — full reference, one file per topic: [architecture](docs/architecture.md), [custom resources](docs/crds.md), [configuration](docs/configuration.md), [encryption](docs/encryption.md), [storage layout](docs/storage-layout.md), [metrics and alerts](docs/observability.md), [failure modes](docs/failure-modes.md), [operations](docs/operations.md), [compliance](docs/compliance.md), [Helm](docs/helm.md), [development](docs/development.md).
+- **[`docs/adr/`](docs/adr/README.md)** — one file per architectural decision, with the reasoning behind every non-obvious design choice.
+- **`CLAUDE.md`** — short contributor/agent guide: conventions, commands and where to look.
 - **Helm chart** — `charts/backup-operator/values.yaml` is the canonical list of every knob the chart exposes.
 - **Source code** — well-commented Go. Start with `cmd/main.go` (operator), `cmd/worker/main.go` (worker), `internal/backup/pipeline.go` (the actual backup pipeline).

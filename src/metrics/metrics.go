@@ -282,7 +282,7 @@ var (
 		[]string{"target", "mode"},
 	)
 
-	// Worker-only histogram (not visible to Prometheus, see CLAUDE.md §12).
+	// Worker-only histogram (not visible to Prometheus, see docs/observability.md).
 	// Kept for symmetry with dump_duration / upload_duration so future
 	// observability surface can read it from the worker process if needed.
 	restoreVerificationDuration = prometheus.NewHistogramVec(

@@ -1,8 +1,8 @@
 // Package verifier implements the restore-verification phase of a backup
 // run. It proves the encrypted artifact just uploaded is decryptable and
 // parseable, by streaming it through a per-mode parser using an ephemeral
-// age identity that lives only inside the running worker pod (see ADR in
-// CLAUDE.md §18).
+// age identity that lives only inside the running worker pod (see
+// docs/adr/0094-restore-verification-uses-an-ephemeral-keypair-generated-ins.md).
 //
 // Two phases ship today:
 //   - Phase 1 (ModeStreamValidate): in-process header + row-count parsing,

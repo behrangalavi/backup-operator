@@ -1,0 +1,5 @@
+# 0043. Two-tier error sanitization: fully-generic vs credential-scrubbed
+
+**Status:** Accepted.
+
+A blanket "collapse every error to `operation failed`" rule collided with the test-connection ADR below, which deliberately surfaces protocol diagnostics like `550 Permission denied`. The resolution is two helpers: `sanitizeError` (fully generic — for data-fetch paths like `/download/...` where no diagnostic value is intended) and `sanitizeStorageError` (`errors_api.go` — strips credential material but keeps the protocol message — for the diagnostic endpoints `test-connection`, `destination-stats`, `destination-health`). The scrubber masks `scheme://user:pass@host` userinfo and `password=`/`auth=`/`token=`/`secret-access-key=`/`access-key-id=` key-value pairs via two regexes, leaving the operationally useful tail intact. Before this, several diagnostic handlers returned raw `err.Error()`, contradicting the sanitization ADR; the download handler leaked storage internals into a `502` body and now logs server-side + returns a fixed message.

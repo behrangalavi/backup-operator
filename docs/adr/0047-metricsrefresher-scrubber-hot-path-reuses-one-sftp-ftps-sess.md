@@ -1,0 +1,5 @@
+# 0047. MetricsRefresher/scrubber hot path reuses one SFTP/FTPS session for List+Get via `WithSession`
+
+**Status:** Accepted.
+
+`loadLatestMeta` runs once per (source × destination) every refresher and scrubber tick, and it does a `List` to find the newest meta followed by a `Get` to read it. Because the SFTP/FTPS `storage.Storage` impls dial a fresh connection per call, that was two SSH/TLS handshakes per pair per tick — the dominant cost on the hot path (handshake ≫ the 5–50 KB meta payload, see the MetricsRefresher ADR). Fix: type-assert the storage to `storage.BatchStorage`, open one `WithSession`, and route both the List and the Get through it so the pair shares a single connection. S3 has no session concept and falls through to per-call dialing unchanged. Mirrors the existing `WithSession` use in retention. Defer ordering is load-bearing: the session `closer()` is registered before the `rc.Close()` for the fetched object, and `io.ReadAll(rc)` completes before either fires (LIFO: `rc.Close()` runs first, then `closer()`), so the body is fully read while the session is still open.

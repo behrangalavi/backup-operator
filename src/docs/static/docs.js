@@ -42,7 +42,9 @@ async function loadTechStack() {
 
 function renderNav() {
   const nav = $('#nav');
-  nav.innerHTML = state.pages.map(p =>
+  // ADR records are reachable from the Decisions index and from search;
+  // listing all of them would bury the topic pages.
+  nav.innerHTML = state.pages.filter(p => p.kind !== 'adr').map(p =>
     `<a href="#${escapeHTML(p.slug)}" data-slug="${escapeHTML(p.slug)}" class="nav-link">${escapeHTML(p.title)}</a>`
   ).join('');
   highlightCurrent();
@@ -50,7 +52,8 @@ function renderNav() {
 
 function highlightCurrent() {
   $$('.nav-link').forEach(a => {
-    a.classList.toggle('active', a.dataset.slug === state.current);
+    const section = state.current.startsWith('adr-') ? 'adr' : state.current;
+    a.classList.toggle('active', a.dataset.slug === section);
   });
 }
 
@@ -167,7 +170,7 @@ async function primeSearch() {
   if (searchPrimed) return;
   searchPrimed = true;
   await Promise.all(state.pages.map(async p => {
-    if (p.kind === 'markdown') await loadPage(p.slug);
+    if (p.kind === 'markdown' || p.kind === 'adr') await loadPage(p.slug);
   }));
 }
 
@@ -213,7 +216,7 @@ function runSearch(q) {
   const ql = q.toLowerCase();
   const hits = [];
   for (const p of state.pages) {
-    if (p.kind !== 'markdown') {
+    if (p.kind !== 'markdown' && p.kind !== 'adr') {
       if (p.title.toLowerCase().includes(ql)) {
         hits.push({ slug: p.slug, title: p.title, snippet: '' });
       }

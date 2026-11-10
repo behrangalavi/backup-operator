@@ -1,0 +1,5 @@
+# 0124. Storage scrubber walks sources concurrently behind a shared egress throttle
+
+**Status:** Accepted.
+
+The scrubber re-streams each dump through SHA256 to detect bit-rot. The outer source loop was strictly serial — only destinations *within* a source ran in parallel — so one source with a slow/large destination blocked every source behind it, and a tick on a big fleet could exceed the 24 h interval (the exact per-source-serial blowup the metrics-refresher iteration-3 ADR already fixed for itself). Fix: a global source-worker pool (8) walks sources concurrently, while a single shared stream semaphore (`defaultScrubConcurrency`=2) bounds total in-flight full-dump re-streams across the whole tick — egress stays capped at the previous level, but the per-source barrier is gone, so a freed slot is immediately reused by whichever source is ready rather than waiting for the current source to finish. Did not raise the stream cap: egress is the real cost and the win here is scheduling fairness, not more bandwidth.

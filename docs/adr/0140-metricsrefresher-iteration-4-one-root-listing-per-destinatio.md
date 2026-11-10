@@ -1,0 +1,5 @@
+# 0140. MetricsRefresher iteration 4: one root listing per destination per tick
+
+**Status:** Accepted.
+
+Iteration 3 fixed connection reuse and concurrency but still issued `List(target/)` + `Get` per (source × destination) — 2·S·D storage calls per tick, 60 000 at 10k sources × 3 destinations. The refresher now lists each destination root once (`dest_listing.go`), picks the newest meta per target from the paths, and fetches one `Get` per target present: D·(1+T) calls, 30 003 in the same fleet, and the per-source work became pure in-memory selection so the per-destination slot is no longer contended. Companion bounds: `meta.ListOptions{Since, Limit}` so the heatmap fetches only its day window (with slimmed entries — no `Stats.Tables`) and the duration estimate only the newest N; a 200-entry newest-first buffer for anomalies instead of collect-then-truncate; the UI cache sweeps expired keys; the UI memoises the flattened source/destination lists by list ResourceVersion with a 15 s max age; the scrubber walks at most `STORAGE_SCRUB_MAX_PAIRS_PER_TICK` pairs round-robin so a tick can never outlast its interval.

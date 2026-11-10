@@ -123,6 +123,7 @@ COPY --from=builder /workspace/backup-worker /app/backup-worker
 # package portable to repo layouts where these files live outside the
 # package directory and out of go:embed reach.
 COPY CLAUDE.md README.md /app/docs/
+COPY docs/ /app/docs/docs/
 COPY src/go.mod /app/docs/go.mod
 USER 1000:1000
 ENTRYPOINT ["/app/backup-operator"]

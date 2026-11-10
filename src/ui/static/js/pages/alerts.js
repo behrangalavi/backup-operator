@@ -25,7 +25,7 @@ export const ALERT_ICONS = {
 };
 export const ALERT_DESCRIPTIONS = ALERT_ICONS; // legacy alias used by the rules-reference table
 
-// Severity per shipped rule, mirroring CLAUDE.md §13 / values.yaml. Used by the
+// Severity per shipped rule, mirroring docs/observability.md (§13) / values.yaml. Used by the
 // rules-reference table; keep in sync when adding a rule. Default 'warning'.
 export const ALERT_SEVERITY = {
   BackupOverdue: 'warning',

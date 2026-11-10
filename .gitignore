@@ -1,4 +1,10 @@
 /dist/
+# Stray `go build` outputs from inside src/ (the Justfile builds into dist/).
+/src/worker
+/src/restore
+/src/backup-operator
+/src/backup-worker
+/src/backup-restore
 /.idea/
 /.vscode/
 *.swp

@@ -14,6 +14,14 @@ rules:
   - apiGroups: ["backup.mogenius.io"]
     resources: ["backupsources", "backupdestinations", "backuprecipients"]
     verbs: ["get", "list", "watch"{{- if and .Values.ui.enabled (not .Values.ui.readOnly) }}, "create", "update", "patch", "delete"{{- end }}]
+  # Bootstrap seeds one BackupRecipient per chart-provided agePublicKeys
+  # entry at startup (BOOTSTRAP_AGE_RECIPIENTS), so create is needed even
+  # without a writable UI. Without it a default install has zero
+  # recipients, an empty merged age Secret and workers that refuse to
+  # start. Create only — bootstrap never updates or deletes.
+  - apiGroups: ["backup.mogenius.io"]
+    resources: ["backuprecipients"]
+    verbs: ["create"]
   - apiGroups: ["backup.mogenius.io"]
     resources: ["backupsources/status", "backupdestinations/status"]
     verbs: ["get", "update", "patch"]

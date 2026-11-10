@@ -23,6 +23,13 @@ tests:
         contains:
           path: rules
           content:
+            apiGroups: ["backup.mogenius.io"]
+            resources: ["backuprecipients"]
+            verbs: ["create"]
+      - documentIndex: 0
+        contains:
+          path: rules
+          content:
             apiGroups: [""]
             resources: ["secrets"]
             verbs: ["get", "create", "update", "patch"]
@@ -74,6 +81,13 @@ tests:
             apiGroups: ["backup.mogenius.io"]
             resources: ["backupsources", "backupdestinations", "backuprecipients"]
             verbs: ["get", "list", "watch"]
+      - documentIndex: 0
+        contains:
+          path: rules
+          content:
+            apiGroups: ["backup.mogenius.io"]
+            resources: ["backuprecipients"]
+            verbs: ["create"]
   - it: gives the worker only by-name Secret reads and no pod verbs by default
     asserts:
       - documentIndex: 2

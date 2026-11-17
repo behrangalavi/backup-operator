@@ -1,7 +1,7 @@
 # Base images are pinned by digest for reproducible builds; Renovate bumps
 # the digest together with the tag (see renovate.json). Resolve a new
 # digest with `docker buildx imagetools inspect <image:tag>`.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine@sha256:8ac98ca534ac3f51e1f420a1dd2c15e74c75cfa0f23f3ad27eb5d7236c349a0c AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine@sha256:ecb67f987aa1a57794c91d19ade7ae0209f2f0f5496aaef9e6ae85ddf92d02ab AS builder
 WORKDIR /workspace
 
 ARG TARGETOS

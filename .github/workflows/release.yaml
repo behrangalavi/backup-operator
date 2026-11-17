@@ -19,6 +19,9 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # Kept in lockstep with ci.yaml (see the comment there).
+  # renovate: depName=helm/helm
+  HELM_VERSION: v3.22.1
 
 jobs:
   # 1. Quality gate. Reuses ci.yaml verbatim (workflow_call) so a main-push
@@ -136,6 +139,8 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
 
       - name: Stamp chart version
         run: |

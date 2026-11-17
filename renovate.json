@@ -49,6 +49,11 @@
   ],
   "packageRules": [
     {
+      "matchPackageNames": ["helm/helm"],
+      "allowedVersions": "<4.0.0",
+      "description": "CI pins Helm 3: Helm 4 rejects unsigned git plugin installs (helm-unittest) and the chart is untested on it"
+    },
+    {
       "matchManagers": ["gomod"],
       "matchPackagePatterns": ["^k8s\\.io/", "^sigs\\.k8s\\.io/controller-runtime"],
       "groupName": "kubernetes libraries",

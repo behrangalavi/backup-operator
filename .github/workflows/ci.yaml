@@ -18,6 +18,12 @@ env:
   KUBECONFORM_VERSION: v0.7.0
   # renovate: depName=helm-unittest/helm-unittest
   HELM_UNITTEST_VERSION: 0.6.3
+  # setup-helm defaults to `latest`, which is Helm 4: it refuses to install
+  # helm-unittest from git without signature verification, and the chart is
+  # only tested against Helm 3. Moving to Helm 4 is a deliberate bump, not a
+  # side effect of a runner refresh. Renovate holds this below v4.
+  # renovate: depName=helm/helm
+  HELM_VERSION: v3.22.1
 
 jobs:
   test:
@@ -144,6 +150,8 @@ jobs:
 
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
 
       # --strict fails the lint on warnings, not just errors.
       - name: Lint chart
@@ -249,6 +257,8 @@ jobs:
 
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
 
       - name: Install kind
         run: |

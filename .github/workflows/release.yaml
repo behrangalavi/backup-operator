@@ -22,6 +22,11 @@ env:
   # Kept in lockstep with ci.yaml (see the comment there).
   # renovate: depName=helm/helm
   HELM_VERSION: v3.22.1
+  # Pinned explicitly rather than inheriting trivy-action's default: Aqua
+  # pulled older Trivy release assets, and an action whose default pointed
+  # at one of them failed in setup before scanning anything.
+  # renovate: depName=aquasecurity/trivy
+  TRIVY_VERSION: v0.76.2
 
 jobs:
   # 1. Quality gate. Reuses ci.yaml verbatim (workflow_call) so a main-push
@@ -104,8 +109,9 @@ jobs:
       # Debian plus DB client packages — exactly the surface CVE scanners
       # exist for. .trivyignore carries dated, justified exceptions.
       - name: Trivy scan
-        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
+          version: ${{ env.TRIVY_VERSION }}
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.push.outputs.digest }}
           format: table
           exit-code: '1'

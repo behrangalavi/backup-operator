@@ -36,8 +36,8 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOARM=${TARGETVARIANT#v} \
 # `mariadb-client` (for dbType=mariadb sources) lets the dumper pick the
 # canonical tool per source rather than papering over differences with
 # wire-protocol compatibility tricks.
-FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS runtime
-ARG MONGO_TOOLS_VERSION=100.16.1
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS runtime
+ARG MONGO_TOOLS_VERSION=100.19.1
 ARG TARGETARCH
 
 # Install once: trust the four upstream repos (debian main, MySQL,

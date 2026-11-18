@@ -1,3 +1,11 @@
 # CVE allow-list for the release-time Trivy scan (fail on HIGH/CRITICAL).
 # One CVE per line with a dated justification; remove when the fix lands.
 # CVE-2024-XXXXX  # <reason>, expires YYYY-MM-DD
+
+# golang.org/x/net v0.59.0 vendored in MongoDB Database Tools 100.19.1, the
+# newest upstream release (mongodump, mongorestore, bsondump). Neither path
+# is reachable here: the tools never parse HTML (x/net/html), and they speak
+# the Mongo wire protocol, not HTTP/2, to the source. Our own binaries are on
+# x/net v0.62.0. Drop these once a mongo-tools release ships x/net >= 0.62.
+CVE-2026-78661 exp:2027-01-31
+CVE-2026-78669 exp:2027-01-31
